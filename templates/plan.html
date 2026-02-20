@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}FitLocal - Current Plan{% endblock %}
+{% block content %}
+<h1>Current Plan</h1>
+
+{% if plan %}
+<div class="card mb-2">
+    <h2>{{ plan.name }}</h2>
+    <p class="text-muted">{{ plan.description }}</p>
+    <p><strong>{{ plan.days_per_week }} days per week</strong></p>
+</div>
+
+{% for workout in workouts %}
+<div class="exercise-block">
+    <h3>{{ workout.day_of_week }} - {{ workout.workout_name }}</h3>
+    <table>
+        <thead>
+            <tr>
+                <th>Exercise</th>
+                <th>Sets</th>
+                <th>Reps</th>
+                <th>Rest</th>
+                <th>Notes</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for ex in workout.planned_exercises %}
+            <tr>
+                <td>{{ ex.exercise_name }}</td>
+                <td>{{ ex.sets_prescribed }}</td>
+                <td>{{ ex.reps_prescribed }}</td>
+                <td>{{ ex.rest_seconds or '-' }}s</td>
+                <td>{{ ex.notes or '' }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endfor %}
+
+{% else %}
+<div class="card text-center">
+    <p class="text-muted">No active plan. Generate one to get started!</p>
+    <a href="{{ url_for('generate_plan') }}" class="btn btn-primary mt-2">Generate Plan</a>
+</div>
+{% endif %}
+{% endblock %}

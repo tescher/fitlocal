@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}FitLocal - Settings{% endblock %}
+{% block content %}
+<h1>Settings</h1>
+
+<div class="card" style="padding: 0; overflow: hidden;">
+    <a href="{{ url_for('setup') }}" class="link-row">
+        <strong>Edit Profile</strong>
+        <p class="text-muted">Update your name, age, fitness level, and goals</p>
+    </a>
+    <a href="{{ url_for('generate_plan') }}" class="link-row">
+        <strong>Generate New Plan</strong>
+        <p class="text-muted">Create a new AI-generated workout plan</p>
+    </a>
+    <a href="{{ url_for('export_page') }}" class="link-row">
+        <strong>Export Data</strong>
+        <p class="text-muted">Download your workout log as a spreadsheet</p>
+    </a>
+</div>
+
+{% if profile %}
+<div class="card mt-2">
+    <h2>App Info</h2>
+    <p><strong>FitLocal</strong> &mdash; Personal Workout Trainer</p>
+    <p class="text-muted">Running on your home network. Access from any device at this address.</p>
+</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}FitLocal - Session Detail{% endblock %}
+{% block content %}
+<h1>{{ session_obj.date.strftime('%B %d, %Y') }}</h1>
+{% if session_obj.planned_workout %}
+    <p class="text-muted mb-2">{{ session_obj.planned_workout.workout_name }}</p>
+{% endif %}
+
+<div class="card mb-2">
+    {% if session_obj.overall_feeling %}
+        <p><strong>Feeling:</strong> {{ session_obj.overall_feeling }} / 5</p>
+    {% endif %}
+    {% if session_obj.session_notes %}
+        <p><strong>Notes:</strong> {{ session_obj.session_notes }}</p>
+    {% endif %}
+</div>
+
+{% for exercise_name, sets in exercises.items() %}
+<div class="exercise-block">
+    <h3>{{ exercise_name }}</h3>
+    <table>
+        <thead>
+            <tr>
+                <th>Set</th>
+                <th>Weight (lbs)</th>
+                <th>Reps</th>
+                <th>RPE</th>
+                <th>Notes</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for s in sets %}
+            <tr>
+                <td>{{ s.set_number }}</td>
+                <td>{{ s.weight_lbs or '-' }}</td>
+                <td>{{ s.reps_completed or '-' }}</td>
+                <td>{{ s.rpe or '-' }}</td>
+                <td>{{ s.notes or '' }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endfor %}
+
+<a href="{{ url_for('history') }}" class="btn btn-secondary">Back to History</a>
+{% endblock %}

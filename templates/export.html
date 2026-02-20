@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}FitLocal - Export{% endblock %}
+{% block content %}
+<h1>Export Workout Log</h1>
+
+<div class="card">
+    <p class="mb-2">Download your complete workout history as an Excel spreadsheet.</p>
+    <p class="text-muted mb-2">The export includes: Date, Workout Name, Exercise, Set, Weight, Reps, RPE, and Notes for every logged set.</p>
+    <a href="{{ url_for('export_download') }}" class="btn btn-primary">Download XLSX</a>
+</div>
+{% endblock %}

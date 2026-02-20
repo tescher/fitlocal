@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}FitLocal - Progress Review{% endblock %}
+{% block content %}
+<h1>AI Progress Review</h1>
+
+{% if last_review %}
+<div class="card mb-2">
+    <p class="text-muted mb-2">Last review: {{ last_review.created_at.strftime('%B %d, %Y at %I:%M %p') }}</p>
+
+    {% if review_data %}
+        <div class="review-section">
+            <h3>What's Working</h3>
+            <p>{{ review_data.whats_working }}</p>
+        </div>
+
+        <div class="review-section">
+            <h3>Watch Out For</h3>
+            <p>{{ review_data.watch_out_for }}</p>
+        </div>
+
+        <div class="review-section">
+            <h3>Suggestions</h3>
+            <ul>
+                {% for suggestion in review_data.suggestions %}
+                    <li>{{ suggestion }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+
+        <div class="review-section">
+            <h3>Overall Assessment</h3>
+            <p>{{ review_data.overall_assessment }}</p>
+        </div>
+    {% else %}
+        <p>{{ last_review.review_text }}</p>
+    {% endif %}
+</div>
+{% else %}
+<div class="card mb-2">
+    <p class="text-muted">No progress reviews yet. Log some workouts and then generate a review!</p>
+</div>
+{% endif %}
+
+<form method="POST" action="{{ url_for('generate_review') }}">
+    <button type="submit" class="btn btn-primary">Generate New Review</button>
+</form>
+{% endblock %}

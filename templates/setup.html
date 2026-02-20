@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}FitLocal - Profile Setup{% endblock %}
+{% block content %}
+<h1>{{ 'Edit Profile' if profile else 'Profile Setup' }}</h1>
+
+<form method="POST" class="card">
+    <div class="form-group">
+        <label for="name">Name</label>
+        <input type="text" id="name" name="name" required value="{{ profile.name if profile else '' }}">
+    </div>
+
+    <div class="form-row">
+        <div class="form-group">
+            <label for="age">Age</label>
+            <input type="number" id="age" name="age" required min="10" max="120" value="{{ profile.age if profile else '' }}">
+        </div>
+        <div class="form-group">
+            <label for="sex">Sex</label>
+            <select id="sex" name="sex" required>
+                <option value="">Select...</option>
+                <option value="Male" {{ 'selected' if profile and profile.sex == 'Male' }}>Male</option>
+                <option value="Female" {{ 'selected' if profile and profile.sex == 'Female' }}>Female</option>
+                <option value="Other" {{ 'selected' if profile and profile.sex == 'Other' }}>Other</option>
+            </select>
+        </div>
+    </div>
+
+    <div class="form-group">
+        <label for="fitness_level">Fitness Level</label>
+        <select id="fitness_level" name="fitness_level" required>
+            <option value="">Select...</option>
+            <option value="Beginner" {{ 'selected' if profile and profile.fitness_level == 'Beginner' }}>Beginner</option>
+            <option value="Intermediate" {{ 'selected' if profile and profile.fitness_level == 'Intermediate' }}>Intermediate</option>
+            <option value="Advanced" {{ 'selected' if profile and profile.fitness_level == 'Advanced' }}>Advanced</option>
+        </select>
+    </div>
+
+    <div class="form-group">
+        <label for="goals">Goals</label>
+        <textarea id="goals" name="goals" required placeholder="e.g. lose weight, build muscle, train for a 5K">{{ profile.goals if profile else '' }}</textarea>
+    </div>
+
+    <button type="submit" class="btn btn-primary">{{ 'Update Profile' if profile else 'Save & Continue' }}</button>
+</form>
+{% endblock %}

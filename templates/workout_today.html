@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}FitLocal - Today's Workout{% endblock %}
+{% block content %}
+<h1>{{ workout.workout_name }}</h1>
+<p class="text-muted mb-2">{{ today_name }}'s Workout</p>
+
+<form method="POST" action="{{ url_for('workout_log') }}">
+    <input type="hidden" name="planned_workout_id" value="{{ workout.id }}">
+
+    {% for exercise in exercises %}
+    <div class="exercise-block">
+        <h3>{{ exercise.exercise_name }}</h3>
+        <div class="exercise-meta">
+            {{ exercise.sets_prescribed }} sets x {{ exercise.reps_prescribed }} reps
+            {% if exercise.rest_seconds %} | Rest: {{ exercise.rest_seconds }}s{% endif %}
+            {% if exercise.notes %} | {{ exercise.notes }}{% endif %}
+        </div>
+
+        <table class="log-table">
+            <thead>
+                <tr>
+                    <th>Set</th>
+                    <th>Weight (lbs)</th>
+                    <th>Reps</th>
+                    <th>RPE</th>
+                    <th>Notes</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for set_num in range(1, exercise.sets_prescribed + 1) %}
+                <tr>
+                    <td>
+                        {{ set_num }}
+                        <input type="hidden" name="exercise_name" value="{{ exercise.exercise_name }}">
+                        <input type="hidden" name="set_number" value="{{ set_num }}">
+                    </td>
+                    <td><input type="number" name="weight" step="0.5" min="0" placeholder="0"></td>
+                    <td><input type="number" name="reps" min="0" placeholder="0"></td>
+                    <td>
+                        <select name="rpe">
+                            <option value="">-</option>
+                            {% for r in range(1, 11) %}
+                            <option value="{{ r }}">{{ r }}</option>
+                            {% endfor %}
+                        </select>
+                    </td>
+                    <td><input type="text" name="set_notes" placeholder=""></td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endfor %}
+
+    <div class="card">
+        <div class="form-group">
+            <label>How did it feel?</label>
+            <div class="feeling-group">
+                {% for i in range(1, 6) %}
+                <label>
+                    <input type="radio" name="overall_feeling" value="{{ i }}">
+                    <span>{{ i }}{% if i == 1 %} Rough{% elif i == 3 %} OK{% elif i == 5 %} Great{% endif %}</span>
+                </label>
+                {% endfor %}
+            </div>
+        </div>
+
+        <div class="form-group">
+            <label for="session_notes">Session Notes</label>
+            <textarea id="session_notes" name="session_notes" placeholder="How was the workout? Anything to note?"></textarea>
+        </div>
+
+        <button type="submit" class="btn btn-success">Log Workout</button>
+    </div>
+</form>
+{% endblock %}

@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}FitLocal - Dashboard{% endblock %}
+{% block content %}
+<h1>Welcome, {{ profile.name }}!</h1>
+
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="stat-value">{{ days_trained }}</div>
+        <div class="stat-label">Days This Week</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value">{{ last_session.date.strftime('%b %d') if last_session else '---' }}</div>
+        <div class="stat-label">Last Session</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value">{{ active_plan.name[:15] if active_plan else 'None' }}</div>
+        <div class="stat-label">Active Plan</div>
+    </div>
+</div>
+
+{% if active_plan %}
+    <div class="card">
+        <h2>Today - {{ today_name }}</h2>
+        {% if todays_workout %}
+            <p class="mb-2">Scheduled: <strong>{{ todays_workout.workout_name }}</strong></p>
+            <a href="{{ url_for('workout_today') }}" class="btn btn-primary">Start Workout</a>
+        {% else %}
+            <p class="text-muted">No workout scheduled today. Rest day!</p>
+        {% endif %}
+    </div>
+{% else %}
+    <div class="card">
+        <h2>Get Started</h2>
+        <p class="mb-2">You don't have an active workout plan yet.</p>
+        <a href="{{ url_for('generate_plan') }}" class="btn btn-primary">Generate a Plan</a>
+    </div>
+{% endif %}
+{% endblock %}
