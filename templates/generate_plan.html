@@ -11,11 +11,34 @@
     <p><strong>Goals:</strong> {{ profile.goals }}</p>
 </div>
 
+<!-- Loading overlay -->
+<div id="loadingOverlay" class="loading-overlay" style="display:none;">
+    <div class="loading-card">
+        <div class="loading-spinner"></div>
+        <h2>Building Your Plan</h2>
+        <p class="text-muted">Generating your plan with AI — this usually takes 30-60 seconds.</p>
+        <p class="loading-timer" id="loadingTimer">0s</p>
+    </div>
+</div>
+
 {% if pending_plan %}
     <div class="card">
         <h2>{{ pending_plan.plan_name }}</h2>
         <p class="text-muted mb-2">{{ pending_plan.description }}</p>
-        <p class="mb-2"><strong>{{ pending_plan.days_per_week }} days per week</strong></p>
+        <p class="mb-2"><strong>{{ pending_plan.days_per_week }} days per week</strong> | {{ pending_plan.get('total_weeks', 12) }} weeks</p>
+
+        {% if pending_plan.phases %}
+        <div class="mb-2">
+            <h3>Training Phases</h3>
+            {% for phase in pending_plan.phases %}
+            <div class="phase-preview">
+                <span class="phase-badge {{ phase.phase_type }}">{{ phase.phase_type|upper }}</span>
+                <strong>{{ phase.phase_name }}</strong> (Weeks {{ phase.week_start }}-{{ phase.week_end }})
+                <p class="text-muted">{{ phase.description }}</p>
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
 
         {% for workout in pending_plan.workouts %}
             <div class="exercise-block">
@@ -23,6 +46,7 @@
                 <table>
                     <thead>
                         <tr>
+                            <th>Type</th>
                             <th>Exercise</th>
                             <th>Sets</th>
                             <th>Reps</th>
@@ -32,7 +56,8 @@
                     </thead>
                     <tbody>
                         {% for ex in workout.exercises %}
-                        <tr>
+                        <tr class="exercise-row-{{ ex.get('type', 'main') }}">
+                            <td><span class="type-badge {{ ex.get('type', 'main') }}">{{ ex.get('type', 'main') }}</span></td>
                             <td>{{ ex.name }}</td>
                             <td>{{ ex.sets }}</td>
                             <td>{{ ex.reps }}</td>
@@ -49,14 +74,25 @@
             <form method="POST" action="{{ url_for('confirm_plan') }}">
                 <button type="submit" class="btn btn-success">Activate This Plan</button>
             </form>
-            <form method="POST" action="{{ url_for('generate_plan_api') }}">
+            <form method="POST" action="{{ url_for('generate_plan_api') }}" onsubmit="showLoading()">
                 <button type="submit" class="btn btn-secondary">Regenerate</button>
             </form>
         </div>
     </div>
 {% else %}
-    <form method="POST" action="{{ url_for('generate_plan_api') }}">
+    <form method="POST" action="{{ url_for('generate_plan_api') }}" onsubmit="showLoading()">
         <button type="submit" class="btn btn-primary">Generate My Workout Plan</button>
     </form>
 {% endif %}
+
+<script>
+function showLoading() {
+    document.getElementById('loadingOverlay').style.display = 'flex';
+    var start = Date.now();
+    setInterval(function() {
+        var elapsed = Math.floor((Date.now() - start) / 1000);
+        document.getElementById('loadingTimer').textContent = elapsed + 's';
+    }, 1000);
+}
+</script>
 {% endblock %}

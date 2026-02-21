@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}FitLocal - Nutrition Guidance{% endblock %}
+{% block content %}
+<h1>Nutrition Guidance</h1>
+
+{% if current_phase %}
+<div class="card mb-2">
+    <h2>Current Phase: {{ current_phase.phase_name }}</h2>
+    <span class="phase-badge {{ current_phase.phase_type }}">{{ current_phase.phase_type|upper }}</span>
+    <span class="text-muted">Week {{ plan.current_week }} of {{ plan.total_weeks }}</span>
+    {% if current_phase.nutrition_guide %}
+    <div class="nutrition-tip mt-2">
+        <p>{{ current_phase.nutrition_guide }}</p>
+    </div>
+    {% endif %}
+</div>
+{% endif %}
+
+{% if phases %}
+<h2>All Phase Nutrition</h2>
+{% for phase in phases %}
+<div class="card mb-2">
+    <div class="flex-between">
+        <h3>{{ phase.phase_name }}</h3>
+        <span class="phase-badge {{ phase.phase_type }}">{{ phase.phase_type|upper }}</span>
+    </div>
+    <p class="text-muted mb-1">Weeks {{ phase.week_start }}-{{ phase.week_end }}</p>
+    {% if phase.nutrition_guide %}
+    <p>{{ phase.nutrition_guide }}</p>
+    {% else %}
+    <p class="text-muted">No nutrition guide for this phase.</p>
+    {% endif %}
+</div>
+{% endfor %}
+{% else %}
+<div class="card text-center">
+    <p class="text-muted">No active plan. Generate one to see nutrition guidance!</p>
+    <a href="{{ url_for('generate_plan') }}" class="btn btn-primary mt-2">Generate Plan</a>
+</div>
+{% endif %}
+{% endblock %}

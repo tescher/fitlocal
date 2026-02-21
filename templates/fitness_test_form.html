@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}FitLocal - Take Fitness Test{% endblock %}
+{% block content %}
+<h1>Fitness Test</h1>
+<p class="text-muted mb-2">Do your best on each exercise. Record your max effort below.</p>
+
+<form method="POST" action="{{ url_for('fitness_test_new') }}">
+    <div class="card mb-2">
+        <div class="form-group">
+            <label for="pushups">Push-Ups (max reps)</label>
+            <p class="text-muted">Do as many push-ups as you can without stopping. Full range of motion.</p>
+            <input type="number" id="pushups" name="pushups" min="0" placeholder="0">
+        </div>
+
+        <div class="form-group">
+            <label for="pullups">Pull-Ups (max reps)</label>
+            <p class="text-muted">Full dead-hang pull-ups, chin over bar. Use assisted if needed and note it.</p>
+            <input type="number" id="pullups" name="pullups" min="0" placeholder="0">
+        </div>
+
+        <div class="form-group">
+            <label for="wall_sit_seconds">Wall Sit (seconds)</label>
+            <p class="text-muted">Back flat against wall, thighs parallel to floor. Time until failure.</p>
+            <input type="number" id="wall_sit_seconds" name="wall_sit_seconds" min="0" placeholder="0">
+        </div>
+
+        <div class="form-group">
+            <label for="toe_touch_inches">Toe Touch (inches past toes)</label>
+            <p class="text-muted">Standing forward fold. Measure inches past toes (negative if you can't reach).</p>
+            <input type="number" id="toe_touch_inches" name="toe_touch_inches" step="0.5" placeholder="0">
+        </div>
+
+        <div class="form-group">
+            <label for="plank_seconds">Plank Hold (seconds)</label>
+            <p class="text-muted">Forearm plank, body straight. Time until form breaks.</p>
+            <input type="number" id="plank_seconds" name="plank_seconds" min="0" placeholder="0">
+        </div>
+
+        <div class="form-group">
+            <label for="vertical_jump_inches">Vertical Jump (inches)</label>
+            <p class="text-muted">Standing vertical jump. Measure from standing reach to peak.</p>
+            <input type="number" id="vertical_jump_inches" name="vertical_jump_inches" step="0.5" min="0" placeholder="0">
+        </div>
+
+        <div class="form-group">
+            <label for="notes">Notes</label>
+            <textarea id="notes" name="notes" placeholder="Any notes about the test (e.g., used assisted pull-ups, felt tired)"></textarea>
+        </div>
+    </div>
+
+    <button type="submit" class="btn btn-success">Save Fitness Test</button>
+    <a href="{{ url_for('fitness_test') }}" class="btn btn-secondary">Cancel</a>
+</form>
+{% endblock %}

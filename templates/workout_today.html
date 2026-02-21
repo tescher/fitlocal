@@ -4,17 +4,51 @@
 <h1>{{ workout.workout_name }}</h1>
 <p class="text-muted mb-2">{{ today_name }}'s Workout</p>
 
+<!-- Timer Card (sticky) -->
+<div class="timer-card" id="timerCard">
+    <div class="timer-row">
+        <div class="timer-section">
+            <span class="timer-label">Session</span>
+            <span class="timer-display" id="sessionTimer">00:00</span>
+        </div>
+        <div class="timer-section">
+            <span class="timer-label">Rest</span>
+            <span class="timer-display" id="restTimer">--:--</span>
+        </div>
+    </div>
+    <div class="timer-buttons">
+        <button type="button" class="btn-timer" onclick="startRest(60)">1:00</button>
+        <button type="button" class="btn-timer" onclick="startRest(90)">1:30</button>
+        <button type="button" class="btn-timer" onclick="startRest(120)">2:00</button>
+        <button type="button" class="btn-timer btn-timer-stop" onclick="stopRest()">Stop</button>
+    </div>
+</div>
+
 <form method="POST" action="{{ url_for('workout_log') }}">
     <input type="hidden" name="planned_workout_id" value="{{ workout.id }}">
 
-    {% for exercise in exercises %}
-    <div class="exercise-block">
+    {% if warmup_exercises %}
+    <div class="section-header warmup-header">Warm-Up</div>
+    {% for exercise in warmup_exercises %}
+    <div class="exercise-block warmup-block">
         <h3>{{ exercise.exercise_name }}</h3>
         <div class="exercise-meta">
             {{ exercise.sets_prescribed }} sets x {{ exercise.reps_prescribed }} reps
             {% if exercise.rest_seconds %} | Rest: {{ exercise.rest_seconds }}s{% endif %}
             {% if exercise.notes %} | {{ exercise.notes }}{% endif %}
         </div>
+        {% if exercise.form_cues %}
+        <details class="form-cues">
+            <summary>Form Cues</summary>
+            <p>{{ exercise.form_cues }}</p>
+        </details>
+        {% endif %}
+        {% if exercise.exercise_name in last_perf %}
+        <div class="last-perf-badge">
+            Last: {{ last_perf[exercise.exercise_name].weight }}lbs x {{ last_perf[exercise.exercise_name].reps }} reps
+            ({{ last_perf[exercise.exercise_name].date.strftime('%b %d') }})
+        </div>
+        {% endif %}
 
         <table class="log-table">
             <thead>
@@ -51,6 +85,127 @@
         </table>
     </div>
     {% endfor %}
+    {% endif %}
+
+    {% if main_exercises %}
+    <div class="section-header main-header">Main Workout</div>
+    {% for exercise in main_exercises %}
+    <div class="exercise-block">
+        <h3>{{ exercise.exercise_name }}</h3>
+        <div class="exercise-meta">
+            {{ exercise.sets_prescribed }} sets x {{ exercise.reps_prescribed }} reps
+            {% if exercise.rest_seconds %} | Rest: {{ exercise.rest_seconds }}s{% endif %}
+            {% if exercise.notes %} | {{ exercise.notes }}{% endif %}
+        </div>
+        {% if exercise.form_cues %}
+        <details class="form-cues">
+            <summary>Form Cues</summary>
+            <p>{{ exercise.form_cues }}</p>
+        </details>
+        {% endif %}
+        {% if exercise.exercise_name in last_perf %}
+        <div class="last-perf-badge">
+            Last: {{ last_perf[exercise.exercise_name].weight }}lbs x {{ last_perf[exercise.exercise_name].reps }} reps
+            ({{ last_perf[exercise.exercise_name].date.strftime('%b %d') }})
+        </div>
+        {% endif %}
+
+        <table class="log-table">
+            <thead>
+                <tr>
+                    <th>Set</th>
+                    <th>Weight (lbs)</th>
+                    <th>Reps</th>
+                    <th>RPE</th>
+                    <th>Notes</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for set_num in range(1, exercise.sets_prescribed + 1) %}
+                <tr>
+                    <td>
+                        {{ set_num }}
+                        <input type="hidden" name="exercise_name" value="{{ exercise.exercise_name }}">
+                        <input type="hidden" name="set_number" value="{{ set_num }}">
+                    </td>
+                    <td><input type="number" name="weight" step="0.5" min="0" placeholder="0"></td>
+                    <td><input type="number" name="reps" min="0" placeholder="0"></td>
+                    <td>
+                        <select name="rpe">
+                            <option value="">-</option>
+                            {% for r in range(1, 11) %}
+                            <option value="{{ r }}">{{ r }}</option>
+                            {% endfor %}
+                        </select>
+                    </td>
+                    <td><input type="text" name="set_notes" placeholder=""></td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endfor %}
+    {% endif %}
+
+    {% if cooldown_exercises %}
+    <div class="section-header cooldown-header">Cool-Down</div>
+    {% for exercise in cooldown_exercises %}
+    <div class="exercise-block cooldown-block">
+        <h3>{{ exercise.exercise_name }}</h3>
+        <div class="exercise-meta">
+            {{ exercise.sets_prescribed }} sets x {{ exercise.reps_prescribed }} reps
+            {% if exercise.rest_seconds %} | Rest: {{ exercise.rest_seconds }}s{% endif %}
+            {% if exercise.notes %} | {{ exercise.notes }}{% endif %}
+        </div>
+        {% if exercise.form_cues %}
+        <details class="form-cues">
+            <summary>Form Cues</summary>
+            <p>{{ exercise.form_cues }}</p>
+        </details>
+        {% endif %}
+        {% if exercise.exercise_name in last_perf %}
+        <div class="last-perf-badge">
+            Last: {{ last_perf[exercise.exercise_name].weight }}lbs x {{ last_perf[exercise.exercise_name].reps }} reps
+            ({{ last_perf[exercise.exercise_name].date.strftime('%b %d') }})
+        </div>
+        {% endif %}
+
+        <table class="log-table">
+            <thead>
+                <tr>
+                    <th>Set</th>
+                    <th>Weight (lbs)</th>
+                    <th>Reps</th>
+                    <th>RPE</th>
+                    <th>Notes</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for set_num in range(1, exercise.sets_prescribed + 1) %}
+                <tr>
+                    <td>
+                        {{ set_num }}
+                        <input type="hidden" name="exercise_name" value="{{ exercise.exercise_name }}">
+                        <input type="hidden" name="set_number" value="{{ set_num }}">
+                    </td>
+                    <td><input type="number" name="weight" step="0.5" min="0" placeholder="0"></td>
+                    <td><input type="number" name="reps" min="0" placeholder="0"></td>
+                    <td>
+                        <select name="rpe">
+                            <option value="">-</option>
+                            {% for r in range(1, 11) %}
+                            <option value="{{ r }}">{{ r }}</option>
+                            {% endfor %}
+                        </select>
+                    </td>
+                    <td><input type="text" name="set_notes" placeholder=""></td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endfor %}
+    {% endif %}
 
     <div class="card">
         <div class="form-group">
@@ -73,4 +228,73 @@
         <button type="submit" class="btn btn-success">Log Workout</button>
     </div>
 </form>
+
+<script>
+// Session elapsed timer
+let sessionStart = Date.now();
+let sessionInterval = setInterval(function() {
+    let elapsed = Math.floor((Date.now() - sessionStart) / 1000);
+    let mins = Math.floor(elapsed / 60).toString().padStart(2, '0');
+    let secs = (elapsed % 60).toString().padStart(2, '0');
+    document.getElementById('sessionTimer').textContent = mins + ':' + secs;
+}, 1000);
+
+// Rest countdown timer
+let restInterval = null;
+let restRemaining = 0;
+
+function startRest(seconds) {
+    if (restInterval) clearInterval(restInterval);
+    restRemaining = seconds;
+    let display = document.getElementById('restTimer');
+    let card = document.getElementById('timerCard');
+    card.classList.remove('timer-done');
+
+    restInterval = setInterval(function() {
+        restRemaining--;
+        if (restRemaining <= 0) {
+            clearInterval(restInterval);
+            restInterval = null;
+            display.textContent = '00:00';
+            card.classList.add('timer-done');
+            playBeep();
+            return;
+        }
+        let mins = Math.floor(restRemaining / 60).toString().padStart(2, '0');
+        let secs = (restRemaining % 60).toString().padStart(2, '0');
+        display.textContent = mins + ':' + secs;
+    }, 1000);
+
+    let mins = Math.floor(seconds / 60).toString().padStart(2, '0');
+    let secs = (seconds % 60).toString().padStart(2, '0');
+    display.textContent = mins + ':' + secs;
+}
+
+function stopRest() {
+    if (restInterval) {
+        clearInterval(restInterval);
+        restInterval = null;
+    }
+    document.getElementById('restTimer').textContent = '--:--';
+    document.getElementById('timerCard').classList.remove('timer-done');
+}
+
+function playBeep() {
+    try {
+        let ctx = new (window.AudioContext || window.webkitAudioContext)();
+        // Play 3 short beeps
+        for (let i = 0; i < 3; i++) {
+            let osc = ctx.createOscillator();
+            let gain = ctx.createGain();
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.frequency.value = 880;
+            osc.type = 'square';
+            gain.gain.value = 0.3;
+            osc.start(ctx.currentTime + i * 0.2);
+            osc.stop(ctx.currentTime + i * 0.2 + 0.15);
+        }
+    } catch(e) {}
+}
+</script>
 {% endblock %}

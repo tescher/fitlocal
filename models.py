@@ -14,6 +14,10 @@ class UserProfile(db.Model):
     goals = db.Column(db.Text, nullable=False)
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    # Streak tracking
+    current_streak = db.Column(db.Integer, default=0)
+    longest_streak = db.Column(db.Integer, default=0)
+    last_workout_date = db.Column(db.Date, nullable=True)
 
 
 class WorkoutPlan(db.Model):
@@ -27,8 +31,13 @@ class WorkoutPlan(db.Model):
     is_active = db.Column(db.Boolean, default=False)
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     notes = db.Column(db.Text)
+    # Periodization
+    total_weeks = db.Column(db.Integer, default=12)
+    current_week = db.Column(db.Integer, default=1)
+    start_date = db.Column(db.Date, nullable=True)
 
     planned_workouts = db.relationship("PlannedWorkout", backref="plan", cascade="all, delete-orphan")
+    phases = db.relationship("TrainingPhase", backref="plan", cascade="all, delete-orphan", order_by="TrainingPhase.order_index")
 
 
 class Exercise(db.Model):
@@ -60,6 +69,9 @@ class PlannedExercise(db.Model):
     reps_prescribed = db.Column(db.String(50), nullable=False)
     rest_seconds = db.Column(db.Integer)
     notes = db.Column(db.Text)
+    # New fields
+    exercise_type = db.Column(db.String(20), default="main")  # warmup, main, cooldown
+    form_cues = db.Column(db.Text)
 
 
 class WorkoutSession(db.Model):
@@ -97,3 +109,41 @@ class AIReview(db.Model):
     review_text = db.Column(db.Text)
     suggestions_json = db.Column(db.Text)
     data_summary = db.Column(db.Text)
+
+
+class FitnessTest(db.Model):
+    __tablename__ = "fitness_test"
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user_profile.id"), nullable=False)
+    test_date = db.Column(db.Date, default=date.today, nullable=False)
+    pushups = db.Column(db.Integer)
+    pullups = db.Column(db.Integer)
+    wall_sit_seconds = db.Column(db.Integer)
+    toe_touch_inches = db.Column(db.Float)
+    plank_seconds = db.Column(db.Integer)
+    vertical_jump_inches = db.Column(db.Float)
+    notes = db.Column(db.Text)
+
+
+class TrainingPhase(db.Model):
+    __tablename__ = "training_phase"
+    id = db.Column(db.Integer, primary_key=True)
+    plan_id = db.Column(db.Integer, db.ForeignKey("workout_plan.id"), nullable=False)
+    phase_name = db.Column(db.String(100), nullable=False)
+    phase_type = db.Column(db.String(20), nullable=False)  # progressive or recovery
+    week_start = db.Column(db.Integer, nullable=False)
+    week_end = db.Column(db.Integer, nullable=False)
+    description = db.Column(db.Text)
+    nutrition_guide = db.Column(db.Text)
+    order_index = db.Column(db.Integer, default=0)
+
+
+class ExerciseLibrary(db.Model):
+    __tablename__ = "exercise_library"
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(200), unique=True, nullable=False)
+    muscle_group = db.Column(db.String(100))
+    equipment = db.Column(db.String(100))
+    description = db.Column(db.Text)
+    form_cues = db.Column(db.Text)
+    difficulty = db.Column(db.String(20))

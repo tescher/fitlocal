@@ -13,10 +13,41 @@
         <div class="stat-label">Last Session</div>
     </div>
     <div class="stat-card">
-        <div class="stat-value">{{ active_plan.name[:15] if active_plan else 'None' }}</div>
-        <div class="stat-label">Active Plan</div>
+        <div class="stat-value streak-value">{{ profile.current_streak }}</div>
+        <div class="stat-label">Streak</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value">{{ profile.longest_streak }}</div>
+        <div class="stat-label">Best Streak</div>
     </div>
 </div>
+
+<!-- Mini Calendar -->
+<div class="mini-calendar">
+    {% for day in mini_cal %}
+    <div class="mini-day {{ 'completed' if day.completed else '' }} {{ 'today' if day.is_today else '' }}">
+        <span class="mini-day-name">{{ day.date.strftime('%a') }}</span>
+        <span class="mini-day-num">{{ day.date.day }}</span>
+        {% if day.completed %}<span class="mini-check">&#10003;</span>{% endif %}
+    </div>
+    {% endfor %}
+</div>
+
+{% if current_phase %}
+<div class="phase-card">
+    <div class="phase-header">
+        <span class="phase-badge {{ current_phase.phase_type }}">{{ current_phase.phase_type|upper }}</span>
+        <strong>{{ current_phase.phase_name }}</strong>
+        <span class="text-muted">Week {{ active_plan.current_week }} of {{ active_plan.total_weeks }}</span>
+    </div>
+    <p class="text-muted">{{ current_phase.description }}</p>
+    {% if current_phase.nutrition_guide %}
+    <div class="nutrition-tip">
+        <strong>Nutrition Tip:</strong> {{ current_phase.nutrition_guide }}
+    </div>
+    {% endif %}
+</div>
+{% endif %}
 
 {% if active_plan %}
     <div class="card">

@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}FitLocal - Calendar{% endblock %}
+{% block content %}
+<h1>Workout Calendar</h1>
+
+<div class="calendar-nav">
+    <a href="{{ url_for('calendar_view', year=prev_year, month=prev_month) }}" class="btn btn-secondary">&larr; Prev</a>
+    <h2>{{ month_name }} {{ year }}</h2>
+    <a href="{{ url_for('calendar_view', year=next_year, month=next_month) }}" class="btn btn-secondary">Next &rarr;</a>
+</div>
+
+{% if profile %}
+<div class="streak-display mb-2">
+    Current Streak: <strong>{{ profile.current_streak }}</strong> | Best Streak: <strong>{{ profile.longest_streak }}</strong>
+</div>
+{% endif %}
+
+<div class="calendar-grid">
+    <div class="cal-header">Mon</div>
+    <div class="cal-header">Tue</div>
+    <div class="cal-header">Wed</div>
+    <div class="cal-header">Thu</div>
+    <div class="cal-header">Fri</div>
+    <div class="cal-header">Sat</div>
+    <div class="cal-header">Sun</div>
+
+    {% for week in weeks %}
+        {% for day in week %}
+            {% if day is none %}
+                <div class="cal-day empty"></div>
+            {% else %}
+                <div class="cal-day {{ 'completed' if day.completed else '' }} {{ 'missed' if day.missed else '' }} {{ 'today' if day.is_today else '' }} {{ 'planned' if day.planned and not day.is_past and not day.is_today else '' }}">
+                    <span class="cal-day-num">{{ day.day }}</span>
+                    {% if day.completed %}
+                        <span class="cal-check">&#10003;</span>
+                    {% elif day.missed %}
+                        <span class="cal-miss">&#10007;</span>
+                    {% endif %}
+                </div>
+            {% endif %}
+        {% endfor %}
+    {% endfor %}
+</div>
+
+<div class="calendar-legend mt-2">
+    <span class="legend-item"><span class="legend-dot completed"></span> Completed</span>
+    <span class="legend-item"><span class="legend-dot missed"></span> Missed</span>
+    <span class="legend-item"><span class="legend-dot today"></span> Today</span>
+    <span class="legend-item"><span class="legend-dot planned"></span> Planned</span>
+</div>
+{% endblock %}

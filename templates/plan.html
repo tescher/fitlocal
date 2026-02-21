@@ -7,8 +7,28 @@
 <div class="card mb-2">
     <h2>{{ plan.name }}</h2>
     <p class="text-muted">{{ plan.description }}</p>
-    <p><strong>{{ plan.days_per_week }} days per week</strong></p>
+    <p><strong>{{ plan.days_per_week }} days per week</strong> | {{ plan.total_weeks }} weeks | Week {{ plan.current_week }}</p>
 </div>
+
+{% if phases %}
+<div class="card mb-2">
+    <h2>Phase Timeline</h2>
+    <div class="phase-timeline">
+        {% for phase in phases %}
+        <div class="phase-timeline-item {{ 'active' if current_phase and current_phase.id == phase.id else '' }} {{ phase.phase_type }}">
+            <div class="phase-timeline-header">
+                <span class="phase-badge {{ phase.phase_type }}">{{ phase.phase_type|upper }}</span>
+                <strong>{{ phase.phase_name }}</strong>
+            </div>
+            <div class="phase-timeline-meta">
+                Weeks {{ phase.week_start }}-{{ phase.week_end }}
+            </div>
+            <p class="text-muted">{{ phase.description }}</p>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
 
 {% for workout in workouts %}
 <div class="exercise-block">
@@ -16,6 +36,7 @@
     <table>
         <thead>
             <tr>
+                <th>Type</th>
                 <th>Exercise</th>
                 <th>Sets</th>
                 <th>Reps</th>
@@ -25,7 +46,8 @@
         </thead>
         <tbody>
             {% for ex in workout.planned_exercises %}
-            <tr>
+            <tr class="exercise-row-{{ ex.exercise_type }}">
+                <td><span class="type-badge {{ ex.exercise_type }}">{{ ex.exercise_type }}</span></td>
                 <td>{{ ex.exercise_name }}</td>
                 <td>{{ ex.sets_prescribed }}</td>
                 <td>{{ ex.reps_prescribed }}</td>

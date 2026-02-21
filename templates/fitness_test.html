@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}FitLocal - Fitness Test{% endblock %}
+{% block content %}
+<h1>Fitness Test</h1>
+
+<div class="card mb-2">
+    <p>Track your baseline fitness and measure progress over time. Retest every 30+ days to see how far you've come!</p>
+    {% if can_retest %}
+        <a href="{{ url_for('fitness_test_new') }}" class="btn btn-primary mt-1">Take Fitness Test</a>
+    {% else %}
+        <p class="text-muted mt-1">Next retest available in {{ 30 - days_since }} days.</p>
+        <a href="{{ url_for('fitness_test_new') }}" class="btn btn-secondary mt-1">Take Test Anyway</a>
+    {% endif %}
+</div>
+
+{% if tests %}
+<h2>Test History</h2>
+{% for test in tests %}
+<div class="card mb-2">
+    <h3>{{ test.test_date.strftime('%B %d, %Y') }}</h3>
+    <div class="stats-grid">
+        <div class="stat-card">
+            <div class="stat-value">{{ test.pushups }}</div>
+            <div class="stat-label">Push-Ups</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value">{{ test.pullups }}</div>
+            <div class="stat-label">Pull-Ups</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value">{{ test.wall_sit_seconds }}s</div>
+            <div class="stat-label">Wall Sit</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value">{{ test.plank_seconds }}s</div>
+            <div class="stat-label">Plank</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value">{{ test.toe_touch_inches }}"</div>
+            <div class="stat-label">Toe Touch</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value">{{ test.vertical_jump_inches }}"</div>
+            <div class="stat-label">Vertical Jump</div>
+        </div>
+    </div>
+    {% if test.notes %}
+    <p class="text-muted">{{ test.notes }}</p>
+    {% endif %}
+</div>
+{% endfor %}
+{% else %}
+<div class="card text-center">
+    <p class="text-muted">No fitness tests yet. Take your first one to establish a baseline!</p>
+</div>
+{% endif %}
+{% endblock %}
