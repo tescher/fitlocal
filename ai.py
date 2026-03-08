@@ -1,10 +1,35 @@
 import json
 import os
+import re
 import anthropic
 
 
 def get_client():
     return anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+
+
+def _extract_json(text):
+    """Extract the first complete JSON object from a response string.
+
+    Handles raw JSON, ```json ... ``` blocks, and ``` ... ``` blocks.
+    Raises ValueError with a clear message if no valid JSON is found.
+    """
+    # Strip markdown code fences if present
+    fence = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
+    if fence:
+        text = fence.group(1).strip()
+
+    # Find the outermost { ... } in case there is surrounding commentary
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1:
+        raise ValueError("No JSON object found in response")
+    text = text[start: end + 1]
+
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid JSON in response: {e}") from e
 
 
 def generate_workout_plan(profile, fitness_test=None):
@@ -78,19 +103,11 @@ Return only valid JSON, no commentary."""
 
     message = client.messages.create(
         model="claude-opus-4-6",
-        max_tokens=16384,
+        max_tokens=32000,
         messages=[{"role": "user", "content": prompt}],
     )
 
-    response_text = message.content[0].text.strip()
-    if response_text.startswith("```"):
-        lines = response_text.split("\n")
-        lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        response_text = "\n".join(lines)
-
-    return json.loads(response_text)
+    return _extract_json(message.content[0].text)
 
 
 def generate_progress_review(profile, sessions_data):
@@ -126,12 +143,4 @@ Return only valid JSON, no commentary."""
         messages=[{"role": "user", "content": prompt}],
     )
 
-    response_text = message.content[0].text.strip()
-    if response_text.startswith("```"):
-        lines = response_text.split("\n")
-        lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        response_text = "\n".join(lines)
-
-    return json.loads(response_text)
+    return _extract_json(message.content[0].text)
