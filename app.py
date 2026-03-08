@@ -488,6 +488,10 @@ def workout_today():
         if perf:
             last_perf[ex.exercise_name] = perf
 
+    all_plan_workouts = PlannedWorkout.query.filter_by(
+        plan_id=active_plan.id
+    ).order_by(PlannedWorkout.order_index).all()
+
     return render_template(
         "workout_today.html",
         workout=next_workout,
@@ -496,7 +500,37 @@ def workout_today():
         cooldown_exercises=cooldown,
         all_exercises=all_exercises,
         last_perf=last_perf,
+        all_plan_workouts=all_plan_workouts,
     )
+
+
+@app.route("/workout/choose", methods=["POST"])
+def choose_workout():
+    profile = get_profile()
+    if not profile:
+        return redirect(url_for("setup"))
+    active_plan = get_active_plan()
+    if not active_plan:
+        return redirect(url_for("generate_plan"))
+
+    workout_index = request.form.get("workout_index", 0, type=int)
+
+    workout_ids = [w.id for w in active_plan.planned_workouts]
+    current_session_count = WorkoutSession.query.filter(
+        WorkoutSession.user_id == profile.id,
+        WorkoutSession.planned_workout_id.in_(workout_ids)
+    ).count()
+
+    try:
+        plan_data = json.loads(active_plan.plan_json or "{}")
+        phases = plan_data.get("phases", [])
+    except Exception:
+        phases = []
+
+    target = _session_offset_for_workout(workout_index, phases, active_plan.days_per_week or 3)
+    active_plan.session_offset = target - current_session_count
+    db.session.commit()
+    return redirect(url_for("workout_today"))
 
 
 @app.route("/workout/log", methods=["POST"])

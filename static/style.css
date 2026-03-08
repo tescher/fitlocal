@@ -968,6 +968,21 @@ tr:hover {
     }
 }
 
+/* Workout switcher on today's workout page */
+.workout-switcher {
+    margin-bottom: 1rem;
+}
+.workout-switcher select {
+    width: 100%;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 0.95rem;
+    background: var(--card);
+    color: var(--text);
+    cursor: pointer;
+}
+
 /* Last-time reference rows in the workout logging table */
 tr.last-time-row td {
     padding-top: 0;
