@@ -90,15 +90,32 @@ To keep the bookmark stable on your workout room device, assign a static local I
 
 ### Windows (Task Scheduler)
 
-1. Open Task Scheduler (`taskschd.msc`)
-2. Click "Create Basic Task"
-3. Name it "FitLocal"
-4. Trigger: "When the computer starts"
-5. Action: "Start a program"
-   - Program: `python` (or full path to `python.exe`)
-   - Arguments: `app.py`
-   - Start in: the full path to your `fitlocal/` folder
-6. Finish. Right-click the task > Properties > check "Run whether user is logged on or not"
+**Step 1: Create a wrapper batch script**
+
+Task Scheduler won't load your `.env` file automatically, so create a file called `run_fitlocal.bat` in the `fitlocal/` folder with this content:
+
+```bat
+@echo off
+set ANTHROPIC_API_KEY=sk-ant-your-key-here
+cd /d C:\Users\tim\claude-code\ai_trainer\fitlocal
+python app.py
+```
+
+Replace `sk-ant-your-key-here` with your actual API key.
+
+**Step 2: Create the scheduled task**
+
+1. Open Task Scheduler (`Win+R` → `taskschd.msc`)
+2. Click **"Create Basic Task"**
+3. Name it `FitLocal`
+4. Trigger: **"When the computer starts"**
+5. Action: **"Start a program"**
+   - Program: `C:\Users\tim\claude-code\ai_trainer\fitlocal\run_fitlocal.bat`
+   - Start in: `C:\Users\tim\claude-code\ai_trainer\fitlocal`
+6. Click Finish
+7. Right-click the task → **Properties** → check **"Run whether user is logged on or not"**
+
+Alternatively, you can skip the batch script by setting `ANTHROPIC_API_KEY` as a permanent system environment variable (Control Panel → System → Advanced System Settings → Environment Variables), then point Task Scheduler directly at `python` with argument `app.py`.
 
 ### Linux (systemd)
 
