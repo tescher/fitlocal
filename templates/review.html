@@ -21,7 +21,7 @@
         <div class="review-section">
             <h3>Suggestions</h3>
             <ul>
-                {% for suggestion in review_data.suggestions %}
+                {% for suggestion in (review_data.suggestions or []) %}
                     <li>{{ suggestion }}</li>
                 {% endfor %}
             </ul>

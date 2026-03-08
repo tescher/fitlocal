@@ -77,7 +77,7 @@ Return a JSON object with this structure:
 Return only valid JSON, no commentary."""
 
     message = client.messages.create(
-        model="claude-sonnet-4-5-20250929",
+        model="claude-opus-4-6",
         max_tokens=16384,
         messages=[{"role": "user", "content": prompt}],
     )
@@ -121,7 +121,7 @@ Return your review as JSON with these keys:
 Return only valid JSON, no commentary."""
 
     message = client.messages.create(
-        model="claude-sonnet-4-5-20250929",
+        model="claude-opus-4-6",
         max_tokens=4096,
         messages=[{"role": "user", "content": prompt}],
     )

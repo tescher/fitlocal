@@ -26,7 +26,7 @@
             </tr>
         </thead>
         <tbody>
-            {% for s in logged_sets | sort(attribute='exercise_name,set_number') %}
+            {% for s in logged_sets | sort(attribute='set_number') | sort(attribute='exercise_name') %}
             <tr>
                 <td>{{ s.exercise_name }}</td>
                 <td>{{ s.set_number }}</td>

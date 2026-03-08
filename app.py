@@ -134,9 +134,8 @@ def index():
     current_phase = get_current_phase(active_plan) if active_plan else None
 
     # Stats
-    week_start = date.today()
-    while week_start.weekday() != 0:
-        week_start = week_start.replace(day=week_start.day - 1)
+    today = date.today()
+    week_start = today - timedelta(days=today.weekday())
 
     days_trained = WorkoutSession.query.filter(
         WorkoutSession.user_id == profile.id,
@@ -632,6 +631,7 @@ def fitness_test():
     )
 
     # Check retest eligibility (30+ days since last test)
+    days_since = None
     can_retest = True
     if tests:
         days_since = (date.today() - tests[0].test_date).days
@@ -641,7 +641,7 @@ def fitness_test():
         "fitness_test.html",
         tests=tests,
         can_retest=can_retest,
-        days_since=days_since if tests else None,
+        days_since=days_since,
     )
 
 
