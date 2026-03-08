@@ -55,12 +55,57 @@ def update_plan_week(plan):
 
 
 def get_next_workout(profile_id, active_plan):
-    """Return the next PlannedWorkout in sequence based on the last completed session."""
+    """Return the next PlannedWorkout, cycling within each phase for its full duration.
+
+    Each phase has a week range (e.g. weeks 1-3). The plan's days_per_week workouts
+    in that phase repeat every week within the phase before advancing to the next phase.
+    """
     workouts = PlannedWorkout.query.filter_by(
         plan_id=active_plan.id
     ).order_by(PlannedWorkout.order_index).all()
     if not workouts:
         return None
+
+    days_per_week = active_plan.days_per_week or 3
+
+    # Count sessions completed within this plan
+    workout_ids = [w.id for w in workouts]
+    session_count = WorkoutSession.query.filter(
+        WorkoutSession.user_id == profile_id,
+        WorkoutSession.planned_workout_id.in_(workout_ids)
+    ).count()
+
+    # Try to use phase week-range data from plan_json
+    try:
+        plan_data = json.loads(active_plan.plan_json or "{}")
+        phases = plan_data.get("phases", [])
+    except Exception:
+        phases = []
+
+    if phases:
+        workout_offset = 0
+        sessions_accounted = 0
+        for phase in phases:
+            week_start = phase.get("week_start", 1)
+            week_end = phase.get("week_end", week_start)
+            num_weeks = week_end - week_start + 1
+            phase_total_sessions = num_weeks * days_per_week
+            phase_workouts = workouts[workout_offset:workout_offset + days_per_week]
+
+            if not phase_workouts:
+                break
+
+            if session_count < sessions_accounted + phase_total_sessions:
+                session_in_phase = session_count - sessions_accounted
+                return phase_workouts[session_in_phase % len(phase_workouts)]
+
+            sessions_accounted += phase_total_sessions
+            workout_offset += days_per_week
+
+        # All phases done — cycle back to first workout
+        return workouts[0]
+
+    # Fallback: simple sequential cycling (no phase data)
     last_session = (
         WorkoutSession.query
         .filter(WorkoutSession.user_id == profile_id,
@@ -95,9 +140,18 @@ def get_last_performance(user_id, exercise_name):
     sets = [s for s in last_session.logged_sets if s.exercise_name == exercise_name]
     if not sets:
         return None
-    best_weight = max((s.weight_lbs or 0) for s in sets)
-    best_reps = max((s.reps_completed or 0) for s in sets)
-    return {"weight": best_weight, "reps": best_reps, "date": last_session.date}
+    return {
+        "date": last_session.date,
+        "sets": {
+            s.set_number: {
+                "weight": s.weight_lbs,
+                "reps": s.reps_completed,
+                "rpe": s.rpe,
+                "notes": s.notes or "",
+            }
+            for s in sets
+        },
+    }
 
 
 def update_streak(profile):
@@ -473,6 +527,21 @@ def history():
         .all()
     )
     return render_template("history.html", sessions=sessions)
+
+
+@app.route("/history/<int:session_id>/delete", methods=["POST"])
+def delete_session(session_id):
+    profile = get_profile()
+    if not profile:
+        return redirect(url_for("setup"))
+    workout_session = WorkoutSession.query.get_or_404(session_id)
+    if workout_session.user_id != profile.id:
+        return redirect(url_for("history"))
+    LoggedSet.query.filter_by(session_id=session_id).delete()
+    db.session.delete(workout_session)
+    db.session.commit()
+    flash("Workout deleted.", "success")
+    return redirect(url_for("history"))
 
 
 @app.route("/history/<int:session_id>")

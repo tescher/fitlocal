@@ -182,6 +182,21 @@ h3 {
     color: var(--text);
 }
 
+.btn-delete {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 1.3rem;
+    line-height: 1;
+    padding: 0.2rem 0.5rem;
+    cursor: pointer;
+    border-radius: 4px;
+}
+.btn-delete:hover {
+    background: var(--danger);
+    color: white;
+}
+
 .btn-secondary:hover {
     background: #cbd5e1;
 }
@@ -951,4 +966,24 @@ tr:hover {
         flex-direction: column;
         align-items: flex-start;
     }
+}
+
+/* Last-time reference rows in the workout logging table */
+tr.last-time-row td {
+    padding-top: 0;
+    padding-bottom: 0.4rem;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.78rem;
+    font-style: italic;
+    color: var(--text-muted);
+    vertical-align: top;
+}
+
+td.last-time-label {
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+td.last-time-val {
+    letter-spacing: 0.01em;
 }

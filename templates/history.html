@@ -6,20 +6,27 @@
 {% if sessions %}
 <div class="card" style="padding: 0; overflow: hidden;">
     {% for s in sessions %}
-    <a href="{{ url_for('session_detail', session_id=s.id) }}" class="link-row">
-        <div class="flex-between">
-            <div>
-                <strong>{{ s.date.strftime('%b %d, %Y') }}</strong>
-                {% if s.planned_workout %}
-                    &mdash; {{ s.planned_workout.workout_name }}
-                {% endif %}
+    <div class="link-row flex-between" style="align-items: center;">
+        <a href="{{ url_for('session_detail', session_id=s.id) }}" style="flex: 1; text-decoration: none; color: inherit;">
+            <div class="flex-between">
+                <div>
+                    <strong>{{ s.date.strftime('%b %d, %Y') }}</strong>
+                    {% if s.planned_workout %}
+                        &mdash; {{ s.planned_workout.workout_name }}
+                    {% endif %}
+                </div>
+                <div class="text-muted">
+                    {{ s.logged_sets | length }} sets
+                    {% if s.overall_feeling %} | Feeling: {{ s.overall_feeling }}/5{% endif %}
+                </div>
             </div>
-            <div class="text-muted">
-                {{ s.logged_sets | length }} sets
-                {% if s.overall_feeling %} | Feeling: {{ s.overall_feeling }}/5{% endif %}
-            </div>
-        </div>
-    </a>
+        </a>
+        <form method="POST" action="{{ url_for('delete_session', session_id=s.id) }}"
+              onsubmit="return confirm('Delete this workout?')"
+              style="margin-left: 1rem; flex-shrink: 0;">
+            <button type="submit" class="btn-delete" title="Delete">&times;</button>
+        </form>
+    </div>
     {% endfor %}
 </div>
 {% else %}

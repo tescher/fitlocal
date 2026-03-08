@@ -43,13 +43,6 @@
             <p>{{ exercise.form_cues }}</p>
         </details>
         {% endif %}
-        {% if exercise.exercise_name in last_perf %}
-        <div class="last-perf-badge">
-            Last: {{ last_perf[exercise.exercise_name].weight }}lbs x {{ last_perf[exercise.exercise_name].reps }} reps
-            ({{ last_perf[exercise.exercise_name].date.strftime('%b %d') }})
-        </div>
-        {% endif %}
-
         <table class="log-table">
             <thead>
                 <tr>
@@ -80,6 +73,17 @@
                     </td>
                     <td><input type="text" name="set_notes" placeholder=""></td>
                 </tr>
+                {% set perf = last_perf.get(exercise.exercise_name) %}
+                {% if perf and set_num in perf['sets'] %}
+                {% set s = perf['sets'][set_num] %}
+                <tr class="last-time-row">
+                    <td class="last-time-label">{{ perf['date'].strftime('%b %d') }}</td>
+                    <td class="last-time-val">{{ (s['weight']|string + ' lbs') if s['weight'] else '—' }}</td>
+                    <td class="last-time-val">{{ s['reps'] if s['reps'] else '—' }}</td>
+                    <td class="last-time-val">{{ s['rpe'] if s['rpe'] else '—' }}</td>
+                    <td class="last-time-val">{{ s['notes'] if s['notes'] else '' }}</td>
+                </tr>
+                {% endif %}
                 {% endfor %}
             </tbody>
         </table>
@@ -103,13 +107,6 @@
             <p>{{ exercise.form_cues }}</p>
         </details>
         {% endif %}
-        {% if exercise.exercise_name in last_perf %}
-        <div class="last-perf-badge">
-            Last: {{ last_perf[exercise.exercise_name].weight }}lbs x {{ last_perf[exercise.exercise_name].reps }} reps
-            ({{ last_perf[exercise.exercise_name].date.strftime('%b %d') }})
-        </div>
-        {% endif %}
-
         <table class="log-table">
             <thead>
                 <tr>
@@ -140,6 +137,17 @@
                     </td>
                     <td><input type="text" name="set_notes" placeholder=""></td>
                 </tr>
+                {% set perf = last_perf.get(exercise.exercise_name) %}
+                {% if perf and set_num in perf['sets'] %}
+                {% set s = perf['sets'][set_num] %}
+                <tr class="last-time-row">
+                    <td class="last-time-label">{{ perf['date'].strftime('%b %d') }}</td>
+                    <td class="last-time-val">{{ (s['weight']|string + ' lbs') if s['weight'] else '—' }}</td>
+                    <td class="last-time-val">{{ s['reps'] if s['reps'] else '—' }}</td>
+                    <td class="last-time-val">{{ s['rpe'] if s['rpe'] else '—' }}</td>
+                    <td class="last-time-val">{{ s['notes'] if s['notes'] else '' }}</td>
+                </tr>
+                {% endif %}
                 {% endfor %}
             </tbody>
         </table>
@@ -163,13 +171,6 @@
             <p>{{ exercise.form_cues }}</p>
         </details>
         {% endif %}
-        {% if exercise.exercise_name in last_perf %}
-        <div class="last-perf-badge">
-            Last: {{ last_perf[exercise.exercise_name].weight }}lbs x {{ last_perf[exercise.exercise_name].reps }} reps
-            ({{ last_perf[exercise.exercise_name].date.strftime('%b %d') }})
-        </div>
-        {% endif %}
-
         <table class="log-table">
             <thead>
                 <tr>
@@ -200,6 +201,17 @@
                     </td>
                     <td><input type="text" name="set_notes" placeholder=""></td>
                 </tr>
+                {% set perf = last_perf.get(exercise.exercise_name) %}
+                {% if perf and set_num in perf['sets'] %}
+                {% set s = perf['sets'][set_num] %}
+                <tr class="last-time-row">
+                    <td class="last-time-label">{{ perf['date'].strftime('%b %d') }}</td>
+                    <td class="last-time-val">{{ (s['weight']|string + ' lbs') if s['weight'] else '—' }}</td>
+                    <td class="last-time-val">{{ s['reps'] if s['reps'] else '—' }}</td>
+                    <td class="last-time-val">{{ s['rpe'] if s['rpe'] else '—' }}</td>
+                    <td class="last-time-val">{{ s['notes'] if s['notes'] else '' }}</td>
+                </tr>
+                {% endif %}
                 {% endfor %}
             </tbody>
         </table>

@@ -80,17 +80,17 @@ def active_plan(application, profile):
         "days_per_week": 3, "total_weeks": 12,
         "phases": [],
         "workouts": [
-            {"day": "Monday", "name": "Upper Body", "exercises": [
+            {"day": "Workout A", "name": "Upper Body", "exercises": [
                 {"name": "Bench Press", "type": "main", "sets": 3, "reps": "8-10",
                  "rest_seconds": 90, "notes": "", "form_cues": "Feet flat"},
                 {"name": "Pull-Ups", "type": "main", "sets": 3, "reps": "6-10",
                  "rest_seconds": 90, "notes": "", "form_cues": "Full hang"},
             ]},
-            {"day": "Wednesday", "name": "Lower Body", "exercises": [
+            {"day": "Workout B", "name": "Lower Body", "exercises": [
                 {"name": "Squats", "type": "main", "sets": 4, "reps": "8-12",
                  "rest_seconds": 90, "notes": "", "form_cues": "Below parallel"},
             ]},
-            {"day": "Friday", "name": "Conditioning", "exercises": [
+            {"day": "Workout C", "name": "Conditioning", "exercises": [
                 {"name": "Burpees", "type": "main", "sets": 3, "reps": "10",
                  "rest_seconds": 60, "notes": "", "form_cues": "Full extension"},
             ]},
@@ -262,7 +262,7 @@ class TestPlanGeneration:
             "days_per_week": 3, "total_weeks": 12,
             "phases": [],
             "workouts": [
-                {"day": "Monday", "name": "Upper Body", "exercises": [
+                {"day": "Workout A", "name": "Upper Body", "exercises": [
                     {"name": "Push-Ups", "type": "main", "sets": 3, "reps": "15",
                      "rest_seconds": 60, "notes": "", "form_cues": "Body straight"}
                 ]}
@@ -292,7 +292,7 @@ class TestPlanGeneration:
             "plan_name": "Plan", "description": "", "days_per_week": 3,
             "total_weeks": 12, "phases": [],
             "workouts": [
-                {"day": "Monday", "name": "Day A", "exercises": [
+                {"day": "Workout A", "name": "Day A", "exercises": [
                     {"name": "Squat", "type": "main", "sets": 3, "reps": "10",
                      "rest_seconds": 90, "notes": "", "form_cues": ""}
                 ]},
@@ -335,7 +335,7 @@ class TestExerciseLibraryFK:
         plan_json = json.dumps({
             "plan_name": "Plan", "description": "", "days_per_week": 3,
             "total_weeks": 12, "phases": [],
-            "workouts": [{"day": "Monday", "name": "Upper", "exercises": [
+            "workouts": [{"day": "Workout A", "name": "Upper", "exercises": [
                 {"name": "Bench Press", "type": "main", "sets": 3, "reps": "8",
                  "rest_seconds": 90, "notes": "", "form_cues": ""}
             ]}]
@@ -361,7 +361,7 @@ class TestExerciseLibraryFK:
         plan_json = json.dumps({
             "plan_name": "Plan", "description": "", "days_per_week": 3,
             "total_weeks": 12, "phases": [],
-            "workouts": [{"day": "Monday", "name": "Upper", "exercises": [
+            "workouts": [{"day": "Workout A", "name": "Upper", "exercises": [
                 {"name": "Some Custom Exercise", "type": "main", "sets": 2, "reps": "10",
                  "rest_seconds": 60, "notes": "", "form_cues": ""}
             ]}]
@@ -389,7 +389,7 @@ class TestExerciseLibraryFK:
             db.session.add(lib)
             db.session.commit()
             lib_id = lib.id
-            pw = PlannedWorkout.query.filter_by(day_of_week="Monday").first()
+            pw = PlannedWorkout.query.filter_by(day_of_week="Workout A").first()
             pw_id = pw.id
             p_id = profile
 
@@ -409,7 +409,7 @@ class TestWorkoutLogging:
     def _build_form(self, application, active_plan):
         items = [("overall_feeling", "4"), ("session_notes", "Good")]
         with application.app_context():
-            pw = PlannedWorkout.query.filter_by(day_of_week="Monday").first()
+            pw = PlannedWorkout.query.filter_by(day_of_week="Workout A").first()
             items.append(("planned_workout_id", str(pw.id)))
             for ex in PlannedExercise.query.filter_by(planned_workout_id=pw.id).all():
                 for s in range(1, ex.sets_prescribed + 1):
@@ -526,7 +526,7 @@ class TestLastPerformance:
 
     def test_returns_best_set(self, application, profile, active_plan):
         with application.app_context():
-            pw = PlannedWorkout.query.filter_by(day_of_week="Monday").first()
+            pw = PlannedWorkout.query.filter_by(day_of_week="Workout A").first()
             pw_id = pw.id
 
         log_session(application, profile, pw_id, [("Bench Press", 3)])
@@ -535,12 +535,12 @@ class TestLastPerformance:
             from app import get_last_performance
             result = get_last_performance(profile, "Bench Press")
             assert result is not None
-            assert result["weight"] == 135.0
-            assert result["reps"] == 10
+            assert result["sets"][1]["weight"] == 135.0
+            assert result["sets"][1]["reps"] == 10
 
     def test_returns_most_recent_session(self, application, profile, active_plan):
         with application.app_context():
-            pw = PlannedWorkout.query.filter_by(day_of_week="Monday").first()
+            pw = PlannedWorkout.query.filter_by(day_of_week="Workout A").first()
             pw_id = pw.id
 
         log_session(application, profile, pw_id, [("Bench Press", 1)], delta_days=7)
@@ -557,7 +557,7 @@ class TestLastPerformance:
         with application.app_context():
             from app import get_last_performance
             result = get_last_performance(profile, "Bench Press")
-            assert result["weight"] == 155.0
+            assert result["sets"][1]["weight"] == 155.0
 
 
 # ---------------------------------------------------------------------------
@@ -630,7 +630,7 @@ class TestHistory:
 
     def test_history_shows_sessions(self, client, application, profile, active_plan):
         with application.app_context():
-            pw = PlannedWorkout.query.filter_by(day_of_week="Monday").first()
+            pw = PlannedWorkout.query.filter_by(day_of_week="Workout A").first()
             pw_id = pw.id
         log_session(application, profile, pw_id, [("Bench Press", 3)])
         r = client.get("/history")
@@ -639,7 +639,7 @@ class TestHistory:
 
     def test_session_detail_loads(self, client, application, profile, active_plan):
         with application.app_context():
-            pw = PlannedWorkout.query.filter_by(day_of_week="Monday").first()
+            pw = PlannedWorkout.query.filter_by(day_of_week="Workout A").first()
             pw_id = pw.id
         sid = log_session(application, profile, pw_id, [("Bench Press", 3)])
         r = client.get(f"/history/{sid}")
@@ -662,7 +662,7 @@ class TestReview:
 
     def test_generate_review(self, client, application, profile, active_plan):
         with application.app_context():
-            pw = PlannedWorkout.query.filter_by(day_of_week="Monday").first()
+            pw = PlannedWorkout.query.filter_by(day_of_week="Workout A").first()
             pw_id = pw.id
         for i in range(3):
             log_session(application, profile, pw_id, [("Bench Press", 3)], delta_days=i * 7)
@@ -716,7 +716,7 @@ class TestExport:
 
     def test_export_xlsx_download(self, client, application, profile, active_plan):
         with application.app_context():
-            pw = PlannedWorkout.query.filter_by(day_of_week="Monday").first()
+            pw = PlannedWorkout.query.filter_by(day_of_week="Workout A").first()
             pw_id = pw.id
         log_session(application, profile, pw_id, [("Bench Press", 3)])
 
@@ -772,7 +772,7 @@ class TestMiniCalendar:
 
     def test_completed_day_marked(self, application, profile, active_plan):
         with application.app_context():
-            pw = PlannedWorkout.query.filter_by(day_of_week="Monday").first()
+            pw = PlannedWorkout.query.filter_by(day_of_week="Workout A").first()
             pw_id = pw.id
         log_session(application, profile, pw_id, [("Bench Press", 1)])
         with application.app_context():
