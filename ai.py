@@ -52,7 +52,8 @@ Recent Fitness Test Results (use these to calibrate difficulty):
 Age: {profile.age}, Sex: {profile.sex}, Fitness Level: {profile.fitness_level}, Goals: {profile.goals}.
 {fitness_test_section}
 Requirements:
-- Schedule workouts for 3 days per week: Monday, Wednesday, Friday ONLY
+- Create 3 workouts per cycle labeled "Workout A", "Workout B", "Workout C"
+- The user will do them in sequence on whatever days they choose — do NOT use day names like Monday/Wednesday/Friday
 - Create a 12-week periodized plan with these phases:
   - Weeks 1-3: Foundation (build base strength and form)
   - Week 4: Recovery (deload week - lighter weights, fewer sets)
@@ -82,7 +83,7 @@ Return a JSON object with this structure:
   ],
   "workouts": [
     {{
-      "day": "Monday",
+      "day": "Workout A",
       "name": string,
       "exercises": [
         {{

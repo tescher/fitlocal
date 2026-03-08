@@ -54,6 +54,30 @@ def update_plan_week(plan):
     plan.current_week = min(week, plan.total_weeks)
 
 
+def get_next_workout(profile_id, active_plan):
+    """Return the next PlannedWorkout in sequence based on the last completed session."""
+    workouts = PlannedWorkout.query.filter_by(
+        plan_id=active_plan.id
+    ).order_by(PlannedWorkout.order_index).all()
+    if not workouts:
+        return None
+    last_session = (
+        WorkoutSession.query
+        .filter(WorkoutSession.user_id == profile_id,
+                WorkoutSession.planned_workout_id.isnot(None))
+        .order_by(WorkoutSession.date.desc(), WorkoutSession.id.desc())
+        .first()
+    )
+    if not last_session:
+        return workouts[0]
+    ids = [w.id for w in workouts]
+    try:
+        idx = ids.index(last_session.planned_workout_id)
+        return workouts[(idx + 1) % len(workouts)]
+    except ValueError:
+        return workouts[0]
+
+
 def get_last_performance(user_id, exercise_name):
     """Get the last logged sets for a specific exercise."""
     last_session = (
@@ -84,7 +108,7 @@ def update_streak(profile):
 
     if profile.last_workout_date:
         days_gap = (today - profile.last_workout_date).days
-        # Allow gaps for rest days (up to 3 days gap for Mon/Wed/Fri schedule)
+        # Allow up to 3 days between workouts before breaking the streak
         if days_gap <= 3:
             profile.current_streak += 1
         else:
@@ -118,17 +142,12 @@ def index():
         return redirect(url_for("setup"))
 
     active_plan = get_active_plan()
-    today_name = DAY_NAMES[date.today().weekday()]
 
     if active_plan:
         update_plan_week(active_plan)
         db.session.commit()
 
-    todays_workout = None
-    if active_plan:
-        todays_workout = PlannedWorkout.query.filter_by(
-            plan_id=active_plan.id, day_of_week=today_name
-        ).first()
+    next_workout = get_next_workout(profile.id, active_plan) if active_plan else None
 
     # Current phase and nutrition
     current_phase = get_current_phase(active_plan) if active_plan else None
@@ -152,8 +171,7 @@ def index():
         "index.html",
         profile=profile,
         active_plan=active_plan,
-        todays_workout=todays_workout,
-        today_name=today_name,
+        next_workout=next_workout,
         days_trained=days_trained,
         last_session=last_session,
         current_phase=current_phase,
@@ -330,17 +348,14 @@ def workout_today():
         flash("No active plan. Generate one first!", "error")
         return redirect(url_for("generate_plan"))
 
-    today_name = DAY_NAMES[date.today().weekday()]
-    todays_workout = PlannedWorkout.query.filter_by(
-        plan_id=active_plan.id, day_of_week=today_name
-    ).first()
+    next_workout = get_next_workout(profile.id, active_plan)
 
-    if not todays_workout:
-        flash(f"No workout scheduled for {today_name}. Enjoy your rest day!", "info")
+    if not next_workout:
+        flash("No workouts found in your plan. Try regenerating it.", "error")
         return redirect(url_for("index"))
 
     all_exercises = PlannedExercise.query.filter_by(
-        planned_workout_id=todays_workout.id
+        planned_workout_id=next_workout.id
     ).all()
 
     # Group by type
@@ -357,12 +372,11 @@ def workout_today():
 
     return render_template(
         "workout_today.html",
-        workout=todays_workout,
+        workout=next_workout,
         warmup_exercises=warmup,
         main_exercises=main,
         cooldown_exercises=cooldown,
         all_exercises=all_exercises,
-        today_name=today_name,
         last_perf=last_perf,
     )
 
@@ -696,13 +710,6 @@ def calendar_view():
     ).all()
     completed_dates = {s.date for s in sessions}
 
-    # Get the active plan's workout days
-    active_plan = get_active_plan()
-    planned_days = set()
-    if active_plan:
-        for pw in active_plan.planned_workouts:
-            planned_days.add(pw.day_of_week)
-
     # Build calendar grid
     cal = cal_module.Calendar(firstweekday=0)  # Monday first
     weeks = []
@@ -713,15 +720,12 @@ def calendar_view():
                 week_data.append(None)
             else:
                 d = date(year, month, day_num)
-                day_name = DAY_NAMES[d.weekday()]
                 week_data.append({
                     "day": day_num,
                     "date": d,
                     "completed": d in completed_dates,
-                    "planned": day_name in planned_days,
                     "is_today": d == today,
                     "is_past": d < today,
-                    "missed": d < today and day_name in planned_days and d not in completed_dates,
                 })
         weeks.append(week_data)
 

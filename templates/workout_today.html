@@ -2,7 +2,7 @@
 {% block title %}FitLocal - Today's Workout{% endblock %}
 {% block content %}
 <h1>{{ workout.workout_name }}</h1>
-<p class="text-muted mb-2">{{ today_name }}'s Workout</p>
+<p class="text-muted mb-2">{{ workout.day_of_week }}</p>
 
 <!-- Timer Card (sticky) -->
 <div class="timer-card" id="timerCard">

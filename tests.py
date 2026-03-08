@@ -232,8 +232,8 @@ class TestDashboard:
     def test_home_with_active_plan(self, client, active_plan, profile):
         r = client.get("/")
         assert r.status_code == 200
-        # Dashboard shows the "Today" card when a plan is active (not the "Get Started" card)
-        assert b"Today -" in r.data
+        # Dashboard shows the "Next Up" card when a plan is active (not the "Get Started" card)
+        assert b"Next Up" in r.data
         assert b"Get Started" not in r.data
 
     def test_week_start_calculation(self, application, profile):

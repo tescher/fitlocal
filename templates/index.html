@@ -51,12 +51,12 @@
 
 {% if active_plan %}
     <div class="card">
-        <h2>Today - {{ today_name }}</h2>
-        {% if todays_workout %}
-            <p class="mb-2">Scheduled: <strong>{{ todays_workout.workout_name }}</strong></p>
+        <h2>Next Up</h2>
+        {% if next_workout %}
+            <p class="mb-2"><strong>{{ next_workout.workout_name }}</strong></p>
             <a href="{{ url_for('workout_today') }}" class="btn btn-primary">Start Workout</a>
         {% else %}
-            <p class="text-muted">No workout scheduled today. Rest day!</p>
+            <p class="text-muted">No workouts found in your plan.</p>
         {% endif %}
     </div>
 {% else %}
