@@ -54,6 +54,66 @@ def update_plan_week(plan):
     plan.current_week = min(week, plan.total_weeks)
 
 
+def _plan_total_sessions(plan_json_data):
+    """Total expected sessions for a plan (phases × weeks × days_per_week)."""
+    phases = plan_json_data.get("phases", [])
+    days_per_week = plan_json_data.get("days_per_week", 3)
+    if phases:
+        return sum(
+            (p.get("week_end", p.get("week_start", 1)) - p.get("week_start", 1) + 1) * days_per_week
+            for p in phases
+        )
+    return len(plan_json_data.get("workouts", []))
+
+
+def _session_offset_for_workout(workout_index, phases, days_per_week):
+    """Effective session count that makes get_next_workout return the workout at workout_index."""
+    if not phases:
+        return workout_index
+    block_index = workout_index // days_per_week
+    within_block = workout_index % days_per_week
+    sessions_before = 0
+    for i, phase in enumerate(phases):
+        if i >= block_index:
+            break
+        num_weeks = phase.get("week_end", phase.get("week_start", 1)) - phase.get("week_start", 1) + 1
+        sessions_before += num_weeks * days_per_week
+    return sessions_before + within_block
+
+
+def _compute_suggested_start(old_plan, old_session_count, new_plan_json):
+    """Suggest a starting workout index in the new plan proportional to progress in the old plan."""
+    old_pj = json.loads(old_plan.plan_json or "{}")
+    old_total = _plan_total_sessions(old_pj)
+    if old_total == 0:
+        return 0
+    fraction = min(old_session_count / old_total, 1.0)
+
+    new_phases = new_plan_json.get("phases", [])
+    new_workouts = new_plan_json.get("workouts", [])
+    new_days = new_plan_json.get("days_per_week", 3)
+    new_total = _plan_total_sessions(new_plan_json)
+    if new_total == 0 or not new_workouts:
+        return 0
+
+    target_session = int(fraction * new_total)
+
+    if new_phases:
+        workout_offset = 0
+        sessions_accounted = 0
+        for phase in new_phases:
+            num_weeks = phase.get("week_end", phase.get("week_start", 1)) - phase.get("week_start", 1) + 1
+            phase_sessions = num_weeks * new_days
+            if target_session < sessions_accounted + phase_sessions:
+                within_block = (target_session - sessions_accounted) % new_days
+                return min(workout_offset + within_block, len(new_workouts) - 1)
+            sessions_accounted += phase_sessions
+            workout_offset += new_days
+        return 0
+    else:
+        return min(target_session % len(new_workouts), len(new_workouts) - 1)
+
+
 def get_next_workout(profile_id, active_plan):
     """Return the next PlannedWorkout, cycling within each phase for its full duration.
 
@@ -68,12 +128,13 @@ def get_next_workout(profile_id, active_plan):
 
     days_per_week = active_plan.days_per_week or 3
 
-    # Count sessions completed within this plan
+    # Count sessions completed within this plan, then add the starting offset
     workout_ids = [w.id for w in workouts]
     session_count = WorkoutSession.query.filter(
         WorkoutSession.user_id == profile_id,
         WorkoutSession.planned_workout_id.in_(workout_ids)
     ).count()
+    effective_count = session_count + (getattr(active_plan, "session_offset", 0) or 0)
 
     # Try to use phase week-range data from plan_json
     try:
@@ -95,8 +156,8 @@ def get_next_workout(profile_id, active_plan):
             if not phase_workouts:
                 break
 
-            if session_count < sessions_accounted + phase_total_sessions:
-                session_in_phase = session_count - sessions_accounted
+            if effective_count < sessions_accounted + phase_total_sessions:
+                session_in_phase = effective_count - sessions_accounted
                 return phase_workouts[session_in_phase % len(phase_workouts)]
 
             sessions_accounted += phase_total_sessions
@@ -106,21 +167,7 @@ def get_next_workout(profile_id, active_plan):
         return workouts[0]
 
     # Fallback: simple sequential cycling (no phase data)
-    last_session = (
-        WorkoutSession.query
-        .filter(WorkoutSession.user_id == profile_id,
-                WorkoutSession.planned_workout_id.isnot(None))
-        .order_by(WorkoutSession.date.desc(), WorkoutSession.id.desc())
-        .first()
-    )
-    if not last_session:
-        return workouts[0]
-    ids = [w.id for w in workouts]
-    try:
-        idx = ids.index(last_session.planned_workout_id)
-        return workouts[(idx + 1) % len(workouts)]
-    except ValueError:
-        return workouts[0]
+    return workouts[effective_count % len(workouts)]
 
 
 def get_last_performance(user_id, exercise_name):
@@ -275,7 +322,18 @@ def generate_plan():
     pending = get_pending_plan(profile)
     pending_plan = json.loads(pending.plan_json) if pending else None
 
-    return render_template("generate_plan.html", profile=profile, pending_plan=pending_plan)
+    suggested_start_index = 0
+    if pending_plan:
+        old_plan = get_active_plan()
+        if old_plan:
+            old_session_count = WorkoutSession.query.filter(
+                WorkoutSession.user_id == profile.id,
+                WorkoutSession.planned_workout_id.in_([w.id for w in old_plan.planned_workouts])
+            ).count()
+            suggested_start_index = _compute_suggested_start(old_plan, old_session_count, pending_plan)
+
+    return render_template("generate_plan.html", profile=profile, pending_plan=pending_plan,
+                           suggested_start_index=suggested_start_index)
 
 
 @app.route("/generate-plan/generate", methods=["POST"])
@@ -325,6 +383,11 @@ def confirm_plan():
 
     pending_plan = json.loads(pending.plan_json)
 
+    start_workout_index = request.form.get("start_workout_index", 0, type=int)
+    plan_phases = pending_plan.get("phases", [])
+    plan_days_per_week = pending_plan.get("days_per_week", 3)
+    offset = _session_offset_for_workout(start_workout_index, plan_phases, plan_days_per_week)
+
     db.session.delete(pending)
 
     # Deactivate existing plans
@@ -340,6 +403,7 @@ def confirm_plan():
         total_weeks=pending_plan.get("total_weeks", 12),
         current_week=1,
         start_date=date.today(),
+        session_offset=offset,
     )
     db.session.add(plan)
     db.session.flush()

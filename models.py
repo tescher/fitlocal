@@ -35,6 +35,7 @@ class WorkoutPlan(db.Model):
     total_weeks = db.Column(db.Integer, default=12)
     current_week = db.Column(db.Integer, default=1)
     start_date = db.Column(db.Date, nullable=True)
+    session_offset = db.Column(db.Integer, default=0)
 
     planned_workouts = db.relationship("PlannedWorkout", backref="plan", cascade="all, delete-orphan")
     phases = db.relationship("TrainingPhase", backref="plan", cascade="all, delete-orphan", order_by="TrainingPhase.order_index")

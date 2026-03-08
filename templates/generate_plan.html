@@ -70,8 +70,22 @@
             </div>
         {% endfor %}
 
-        <div class="flex-between mt-2">
-            <form method="POST" action="{{ url_for('confirm_plan') }}">
+        <div class="flex-between mt-2" style="align-items: flex-end; gap: 1rem;">
+            <form method="POST" action="{{ url_for('confirm_plan') }}" style="flex: 1;">
+                <div class="form-group mb-1">
+                    <label for="start_workout"><strong>Start from:</strong></label>
+                    <select name="start_workout_index" id="start_workout"
+                            style="width:100%; margin-top:0.3rem; padding:0.5rem; border:1px solid var(--border); border-radius:6px; font-size:0.9rem;">
+                        {% for i in range(pending_plan.workouts|length) %}
+                        <option value="{{ i }}" {{ 'selected' if i == suggested_start_index else '' }}>
+                            {{ pending_plan.workouts[i].day }}: {{ pending_plan.workouts[i].name }}
+                        </option>
+                        {% endfor %}
+                    </select>
+                    <p class="text-muted" style="font-size:0.8rem; margin-top:0.25rem;">
+                        Defaults to approximately where you left off in your previous plan.
+                    </p>
+                </div>
                 <button type="submit" class="btn btn-success">Activate This Plan</button>
             </form>
             <form method="POST" action="{{ url_for('generate_plan_api') }}" onsubmit="showLoading()">

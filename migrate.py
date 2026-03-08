@@ -63,6 +63,10 @@ def migrate():
         cursor.execute("ALTER TABLE workout_plan ADD COLUMN start_date DATE")
         print("  Added workout_plan.start_date")
 
+    if not column_exists("workout_plan", "session_offset"):
+        cursor.execute("ALTER TABLE workout_plan ADD COLUMN session_offset INTEGER NOT NULL DEFAULT 0")
+        print("  Added workout_plan.session_offset")
+
     # --- PlannedExercise new columns ---
     if not column_exists("planned_exercise", "exercise_type"):
         cursor.execute("ALTER TABLE planned_exercise ADD COLUMN exercise_type VARCHAR(20) DEFAULT 'main'")
