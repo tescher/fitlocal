@@ -40,15 +40,6 @@ class WorkoutPlan(db.Model):
     phases = db.relationship("TrainingPhase", backref="plan", cascade="all, delete-orphan", order_by="TrainingPhase.order_index")
 
 
-class Exercise(db.Model):
-    __tablename__ = "exercise"
-    id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(200), nullable=False)
-    muscle_group = db.Column(db.String(100))
-    equipment = db.Column(db.String(100))
-    description = db.Column(db.Text)
-
-
 class PlannedWorkout(db.Model):
     __tablename__ = "planned_workout"
     id = db.Column(db.Integer, primary_key=True)
@@ -65,13 +56,15 @@ class PlannedExercise(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     planned_workout_id = db.Column(db.Integer, db.ForeignKey("planned_workout.id"), nullable=False)
     exercise_name = db.Column(db.String(200), nullable=False)
+    exercise_library_id = db.Column(db.Integer, db.ForeignKey("exercise_library.id"), nullable=True)
     sets_prescribed = db.Column(db.Integer, nullable=False)
     reps_prescribed = db.Column(db.String(50), nullable=False)
     rest_seconds = db.Column(db.Integer)
     notes = db.Column(db.Text)
-    # New fields
     exercise_type = db.Column(db.String(20), default="main")  # warmup, main, cooldown
     form_cues = db.Column(db.Text)
+
+    exercise_library = db.relationship("ExerciseLibrary")
 
 
 class WorkoutSession(db.Model):
@@ -94,11 +87,14 @@ class LoggedSet(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     session_id = db.Column(db.Integer, db.ForeignKey("workout_session.id"), nullable=False)
     exercise_name = db.Column(db.String(200), nullable=False)
+    exercise_library_id = db.Column(db.Integer, db.ForeignKey("exercise_library.id"), nullable=True)
     set_number = db.Column(db.Integer, nullable=False)
     weight_lbs = db.Column(db.Float)
     reps_completed = db.Column(db.Integer)
     rpe = db.Column(db.Integer)
     notes = db.Column(db.Text)
+
+    exercise_library = db.relationship("ExerciseLibrary")
 
 
 class AIReview(db.Model):

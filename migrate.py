@@ -120,6 +120,32 @@ def migrate():
         """)
         print("  Created exercise_library table")
 
+    # --- Exercise library FK columns ---
+    if not column_exists("planned_exercise", "exercise_library_id"):
+        cursor.execute("ALTER TABLE planned_exercise ADD COLUMN exercise_library_id INTEGER REFERENCES exercise_library(id)")
+        print("  Added planned_exercise.exercise_library_id")
+        # Backfill FK where name matches
+        cursor.execute("""
+            UPDATE planned_exercise
+            SET exercise_library_id = (
+                SELECT id FROM exercise_library
+                WHERE lower(exercise_library.name) = lower(planned_exercise.exercise_name)
+            )
+        """)
+        print("  Backfilled planned_exercise.exercise_library_id where names match")
+
+    if not column_exists("logged_set", "exercise_library_id"):
+        cursor.execute("ALTER TABLE logged_set ADD COLUMN exercise_library_id INTEGER REFERENCES exercise_library(id)")
+        print("  Added logged_set.exercise_library_id")
+        cursor.execute("""
+            UPDATE logged_set
+            SET exercise_library_id = (
+                SELECT id FROM exercise_library
+                WHERE lower(exercise_library.name) = lower(logged_set.exercise_name)
+            )
+        """)
+        print("  Backfilled logged_set.exercise_library_id where names match")
+
     conn.commit()
     conn.close()
     print("Migration complete!")

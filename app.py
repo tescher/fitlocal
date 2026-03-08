@@ -299,9 +299,13 @@ def confirm_plan():
         db.session.flush()
 
         for exercise_data in workout_data.get("exercises", []):
+            lib_entry = ExerciseLibrary.query.filter(
+                db.func.lower(ExerciseLibrary.name) == exercise_data["name"].lower()
+            ).first()
             pe = PlannedExercise(
                 planned_workout_id=pw.id,
                 exercise_name=exercise_data["name"],
+                exercise_library_id=lib_entry.id if lib_entry else None,
                 sets_prescribed=exercise_data["sets"],
                 reps_prescribed=str(exercise_data["reps"]),
                 rest_seconds=exercise_data.get("rest_seconds"),
@@ -416,9 +420,13 @@ def workout_log():
             except ValueError:
                 pass
 
+        lib_entry = ExerciseLibrary.query.filter(
+            db.func.lower(ExerciseLibrary.name) == exercise_names[i].lower()
+        ).first()
         logged = LoggedSet(
             session_id=workout_session.id,
             exercise_name=exercise_names[i],
+            exercise_library_id=lib_entry.id if lib_entry else None,
             set_number=int(set_numbers[i]) if i < len(set_numbers) and set_numbers[i] else 1,
             weight_lbs=weight_val,
             reps_completed=reps_val,
