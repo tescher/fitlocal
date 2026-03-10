@@ -452,6 +452,109 @@ class TestWorkoutLogging:
             p = UserProfile.query.get(profile)
             assert p.current_streak == 1  # Not 2
 
+    # ------------------------------------------------------------------
+    # Add / Remove Set (variable set count submitted by the JS feature)
+    # ------------------------------------------------------------------
+
+    def test_extra_set_saved_when_user_adds_set(self, client, application, profile, active_plan):
+        """Submitting more sets than prescribed (JS 'Add Set') saves all of them."""
+        items = [("overall_feeling", "4"), ("session_notes", "")]
+        with application.app_context():
+            pw = PlannedWorkout.query.filter_by(day_of_week="Workout A").first()
+            items.append(("planned_workout_id", str(pw.id)))
+            # Bench Press is prescribed for 3 sets — submit 4 (user added one)
+            for s in range(1, 5):
+                items += [
+                    ("exercise_name", "Bench Press"),
+                    ("set_number", str(s)),
+                    ("weight", "135"),
+                    ("reps", "10"),
+                    ("rpe", "7"),
+                    ("set_notes", ""),
+                ]
+            # Pull-Ups at prescribed 3 sets
+            for s in range(1, 4):
+                items += [
+                    ("exercise_name", "Pull-Ups"),
+                    ("set_number", str(s)),
+                    ("weight", "0"),
+                    ("reps", "8"),
+                    ("rpe", ""),
+                    ("set_notes", ""),
+                ]
+
+        r = client.post("/workout/log", data=MultiDict(items))
+        assert r.status_code == 200
+
+        with application.app_context():
+            bench_sets = LoggedSet.query.filter_by(exercise_name="Bench Press").count()
+            assert bench_sets == 4  # extra set was saved
+
+    def test_fewer_sets_saved_when_user_removes_set(self, client, application, profile, active_plan):
+        """Submitting fewer sets than prescribed (JS 'Remove Set') saves only submitted sets."""
+        items = [("overall_feeling", "3"), ("session_notes", "")]
+        with application.app_context():
+            pw = PlannedWorkout.query.filter_by(day_of_week="Workout A").first()
+            items.append(("planned_workout_id", str(pw.id)))
+            # Bench Press prescribed 3 sets — user removed one, only 2 submitted
+            for s in range(1, 3):
+                items += [
+                    ("exercise_name", "Bench Press"),
+                    ("set_number", str(s)),
+                    ("weight", "135"),
+                    ("reps", "10"),
+                    ("rpe", "8"),
+                    ("set_notes", ""),
+                ]
+            # Pull-Ups at prescribed 3 sets — also reduced to 1
+            items += [
+                ("exercise_name", "Pull-Ups"),
+                ("set_number", "1"),
+                ("weight", "0"),
+                ("reps", "6"),
+                ("rpe", ""),
+                ("set_notes", ""),
+            ]
+
+        r = client.post("/workout/log", data=MultiDict(items))
+        assert r.status_code == 200
+
+        with application.app_context():
+            bench_sets = LoggedSet.query.filter_by(exercise_name="Bench Press").count()
+            pullup_sets = LoggedSet.query.filter_by(exercise_name="Pull-Ups").count()
+            assert bench_sets == 2
+            assert pullup_sets == 1
+
+    def test_set_number_stored_correctly_for_added_set(self, client, application, profile, active_plan):
+        """The set_number on the extra row is stored as submitted (JS sets it sequentially)."""
+        items = [("overall_feeling", "4"), ("session_notes", "")]
+        with application.app_context():
+            pw = PlannedWorkout.query.filter_by(day_of_week="Workout A").first()
+            items.append(("planned_workout_id", str(pw.id)))
+            for s in range(1, 5):  # 4 sets, 4th is the added one
+                items += [
+                    ("exercise_name", "Bench Press"),
+                    ("set_number", str(s)),
+                    ("weight", str(100 + s * 5)),
+                    ("reps", "10"),
+                    ("rpe", ""),
+                    ("set_notes", ""),
+                ]
+            # Pull-Ups minimal
+            items += [
+                ("exercise_name", "Pull-Ups"), ("set_number", "1"),
+                ("weight", "0"), ("reps", "8"), ("rpe", ""), ("set_notes", ""),
+            ]
+
+        client.post("/workout/log", data=MultiDict(items))
+
+        with application.app_context():
+            fourth = LoggedSet.query.filter_by(
+                exercise_name="Bench Press", set_number=4
+            ).first()
+            assert fourth is not None
+            assert fourth.weight_lbs == 120.0  # 100 + 4*5
+
 
 # ---------------------------------------------------------------------------
 # Streak logic

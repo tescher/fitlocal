@@ -69,7 +69,7 @@
                 {% for set_num in range(1, exercise.sets_prescribed + 1) %}
                 <tr>
                     <td>
-                        {{ set_num }}
+                        <span class="set-num-display">{{ set_num }}</span>
                         <input type="hidden" name="exercise_name" value="{{ exercise.exercise_name }}">
                         <input type="hidden" name="set_number" value="{{ set_num }}">
                     </td>
@@ -99,6 +99,10 @@
                 {% endfor %}
             </tbody>
         </table>
+        <div class="set-controls">
+            <button type="button" class="btn-set-mod btn-set-add" onclick="addSet(this)">+ Add Set</button>
+            <button type="button" class="btn-set-mod btn-set-remove" onclick="removeSet(this)">− Remove Set</button>
+        </div>
     </div>
     {% endfor %}
     {% endif %}
@@ -133,7 +137,7 @@
                 {% for set_num in range(1, exercise.sets_prescribed + 1) %}
                 <tr>
                     <td>
-                        {{ set_num }}
+                        <span class="set-num-display">{{ set_num }}</span>
                         <input type="hidden" name="exercise_name" value="{{ exercise.exercise_name }}">
                         <input type="hidden" name="set_number" value="{{ set_num }}">
                     </td>
@@ -163,6 +167,10 @@
                 {% endfor %}
             </tbody>
         </table>
+        <div class="set-controls">
+            <button type="button" class="btn-set-mod btn-set-add" onclick="addSet(this)">+ Add Set</button>
+            <button type="button" class="btn-set-mod btn-set-remove" onclick="removeSet(this)">− Remove Set</button>
+        </div>
     </div>
     {% endfor %}
     {% endif %}
@@ -197,7 +205,7 @@
                 {% for set_num in range(1, exercise.sets_prescribed + 1) %}
                 <tr>
                     <td>
-                        {{ set_num }}
+                        <span class="set-num-display">{{ set_num }}</span>
                         <input type="hidden" name="exercise_name" value="{{ exercise.exercise_name }}">
                         <input type="hidden" name="set_number" value="{{ set_num }}">
                     </td>
@@ -227,6 +235,10 @@
                 {% endfor %}
             </tbody>
         </table>
+        <div class="set-controls">
+            <button type="button" class="btn-set-mod btn-set-add" onclick="addSet(this)">+ Add Set</button>
+            <button type="button" class="btn-set-mod btn-set-remove" onclick="removeSet(this)">− Remove Set</button>
+        </div>
     </div>
     {% endfor %}
     {% endif %}
@@ -301,6 +313,43 @@ function stopRest() {
     }
     document.getElementById('restTimer').textContent = '--:--';
     document.getElementById('timerCard').classList.remove('timer-done');
+}
+
+function addSet(btn) {
+    const block = btn.closest('.exercise-block');
+    const tbody = block.querySelector('tbody');
+    const dataRows = Array.from(tbody.querySelectorAll('tr:not(.last-time-row)'));
+    if (dataRows.length === 0) return;
+
+    const lastDataRow = dataRows[dataRows.length - 1];
+    const newRow = lastDataRow.cloneNode(true);
+    const newSetNum = dataRows.length + 1;
+
+    newRow.querySelector('.set-num-display').textContent = newSetNum;
+    newRow.querySelector('input[name="set_number"]').value = newSetNum;
+    newRow.querySelectorAll('input[type="number"], input[type="text"]').forEach(inp => inp.value = '');
+    newRow.querySelectorAll('select').forEach(sel => sel.selectedIndex = 0);
+
+    // Insert after the last data row (skip past any trailing last-time-row)
+    let insertAfter = lastDataRow;
+    if (insertAfter.nextElementSibling && insertAfter.nextElementSibling.classList.contains('last-time-row')) {
+        insertAfter = insertAfter.nextElementSibling;
+    }
+    insertAfter.after(newRow);
+}
+
+function removeSet(btn) {
+    const block = btn.closest('.exercise-block');
+    const tbody = block.querySelector('tbody');
+    const dataRows = Array.from(tbody.querySelectorAll('tr:not(.last-time-row)'));
+    if (dataRows.length <= 1) return;  // always keep at least 1 set
+
+    const lastDataRow = dataRows[dataRows.length - 1];
+    // Remove any trailing last-time-row for this set first
+    if (lastDataRow.nextElementSibling && lastDataRow.nextElementSibling.classList.contains('last-time-row')) {
+        lastDataRow.nextElementSibling.remove();
+    }
+    lastDataRow.remove();
 }
 
 function playBeep() {

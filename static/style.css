@@ -968,6 +968,47 @@ tr:hover {
     }
 }
 
+/* ===== Add/Remove Set Controls ===== */
+.set-controls {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 0.25rem;
+    margin-bottom: 0.5rem;
+}
+
+.btn-set-mod {
+    padding: 0.35rem 0.85rem;
+    border: none;
+    border-radius: var(--radius);
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+    min-height: 36px;
+    transition: background 0.15s, color 0.15s;
+}
+
+.btn-set-add {
+    background: rgba(22, 163, 74, 0.1);
+    color: var(--success);
+    border: 1px solid rgba(22, 163, 74, 0.3);
+}
+
+.btn-set-add:hover {
+    background: var(--success);
+    color: white;
+}
+
+.btn-set-remove {
+    background: rgba(220, 38, 38, 0.08);
+    color: var(--danger);
+    border: 1px solid rgba(220, 38, 38, 0.25);
+}
+
+.btn-set-remove:hover {
+    background: var(--danger);
+    color: white;
+}
+
 /* Workout switcher on today's workout page */
 .workout-switcher {
     margin-bottom: 1rem;
