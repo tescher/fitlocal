@@ -261,9 +261,79 @@
             <textarea id="session_notes" name="session_notes" placeholder="How was the workout? Anything to note?"></textarea>
         </div>
 
-        <button type="submit" class="btn btn-success">Log Workout</button>
+        <button type="button" class="btn btn-success" onclick="confirmLogWorkout()">Log Workout</button>
     </div>
 </form>
+
+<!-- Confirmation Modal -->
+<div id="confirmModal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.6); z-index:1000; align-items:center; justify-content:center;">
+    <div style="background:#fff; border-radius:12px; padding:2rem; max-width:380px; width:90%; text-align:center; box-shadow:0 8px 32px rgba(0,0,0,0.3);">
+        <h2 style="margin-top:0;" id="modalTitle">Log Workout?</h2>
+        <p id="modalMessage">Are you ready to save this workout session?</p>
+        <div style="display:flex; gap:1rem; justify-content:center; margin-top:1.5rem;">
+            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+            <button class="btn btn-success" id="modalConfirmBtn">Save Workout</button>
+        </div>
+    </div>
+</div>
+
+<script>
+let modalConfirmAction = null;
+
+function showModal(title, message, confirmLabel, onConfirm) {
+    document.getElementById('modalTitle').textContent = title;
+    document.getElementById('modalMessage').textContent = message;
+    document.getElementById('modalConfirmBtn').textContent = confirmLabel;
+    modalConfirmAction = onConfirm;
+    const modal = document.getElementById('confirmModal');
+    modal.style.display = 'flex';
+}
+
+function closeModal() {
+    document.getElementById('confirmModal').style.display = 'none';
+    modalConfirmAction = null;
+}
+
+document.getElementById('modalConfirmBtn').addEventListener('click', function() {
+    const action = modalConfirmAction;
+    closeModal();
+    if (action) action();
+});
+
+document.getElementById('confirmModal').addEventListener('click', function(e) {
+    if (e.target === this) closeModal();
+});
+
+function confirmLogWorkout() {
+    showModal('Log Workout?', 'Are you ready to save this workout session?', 'Save Workout', function() {
+        workoutSubmitted = true;
+        document.querySelector('form[action$="/workout/log"]').submit();
+    });
+}
+
+// Warn before leaving page via navigation links or browser back/refresh
+let workoutSubmitted = false;
+
+window.addEventListener('beforeunload', function(e) {
+    if (!workoutSubmitted) {
+        e.preventDefault();
+        e.returnValue = '';
+    }
+});
+
+// Intercept nav link clicks with a custom modal instead
+document.querySelectorAll('nav a, a.nav-link, .navbar a').forEach(function(link) {
+    link.addEventListener('click', function(e) {
+        if (workoutSubmitted) return;
+        e.preventDefault();
+        const href = this.href;
+        showModal('Leave Workout?', 'Your workout data will not be saved if you leave. Are you sure?', 'Leave Page', function() {
+            workoutSubmitted = true;
+            window.location.href = href;
+        });
+    });
+});
+</script>
 
 <script>
 // Session elapsed timer
