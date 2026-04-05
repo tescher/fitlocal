@@ -212,6 +212,7 @@ label {
 input[type="text"],
 input[type="number"],
 input[type="email"],
+input[type="password"],
 select,
 textarea {
     width: 100%;
@@ -1043,3 +1044,120 @@ td.last-time-label {
 td.last-time-val {
     letter-spacing: 0.01em;
 }
+
+/* -------------------------------------------------------------------------
+   Auth pages
+   ------------------------------------------------------------------------- */
+
+.auth-card {
+    max-width: 420px;
+    margin: 2rem auto;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 2rem;
+}
+
+.auth-card h1 {
+    margin-bottom: 1.5rem;
+    font-size: 1.5rem;
+}
+
+.auth-divider {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin: 1.25rem 0;
+    color: var(--text-muted);
+    font-size: 0.875rem;
+}
+
+.auth-divider::before,
+.auth-divider::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+}
+
+.auth-footer {
+    margin-top: 1rem;
+    text-align: center;
+    font-size: 0.9rem;
+    color: var(--text-muted);
+}
+
+.form-check {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.form-check input[type="checkbox"] {
+    width: auto;
+}
+
+.btn-block {
+    display: block;
+    width: 100%;
+    text-align: center;
+}
+
+.btn-google {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 0.625rem 1rem;
+    border-radius: var(--radius);
+    text-decoration: none;
+    font-size: 0.95rem;
+    font-weight: 500;
+    transition: background 0.15s;
+}
+
+.btn-google:hover {
+    background: var(--bg);
+}
+
+.btn-secondary {
+    background: var(--border);
+    color: var(--text);
+    border: none;
+    padding: 0.625rem 1.25rem;
+    border-radius: var(--radius);
+    cursor: pointer;
+    font-size: 0.95rem;
+    text-decoration: none;
+    display: inline-block;
+}
+
+/* Nav user info */
+.nav-user {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.85rem;
+}
+
+.nav-email {
+    color: rgba(255,255,255,0.7);
+    max-width: 180px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.nav-logout {
+    color: rgba(255,255,255,0.85);
+    text-decoration: none;
+    padding: 0.3rem 0.6rem;
+    border: 1px solid rgba(255,255,255,0.3);
+    border-radius: var(--radius);
+    font-size: 0.8rem;
+}
+
+.nav-logout:hover {
+    background: rgba(255,255,255,0.15);
+}
+
+.link-row-danger strong { color: var(--danger); }

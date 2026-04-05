@@ -1,0 +1,10 @@
+.git
+.env
+*.db
+*.pyc
+__pycache__/
+.pytest_cache/
+instance/backups/
+*.log
+.gitignore
+schema.png

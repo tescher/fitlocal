@@ -1,0 +1,12 @@
+services:
+  fitlocal:
+    build: .
+    ports:
+      - "${PORT:-5000}:${PORT:-5000}"
+    env_file:
+      - .env
+    volumes:
+      # Persist the SQLite database outside the container.
+      # Copy your existing fitlocal.db into ./instance/ before first run.
+      - ./instance:/app/instance
+    restart: unless-stopped

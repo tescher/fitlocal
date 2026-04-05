@@ -18,6 +18,23 @@
     </a>
 </div>
 
+<div class="card mt-2" style="padding: 0; overflow: hidden;">
+    <a href="{{ url_for('auth.change_password') }}" class="link-row">
+        <strong>Change Password</strong>
+        <p class="text-muted">
+            {% if account.password_hash %}Update your password{% else %}Set a password for email/password login{% endif %}
+        </p>
+    </a>
+    <a href="{{ url_for('auth.logout') }}" class="link-row">
+        <strong>Log Out</strong>
+        <p class="text-muted">Signed in as {{ account.email }}</p>
+    </a>
+    <a href="{{ url_for('auth.delete_account') }}" class="link-row link-row-danger">
+        <strong>Delete Account</strong>
+        <p class="text-muted">Permanently delete your account and all workout data</p>
+    </a>
+</div>
+
 {% if profile %}
 <div class="card mt-2">
     <h2>App Info</h2>

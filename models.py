@@ -1,19 +1,39 @@
 from flask_sqlalchemy import SQLAlchemy
+from flask_login import UserMixin
 from datetime import datetime, date, timezone
 
 db = SQLAlchemy()
 
 
+class Account(db.Model, UserMixin):
+    __tablename__ = "account"
+    id = db.Column(db.Integer, primary_key=True)
+    email = db.Column(db.String(255), unique=True, nullable=False)
+    password_hash = db.Column(db.String(255), nullable=True)   # null for Google-only accounts
+    google_id = db.Column(db.String(255), unique=True, nullable=True)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    is_admin = db.Column(db.Boolean, default=False)
+    email_claimed = db.Column(db.Boolean, default=True)  # False only for migrated legacy accounts
+
+    profile = db.relationship("UserProfile", back_populates="account", uselist=False)
+
+
 class UserProfile(db.Model):
     __tablename__ = "user_profile"
     id = db.Column(db.Integer, primary_key=True)
+    account_id = db.Column(db.Integer, db.ForeignKey("account.id"), nullable=True)
+    account = db.relationship("Account", back_populates="profile")
     name = db.Column(db.String(100), nullable=False)
     age = db.Column(db.Integer, nullable=False)
     sex = db.Column(db.String(20), nullable=False)
     fitness_level = db.Column(db.String(20), nullable=False)
     goals = db.Column(db.Text, nullable=False)
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    updated_at = db.Column(
+        db.DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
     # Streak tracking
     current_streak = db.Column(db.Integer, default=0)
     longest_streak = db.Column(db.Integer, default=0)
@@ -38,7 +58,10 @@ class WorkoutPlan(db.Model):
     session_offset = db.Column(db.Integer, default=0)
 
     planned_workouts = db.relationship("PlannedWorkout", backref="plan", cascade="all, delete-orphan")
-    phases = db.relationship("TrainingPhase", backref="plan", cascade="all, delete-orphan", order_by="TrainingPhase.order_index")
+    phases = db.relationship(
+        "TrainingPhase", backref="plan", cascade="all, delete-orphan",
+        order_by="TrainingPhase.order_index",
+    )
 
 
 class PlannedWorkout(db.Model):

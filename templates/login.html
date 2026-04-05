@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Log In — FitLocal{% endblock %}
+{% block content %}
+<div class="auth-card">
+    <h1>Welcome back</h1>
+
+    {% if unclaimed %}
+    <div class="flash info">
+        An existing local profile was found.
+        <a href="{{ url_for('auth.claim_account') }}">Set up your login</a> to access it.
+    </div>
+    {% endif %}
+
+    <form method="post">
+        <div class="form-group">
+            <label for="email">Email</label>
+            <input type="email" id="email" name="email" required autofocus>
+        </div>
+        <div class="form-group">
+            <label for="password">Password</label>
+            <input type="password" id="password" name="password" required>
+        </div>
+        <div class="form-group form-check">
+            <input type="checkbox" id="remember" name="remember">
+            <label for="remember">Keep me logged in</label>
+        </div>
+        <button type="submit" class="btn btn-primary btn-block">Log In</button>
+    </form>
+
+    <div class="auth-divider"><span>or</span></div>
+
+    <a href="{{ url_for('auth.google_login', mode='login') }}" class="btn btn-google btn-block">
+        Continue with Google
+    </a>
+
+    <p class="auth-footer">No account? <a href="{{ url_for('auth.register') }}">Register</a></p>
+
+    <p class="auth-footer">
+        Forgot your password?
+        <a href="{{ url_for('auth.google_login', mode='login') }}">Log in with Google</a>
+        or run <code>python reset_password.py &lt;email&gt;</code> on the server.
+    </p>
+</div>
+{% endblock %}

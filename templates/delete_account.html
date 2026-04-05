@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Delete Account — FitLocal{% endblock %}
+{% block content %}
+<h1>Delete Account</h1>
+
+<div class="card" style="max-width: 480px; border-color: var(--danger);">
+    <p><strong>This is permanent and cannot be undone.</strong> All of the following will be deleted:</p>
+    <ul style="margin: 1rem 0 1rem 1.25rem; color: var(--text-muted);">
+        <li>Your profile and fitness goals</li>
+        <li>All workout sessions and logged sets</li>
+        <li>All workout plans</li>
+        <li>All AI progress reviews</li>
+        <li>All fitness test results</li>
+    </ul>
+    <p>Type your email address to confirm: <strong>{{ account.email }}</strong></p>
+
+    <form method="post" style="margin-top: 1rem;">
+        <div class="form-group">
+            <input type="email" name="confirm_email" required autofocus
+                   placeholder="{{ account.email }}"
+                   style="border-color: var(--danger);">
+        </div>
+        <div style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
+            <button type="submit" class="btn" style="background: var(--danger); color: white; border: none; padding: 0.625rem 1.25rem; border-radius: var(--radius); cursor: pointer; font-size: 0.95rem;">
+                Permanently Delete My Account
+            </button>
+            <a href="{{ url_for('settings') }}" class="btn btn-secondary">Cancel</a>
+        </div>
+    </form>
+</div>
+{% endblock %}

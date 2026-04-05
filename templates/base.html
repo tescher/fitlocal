@@ -5,11 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}FitLocal{% endblock %}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <meta name="csrf-token" content="{{ csrf_token() }}">
 </head>
 <body>
     <nav>
         <div class="nav-inner">
             <a href="{{ url_for('index') }}" class="brand">FitLocal</a>
+            {% if current_user.is_authenticated %}
             <div class="nav-links">
                 <a href="{{ url_for('index') }}">Home</a>
                 <a href="{{ url_for('workout_today') }}">Workout</a>
@@ -20,6 +22,16 @@
                 <a href="{{ url_for('plan_view') }}">Plan</a>
                 <a href="{{ url_for('settings') }}">Settings</a>
             </div>
+            <div class="nav-user">
+                <span class="nav-email">{{ current_user.email }}</span>
+                <a href="{{ url_for('auth.logout') }}" class="nav-logout">Log Out</a>
+            </div>
+            {% else %}
+            <div class="nav-links">
+                <a href="{{ url_for('auth.login') }}">Log In</a>
+                <a href="{{ url_for('auth.register') }}">Register</a>
+            </div>
+            {% endif %}
         </div>
     </nav>
     <main>
@@ -30,5 +42,21 @@
         {% endwith %}
         {% block content %}{% endblock %}
     </main>
+<script>
+  // Automatically inject CSRF token into every POST form
+  document.addEventListener('DOMContentLoaded', function () {
+    var token = document.querySelector('meta[name="csrf-token"]').content;
+    document.querySelectorAll('form').forEach(function (form) {
+      var method = (form.method || '').toUpperCase();
+      if (method === 'POST' && !form.querySelector('input[name="csrf_token"]')) {
+        var input = document.createElement('input');
+        input.type = 'hidden';
+        input.name = 'csrf_token';
+        input.value = token;
+        form.appendChild(input);
+      }
+    });
+  });
+</script>
 </body>
 </html>

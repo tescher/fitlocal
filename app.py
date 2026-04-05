@@ -4,35 +4,136 @@ import calendar as cal_module
 from datetime import datetime, date, timedelta, timezone
 
 from dotenv import load_dotenv
-from flask import Flask, render_template, request, redirect, url_for, flash, session, send_file
+from flask import Flask, render_template, request, redirect, url_for, flash, send_file
+from flask_login import login_required, current_user
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 load_dotenv()
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "fitlocal-dev-key-change-me")
+
+_secret = os.environ.get("SECRET_KEY", "fitlocal-dev-key-change-me")
+if _secret == "fitlocal-dev-key-change-me" and os.environ.get("FLASK_ENV") == "production":
+    raise RuntimeError("SECRET_KEY must be set to a strong random value in production.")
+app.secret_key = _secret
 
 app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///fitlocal.db"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+app.config["GOOGLE_CLIENT_ID"] = os.environ.get("GOOGLE_CLIENT_ID", "")
+app.config["GOOGLE_CLIENT_SECRET"] = os.environ.get("GOOGLE_CLIENT_SECRET", "")
 
-from models import (
-    db, UserProfile, WorkoutPlan, PlannedWorkout, PlannedExercise,
+# Session / cookie hardening
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+# Only mark cookies Secure when running behind HTTPS (set HTTPS=true in prod .env)
+app.config["SESSION_COOKIE_SECURE"] = os.environ.get("HTTPS", "false").lower() == "true"
+app.config["REMEMBER_COOKIE_HTTPONLY"] = True
+app.config["REMEMBER_COOKIE_SECURE"] = app.config["SESSION_COOKIE_SECURE"]
+
+# Trust one layer of reverse-proxy headers (Opalstack nginx)
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
+
+from models import (  # noqa: E402
+    db, Account, UserProfile, WorkoutPlan, PlannedWorkout, PlannedExercise,
     WorkoutSession, LoggedSet, AIReview, FitnessTest, TrainingPhase, ExerciseLibrary
 )
+from extensions import login_manager, bcrypt, csrf, limiter, oauth_client  # noqa: E402
 
 db.init_app(app)
+login_manager.init_app(app)
+bcrypt.init_app(app)
+csrf.init_app(app)
+limiter.init_app(app)
+oauth_client.init_app(app)
+
+# Register Google OAuth provider (skipped if credentials not set)
+if os.environ.get("GOOGLE_CLIENT_ID"):
+    oauth_client.register(
+        name="google",
+        client_id=os.environ.get("GOOGLE_CLIENT_ID"),
+        client_secret=os.environ.get("GOOGLE_CLIENT_SECRET"),
+        server_metadata_url="https://accounts.google.com/.well-known/openid-configuration",
+        client_kwargs={"scope": "openid email profile"},
+    )
+
+from auth import auth as auth_blueprint  # noqa: E402
+app.register_blueprint(auth_blueprint)
+
+
+@app.after_request
+def set_security_headers(response):
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+    # Strict CSP — relaxed only enough for inline styles used in templates
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; "
+        "font-src 'self'; "
+        "frame-ancestors 'none';"
+    )
+    if app.config.get("SESSION_COOKIE_SECURE"):
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
 
 with app.app_context():
+    # Add account_id column to user_profile if it doesn't exist yet
+    # (db.create_all won't alter existing tables)
+    with db.engine.connect() as conn:
+        from sqlalchemy import inspect, text
+        cols = [c["name"] for c in inspect(db.engine).get_columns("user_profile")] \
+            if inspect(db.engine).has_table("user_profile") else []
+        if "account_id" not in cols:
+            conn.execute(text(
+                "ALTER TABLE user_profile ADD COLUMN account_id INTEGER REFERENCES account(id)"
+            ))
+            conn.commit()
+
     db.create_all()
+
+    # One-time migration: link an existing UserProfile to a new Account
+    # so legacy data is not lost when auth is first enabled.
+    if Account.query.count() == 0:
+        existing_profile = UserProfile.query.first()
+        if existing_profile and existing_profile.account_id is None:
+            migrated = Account(
+                email="local@fitlocal.local",
+                email_claimed=False,
+                is_admin=True,
+            )
+            db.session.add(migrated)
+            db.session.flush()
+            existing_profile.account_id = migrated.id
+            db.session.commit()
+
+
+@app.before_request
+def redirect_unclaimed_account():
+    """Block all non-auth requests until the legacy migrated account is claimed."""
+    if request.endpoint is None:
+        return
+    if request.endpoint.startswith("static") or request.endpoint.startswith("auth."):
+        return
+    unclaimed = Account.query.filter_by(email_claimed=False).first()
+    if unclaimed:
+        return redirect(url_for("auth.claim_account"))
+
 
 DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
 
 def get_profile():
-    return UserProfile.query.first()
+    if not current_user.is_authenticated:
+        return None
+    return UserProfile.query.filter_by(account_id=current_user.id).first()
 
 
-def get_active_plan():
-    return WorkoutPlan.query.filter_by(is_active=True).first()
+def get_active_plan(user_id):
+    return WorkoutPlan.query.filter_by(is_active=True, user_id=user_id).first()
 
 
 def get_current_phase(plan):
@@ -237,12 +338,13 @@ def get_mini_calendar(user_id):
 
 
 @app.route("/")
+@login_required
 def index():
     profile = get_profile()
     if not profile:
         return redirect(url_for("setup"))
 
-    active_plan = get_active_plan()
+    active_plan = get_active_plan(profile.id)
 
     if active_plan:
         update_plan_week(active_plan)
@@ -281,6 +383,7 @@ def index():
 
 
 @app.route("/setup", methods=["GET", "POST"])
+@login_required
 def setup():
     profile = get_profile()
     if request.method == "POST":
@@ -293,6 +396,7 @@ def setup():
             profile.updated_at = datetime.now(timezone.utc)
         else:
             profile = UserProfile(
+                account_id=current_user.id,
                 name=request.form["name"],
                 age=int(request.form["age"]),
                 sex=request.form["sex"],
@@ -314,6 +418,7 @@ def get_pending_plan(profile):
 
 
 @app.route("/generate-plan")
+@login_required
 def generate_plan():
     profile = get_profile()
     if not profile:
@@ -324,7 +429,7 @@ def generate_plan():
 
     suggested_start_index = 0
     if pending_plan:
-        old_plan = get_active_plan()
+        old_plan = get_active_plan(profile.id)
         if old_plan:
             old_session_count = WorkoutSession.query.filter(
                 WorkoutSession.user_id == profile.id,
@@ -337,6 +442,7 @@ def generate_plan():
 
 
 @app.route("/generate-plan/generate", methods=["POST"])
+@login_required
 def generate_plan_api():
     profile = get_profile()
     if not profile:
@@ -374,6 +480,7 @@ def generate_plan_api():
 
 
 @app.route("/generate-plan/confirm", methods=["POST"])
+@login_required
 def confirm_plan():
     profile = get_profile()
     pending = get_pending_plan(profile) if profile else None
@@ -390,8 +497,8 @@ def confirm_plan():
 
     db.session.delete(pending)
 
-    # Deactivate existing plans
-    WorkoutPlan.query.filter_by(is_active=True).update({"is_active": False})
+    # Deactivate existing plans for this user only
+    WorkoutPlan.query.filter_by(is_active=True, user_id=profile.id).update({"is_active": False})
 
     plan = WorkoutPlan(
         user_id=profile.id,
@@ -456,12 +563,13 @@ def confirm_plan():
 
 
 @app.route("/workout/today")
+@login_required
 def workout_today():
     profile = get_profile()
     if not profile:
         return redirect(url_for("setup"))
 
-    active_plan = get_active_plan()
+    active_plan = get_active_plan(profile.id)
     if not active_plan:
         flash("No active plan. Generate one first!", "error")
         return redirect(url_for("generate_plan"))
@@ -505,11 +613,12 @@ def workout_today():
 
 
 @app.route("/workout/choose", methods=["POST"])
+@login_required
 def choose_workout():
     profile = get_profile()
     if not profile:
         return redirect(url_for("setup"))
-    active_plan = get_active_plan()
+    active_plan = get_active_plan(profile.id)
     if not active_plan:
         return redirect(url_for("generate_plan"))
 
@@ -534,6 +643,7 @@ def choose_workout():
 
 
 @app.route("/workout/log", methods=["POST"])
+@login_required
 def workout_log():
     profile = get_profile()
     if not profile:
@@ -613,6 +723,7 @@ def workout_log():
 
 
 @app.route("/history")
+@login_required
 def history():
     profile = get_profile()
     if not profile:
@@ -628,6 +739,7 @@ def history():
 
 
 @app.route("/history/<int:session_id>/delete", methods=["POST"])
+@login_required
 def delete_session(session_id):
     profile = get_profile()
     if not profile:
@@ -643,6 +755,7 @@ def delete_session(session_id):
 
 
 @app.route("/history/<int:session_id>")
+@login_required
 def session_detail(session_id):
     workout_session = WorkoutSession.query.get_or_404(session_id)
     logged_sets = sorted(workout_session.logged_sets, key=lambda s: (s.exercise_name, s.set_number))
@@ -659,6 +772,7 @@ def session_detail(session_id):
 
 
 @app.route("/review")
+@login_required
 def review():
     profile = get_profile()
     if not profile:
@@ -682,6 +796,7 @@ def review():
 
 
 @app.route("/review/generate", methods=["POST"])
+@login_required
 def generate_review():
     profile = get_profile()
     if not profile:
@@ -738,11 +853,13 @@ def generate_review():
 
 
 @app.route("/export")
+@login_required
 def export_page():
     return render_template("export.html")
 
 
 @app.route("/export/download")
+@login_required
 def export_download():
     profile = get_profile()
     if not profile:
@@ -759,12 +876,13 @@ def export_download():
 
 
 @app.route("/plan")
+@login_required
 def plan_view():
     profile = get_profile()
     if not profile:
         return redirect(url_for("setup"))
 
-    active_plan = get_active_plan()
+    active_plan = get_active_plan(profile.id)
     workouts = []
     phases = []
     current_phase = None
@@ -791,14 +909,16 @@ def plan_view():
 
 
 @app.route("/settings")
+@login_required
 def settings():
     profile = get_profile()
-    return render_template("settings.html", profile=profile)
+    return render_template("settings.html", profile=profile, account=current_user)
 
 
 # --- Fitness Test Routes ---
 
 @app.route("/fitness-test")
+@login_required
 def fitness_test():
     profile = get_profile()
     if not profile:
@@ -827,6 +947,7 @@ def fitness_test():
 
 
 @app.route("/fitness-test/new", methods=["GET", "POST"])
+@login_required
 def fitness_test_new():
     profile = get_profile()
     if not profile:
@@ -854,6 +975,7 @@ def fitness_test_new():
 # --- Calendar Route ---
 
 @app.route("/calendar")
+@login_required
 def calendar_view():
     profile = get_profile()
     if not profile:
@@ -926,12 +1048,13 @@ def calendar_view():
 # --- Nutrition Route ---
 
 @app.route("/nutrition")
+@login_required
 def nutrition():
     profile = get_profile()
     if not profile:
         return redirect(url_for("setup"))
 
-    active_plan = get_active_plan()
+    active_plan = get_active_plan(profile.id)
     phases = []
     current_phase = None
 
@@ -950,4 +1073,6 @@ def nutrition():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    debug = os.environ.get("FLASK_DEBUG", "false").lower() == "true"
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=debug)

@@ -13,12 +13,14 @@ from unittest.mock import patch, MagicMock
 from werkzeug.datastructures import MultiDict
 
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
+os.environ.setdefault("SECRET_KEY", "test-secret-key")
 
 import app as flask_app
 from models import (
-    db, UserProfile, WorkoutPlan, PlannedWorkout, PlannedExercise,
+    db, Account, UserProfile, WorkoutPlan, PlannedWorkout, PlannedExercise,
     WorkoutSession, LoggedSet, AIReview, FitnessTest, ExerciseLibrary,
 )
+from extensions import bcrypt
 
 
 # ---------------------------------------------------------------------------
@@ -56,14 +58,35 @@ def application():
 
 
 @pytest.fixture
-def client(application):
-    return application.test_client()
+def account(application):
+    """Create a claimed account and return its id."""
+    with application.app_context():
+        acc = Account(
+            email="test@example.com",
+            password_hash=bcrypt.generate_password_hash("password123").decode("utf-8"),
+            email_claimed=True,
+        )
+        db.session.add(acc)
+        db.session.commit()
+        return acc.id
 
 
 @pytest.fixture
-def profile(application):
+def client(application, account):
+    """Test client pre-logged-in as the test account."""
+    c = application.test_client()
+    # Inject Flask-Login session directly (avoids password round-trip)
+    with c.session_transaction() as sess:
+        sess["_user_id"] = str(account)
+        sess["_fresh"] = True
+    return c
+
+
+@pytest.fixture
+def profile(application, account):
     with application.app_context():
         p = UserProfile(
+            account_id=account,
             name="Tim", age=35, sex="Male",
             fitness_level="Intermediate", goals="Build muscle"
         )
