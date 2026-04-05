@@ -9,9 +9,21 @@ from extensions import bcrypt, oauth_client, login_manager, limiter
 
 auth = Blueprint("auth", __name__)
 
-# Set ALLOW_REGISTRATION=true in .env to permit new sign-ups.
-# Defaults to false — keeps the app private when exposed to the internet.
-_ALLOW_REGISTRATION = os.environ.get("ALLOW_REGISTRATION", "false").lower() == "true"
+_WHITELIST_PATH = os.path.join(
+    os.path.dirname(__file__), "instance", "whitelist.txt"
+)
+
+
+def _email_whitelisted(email: str) -> bool:
+    """Return True if email appears in instance/whitelist.txt (case-insensitive).
+    If the file doesn't exist, registration is closed to everyone.
+    """
+    try:
+        with open(_WHITELIST_PATH) as f:
+            allowed = {line.strip().lower() for line in f if line.strip()}
+        return email.lower() in allowed
+    except FileNotFoundError:
+        return False
 
 
 @login_manager.user_loader
@@ -50,10 +62,6 @@ def register():
     if current_user.is_authenticated:
         return redirect(url_for("index"))
 
-    if not _ALLOW_REGISTRATION:
-        flash("Registration is not open on this server.", "error")
-        return redirect(url_for("auth.login"))
-
     if request.method == "POST":
         email = request.form.get("email", "").strip().lower()
         password = request.form.get("password", "")
@@ -61,6 +69,8 @@ def register():
 
         if not email or not password:
             flash("Email and password are required.", "error")
+        elif not _email_whitelisted(email):
+            flash("That email address is not on the invite list.", "error")
         elif password != confirm:
             flash("Passwords do not match.", "error")
         elif len(password) < 8:

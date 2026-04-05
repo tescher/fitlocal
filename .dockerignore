@@ -5,6 +5,7 @@
 __pycache__/
 .pytest_cache/
 instance/backups/
+instance/whitelist.txt
 *.log
 .gitignore
 schema.png
