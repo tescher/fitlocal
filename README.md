@@ -86,6 +86,46 @@ To keep the bookmark stable on your workout room device, assign a static local I
 
 ---
 
+## User Accounts & Registration
+
+FitLocal uses an email whitelist to control who can register. Registration is closed unless a user's email appears in `instance/whitelist.txt`.
+
+### Inviting a user
+
+Add their email to the whitelist (one email per line):
+
+```bash
+echo "friend@example.com" >> instance/whitelist.txt
+```
+
+They can then go to `/register` and create an account with any password they choose. Once registered, their account works permanently — you can remove them from the whitelist and it has no effect (the list is only checked at registration time, not login).
+
+### Closing registration
+
+Delete or empty the file:
+
+```bash
+> instance/whitelist.txt   # empties the file
+# or
+rm instance/whitelist.txt  # removes it entirely
+```
+
+Either way, no new registrations will be accepted until an email is added again.
+
+### Example `whitelist.txt`
+
+```
+you@example.com
+spouse@example.com
+trainer@example.com
+```
+
+### Docker note
+
+`instance/whitelist.txt` lives in the mounted volume alongside `fitlocal.db`, so it persists across container rebuilds and is never baked into the image.
+
+---
+
 ## Run on Startup
 
 ### Windows (Task Scheduler)
