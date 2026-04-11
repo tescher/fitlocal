@@ -95,13 +95,29 @@
                     {% set hist_ns.items = hist_ns.items + [{'d': sess['date'].strftime('%b %d'), 'w': sv['weight'], 'r': sv['reps'], 'rpe': sv['rpe']}] %}
                   {% endif %}
                 {% endfor %}
-                <tr class="last-time-row" {% if hist_ns.items | length > 1 %}data-history="{{ hist_ns.items | tojson | e }}"{% endif %}>
-                    <td class="last-time-label">{{ perf['date'].strftime('%b %d') }}</td>
+                {% set has_history = hist_ns.items | length > 1 %}
+                {% set row_id = exercise.exercise_name | replace(' ', '_') | replace('/', '_') ~ '_s' ~ set_num %}
+                <tr class="last-time-row{% if has_history %} has-history{% endif %}" {% if has_history %}onclick="var r=document.getElementById('hist_{{ row_id }}');r.style.display=r.style.display==='none'?'table-row':'none';"{% endif %}>
+                    <td class="last-time-label">{{ perf['date'].strftime('%b %d') }}{% if has_history %} <span class="hist-toggle-hint">?</span>{% endif %}</td>
                     <td class="last-time-val">{{ (s['weight']|string + ' lbs') if s['weight'] else '—' }}</td>
                     <td class="last-time-val">{{ s['reps'] if s['reps'] else '—' }}</td>
                     <td class="last-time-val">{{ s['rpe'] if s['rpe'] else '—' }}</td>
                     <td class="last-time-val">{{ s['notes'] if s['notes'] else '' }}</td>
                 </tr>
+                {% if has_history %}
+                <tr id="hist_{{ row_id }}" class="hist-detail-row" style="display:none;">
+                    <td colspan="5">
+                        <div class="hist-popup">
+                            {% for entry in hist_ns.items %}
+                            <div class="hist-row">
+                                <span class="hist-date">{{ entry.d }}</span>
+                                <span class="hist-vals">{{ (entry.w|string + ' lbs') if entry.w else '—' }} × {{ entry.r if entry.r else '—' }} reps{% if entry.rpe %} · RPE {{ entry.rpe }}{% endif %}</span>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </td>
+                </tr>
+                {% endif %}
                 {% endif %}
                 {% endfor %}
             </tbody>
@@ -170,13 +186,29 @@
                     {% set hist_ns.items = hist_ns.items + [{'d': sess['date'].strftime('%b %d'), 'w': sv['weight'], 'r': sv['reps'], 'rpe': sv['rpe']}] %}
                   {% endif %}
                 {% endfor %}
-                <tr class="last-time-row" {% if hist_ns.items | length > 1 %}data-history="{{ hist_ns.items | tojson | e }}"{% endif %}>
-                    <td class="last-time-label">{{ perf['date'].strftime('%b %d') }}</td>
+                {% set has_history = hist_ns.items | length > 1 %}
+                {% set row_id = exercise.exercise_name | replace(' ', '_') | replace('/', '_') ~ '_s' ~ set_num %}
+                <tr class="last-time-row{% if has_history %} has-history{% endif %}" {% if has_history %}onclick="var r=document.getElementById('hist_{{ row_id }}');r.style.display=r.style.display==='none'?'table-row':'none';"{% endif %}>
+                    <td class="last-time-label">{{ perf['date'].strftime('%b %d') }}{% if has_history %} <span class="hist-toggle-hint">?</span>{% endif %}</td>
                     <td class="last-time-val">{{ (s['weight']|string + ' lbs') if s['weight'] else '—' }}</td>
                     <td class="last-time-val">{{ s['reps'] if s['reps'] else '—' }}</td>
                     <td class="last-time-val">{{ s['rpe'] if s['rpe'] else '—' }}</td>
                     <td class="last-time-val">{{ s['notes'] if s['notes'] else '' }}</td>
                 </tr>
+                {% if has_history %}
+                <tr id="hist_{{ row_id }}" class="hist-detail-row" style="display:none;">
+                    <td colspan="5">
+                        <div class="hist-popup">
+                            {% for entry in hist_ns.items %}
+                            <div class="hist-row">
+                                <span class="hist-date">{{ entry.d }}</span>
+                                <span class="hist-vals">{{ (entry.w|string + ' lbs') if entry.w else '—' }} × {{ entry.r if entry.r else '—' }} reps{% if entry.rpe %} · RPE {{ entry.rpe }}{% endif %}</span>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </td>
+                </tr>
+                {% endif %}
                 {% endif %}
                 {% endfor %}
             </tbody>
@@ -245,13 +277,29 @@
                     {% set hist_ns.items = hist_ns.items + [{'d': sess['date'].strftime('%b %d'), 'w': sv['weight'], 'r': sv['reps'], 'rpe': sv['rpe']}] %}
                   {% endif %}
                 {% endfor %}
-                <tr class="last-time-row" {% if hist_ns.items | length > 1 %}data-history="{{ hist_ns.items | tojson | e }}"{% endif %}>
-                    <td class="last-time-label">{{ perf['date'].strftime('%b %d') }}</td>
+                {% set has_history = hist_ns.items | length > 1 %}
+                {% set row_id = exercise.exercise_name | replace(' ', '_') | replace('/', '_') ~ '_s' ~ set_num %}
+                <tr class="last-time-row{% if has_history %} has-history{% endif %}" {% if has_history %}onclick="var r=document.getElementById('hist_{{ row_id }}');r.style.display=r.style.display==='none'?'table-row':'none';"{% endif %}>
+                    <td class="last-time-label">{{ perf['date'].strftime('%b %d') }}{% if has_history %} <span class="hist-toggle-hint">?</span>{% endif %}</td>
                     <td class="last-time-val">{{ (s['weight']|string + ' lbs') if s['weight'] else '—' }}</td>
                     <td class="last-time-val">{{ s['reps'] if s['reps'] else '—' }}</td>
                     <td class="last-time-val">{{ s['rpe'] if s['rpe'] else '—' }}</td>
                     <td class="last-time-val">{{ s['notes'] if s['notes'] else '' }}</td>
                 </tr>
+                {% if has_history %}
+                <tr id="hist_{{ row_id }}" class="hist-detail-row" style="display:none;">
+                    <td colspan="5">
+                        <div class="hist-popup">
+                            {% for entry in hist_ns.items %}
+                            <div class="hist-row">
+                                <span class="hist-date">{{ entry.d }}</span>
+                                <span class="hist-vals">{{ (entry.w|string + ' lbs') if entry.w else '—' }} × {{ entry.r if entry.r else '—' }} reps{% if entry.rpe %} · RPE {{ entry.rpe }}{% endif %}</span>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </td>
+                </tr>
+                {% endif %}
                 {% endif %}
                 {% endfor %}
             </tbody>
@@ -286,73 +334,6 @@
     </div>
 </form>
 
-<!-- History tooltip -->
-<div id="histTooltip" class="hist-tooltip" style="display:none;"></div>
-
-<script>
-(function() {
-    const tooltip = document.getElementById('histTooltip');
-
-    function buildTooltip(history) {
-        return history.map(function(entry) {
-            const w = entry.w ? entry.w + ' lbs' : '—';
-            const r = entry.r ? entry.r + ' reps' : '—';
-            const rpe = entry.rpe ? ' · RPE ' + entry.rpe : '';
-            return '<div class="hist-row"><span class="hist-date">' + entry.d + '</span><span class="hist-vals">' + w + ' × ' + r + rpe + '</span></div>';
-        }).join('');
-    }
-
-    function showTooltip(row, e) {
-        let history;
-        try { history = JSON.parse(row.dataset.history); } catch(err) { return; }
-        if (!history || history.length <= 1) return;
-        tooltip.innerHTML = buildTooltip(history);
-        tooltip.style.display = 'block';
-        positionTooltip(e || row);
-    }
-
-    function positionTooltip(e) {
-        const gap = 12;
-        let x, y;
-        if (e && e.clientX !== undefined) {
-            x = e.clientX + gap;
-            y = e.clientY + gap;
-        } else if (e && e.getBoundingClientRect) {
-            const rect = e.getBoundingClientRect();
-            x = rect.left;
-            y = rect.bottom + gap;
-        } else {
-            x = gap;
-            y = gap;
-        }
-        // position: fixed — coords are viewport-relative, no scroll offset needed
-        const tw = tooltip.offsetWidth || 220;
-        const th = tooltip.offsetHeight || 80;
-        if (x + tw > window.innerWidth - gap) x = window.innerWidth - tw - gap;
-        if (y + th > window.innerHeight - gap) y = y - th - gap * 2;
-        tooltip.style.left = x + 'px';
-        tooltip.style.top  = y + 'px';
-    }
-
-    function hideTooltip() {
-        tooltip.style.display = 'none';
-    }
-
-    document.querySelectorAll('tr.last-time-row[data-history]').forEach(function(row) {
-        row.addEventListener('click', function(e) {
-            if (tooltip._sourceRow === row && tooltip.style.display !== 'none') {
-                hideTooltip();
-            } else {
-                tooltip._sourceRow = row;
-                showTooltip(row, row);
-            }
-            e.stopPropagation();
-        });
-    });
-
-    document.addEventListener('click', hideTooltip);
-})();
-</script>
 
 <!-- Confirmation Modal -->
 <div id="confirmModal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.6); z-index:1000; align-items:center; justify-content:center;">
