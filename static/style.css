@@ -1050,19 +1050,11 @@ tr.last-time-row.has-history {
 }
 
 .hist-toggle-hint {
-    display: inline-block;
-    width: 1rem;
-    height: 1rem;
-    line-height: 1rem;
-    text-align: center;
-    border-radius: 50%;
-    background: var(--primary, #4a90d9);
-    color: #fff;
-    font-size: 0.65rem;
+    font-size: 0.7rem;
     font-style: normal;
-    font-weight: 700;
-    vertical-align: middle;
-    margin-left: 0.3rem;
+    color: var(--text-muted);
+    margin-left: 0.25rem;
+    opacity: 0.6;
 }
 
 tr.hist-detail-row td {
