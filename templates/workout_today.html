@@ -292,7 +292,6 @@
 <script>
 (function() {
     const tooltip = document.getElementById('histTooltip');
-    let hideTimer = null;
 
     function buildTooltip(history) {
         return history.map(function(entry) {
@@ -340,33 +339,18 @@
     }
 
     document.querySelectorAll('tr.last-time-row[data-history]').forEach(function(row) {
-        row.addEventListener('mouseenter', function(e) {
-            if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
-            showTooltip(row, e);
-        });
-        row.addEventListener('mousemove', function(e) {
-            positionTooltip(e);
-        });
-        row.addEventListener('mouseleave', function() {
-            hideTimer = setTimeout(hideTooltip, 150);
-        });
         row.addEventListener('click', function(e) {
-            if (tooltip.style.display === 'none') {
-                showTooltip(row, null);
-            } else {
+            if (tooltip._sourceRow === row && tooltip.style.display !== 'none') {
                 hideTooltip();
+            } else {
+                tooltip._sourceRow = row;
+                showTooltip(row, row);
             }
             e.stopPropagation();
         });
     });
 
     document.addEventListener('click', hideTooltip);
-    tooltip.addEventListener('mouseenter', function() {
-        if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
-    });
-    tooltip.addEventListener('mouseleave', function() {
-        hideTimer = setTimeout(hideTooltip, 150);
-    });
 })();
 </script>
 
