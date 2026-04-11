@@ -15,7 +15,7 @@ It will NOT create a duplicate if a session with the same date already exists
 
 import sys
 import json
-from datetime import datetime, timezone
+from datetime import datetime, date, timezone
 from app import app
 from models import db, WorkoutSession, LoggedSet, UserProfile, PlannedWorkout
 
