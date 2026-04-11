@@ -84,7 +84,7 @@ def import_session(json_path: str):
         new_session = WorkoutSession(
             user_id=user.id,
             planned_workout_id=planned_workout_id,
-            date=s["date"],
+            date=date.fromisoformat(s["date"]),
             start_time=parse_dt(s.get("start_time")),
             end_time=parse_dt(s.get("end_time")),
             overall_feeling=s.get("overall_feeling"),
