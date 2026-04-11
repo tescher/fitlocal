@@ -302,6 +302,36 @@ def get_last_performance(user_id, exercise_name):
     }
 
 
+def get_recent_performance(user_id, exercise_name, limit=3):
+    """Get the last N sessions for a specific exercise, for history tooltips."""
+    sessions = (
+        WorkoutSession.query
+        .filter(
+            WorkoutSession.user_id == user_id,
+            WorkoutSession.logged_sets.any(LoggedSet.exercise_name == exercise_name),
+        )
+        .order_by(WorkoutSession.date.desc())
+        .limit(limit)
+        .all()
+    )
+    result = []
+    for session in sessions:
+        sets = [s for s in session.logged_sets if s.exercise_name == exercise_name]
+        if sets:
+            result.append({
+                "date": session.date,
+                "sets": {
+                    s.set_number: {
+                        "weight": s.weight_lbs,
+                        "reps": s.reps_completed,
+                        "rpe": s.rpe,
+                    }
+                    for s in sets
+                },
+            })
+    return result
+
+
 def update_streak(profile):
     """Update the user's workout streak after logging a session."""
     today = date.today()
@@ -591,10 +621,14 @@ def workout_today():
 
     # Get last performance for each exercise
     last_perf = {}
+    recent_perf = {}
     for ex in all_exercises:
         perf = get_last_performance(profile.id, ex.exercise_name)
         if perf:
             last_perf[ex.exercise_name] = perf
+        recent = get_recent_performance(profile.id, ex.exercise_name, limit=3)
+        if recent:
+            recent_perf[ex.exercise_name] = recent
 
     all_plan_workouts = PlannedWorkout.query.filter_by(
         plan_id=active_plan.id
@@ -608,6 +642,7 @@ def workout_today():
         cooldown_exercises=cooldown,
         all_exercises=all_exercises,
         last_perf=last_perf,
+        recent_perf=recent_perf,
         all_plan_workouts=all_plan_workouts,
     )
 

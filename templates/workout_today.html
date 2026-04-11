@@ -88,7 +88,14 @@
                 {% set perf = last_perf.get(exercise.exercise_name) %}
                 {% if perf and set_num in perf['sets'] %}
                 {% set s = perf['sets'][set_num] %}
-                <tr class="last-time-row">
+                {% set hist_ns = namespace(items=[]) %}
+                {% for sess in recent_perf.get(exercise.exercise_name, []) %}
+                  {% if set_num in sess['sets'] %}
+                    {% set sv = sess['sets'][set_num] %}
+                    {% set hist_ns.items = hist_ns.items + [{'d': sess['date'].strftime('%b %d'), 'w': sv['weight'], 'r': sv['reps'], 'rpe': sv['rpe']}] %}
+                  {% endif %}
+                {% endfor %}
+                <tr class="last-time-row" {% if hist_ns.items | length > 1 %}data-history="{{ hist_ns.items | tojson | e }}" title="Hover for history"{% endif %}>
                     <td class="last-time-label">{{ perf['date'].strftime('%b %d') }}</td>
                     <td class="last-time-val">{{ (s['weight']|string + ' lbs') if s['weight'] else '—' }}</td>
                     <td class="last-time-val">{{ s['reps'] if s['reps'] else '—' }}</td>
@@ -156,7 +163,14 @@
                 {% set perf = last_perf.get(exercise.exercise_name) %}
                 {% if perf and set_num in perf['sets'] %}
                 {% set s = perf['sets'][set_num] %}
-                <tr class="last-time-row">
+                {% set hist_ns = namespace(items=[]) %}
+                {% for sess in recent_perf.get(exercise.exercise_name, []) %}
+                  {% if set_num in sess['sets'] %}
+                    {% set sv = sess['sets'][set_num] %}
+                    {% set hist_ns.items = hist_ns.items + [{'d': sess['date'].strftime('%b %d'), 'w': sv['weight'], 'r': sv['reps'], 'rpe': sv['rpe']}] %}
+                  {% endif %}
+                {% endfor %}
+                <tr class="last-time-row" {% if hist_ns.items | length > 1 %}data-history="{{ hist_ns.items | tojson | e }}" title="Hover for history"{% endif %}>
                     <td class="last-time-label">{{ perf['date'].strftime('%b %d') }}</td>
                     <td class="last-time-val">{{ (s['weight']|string + ' lbs') if s['weight'] else '—' }}</td>
                     <td class="last-time-val">{{ s['reps'] if s['reps'] else '—' }}</td>
@@ -224,7 +238,14 @@
                 {% set perf = last_perf.get(exercise.exercise_name) %}
                 {% if perf and set_num in perf['sets'] %}
                 {% set s = perf['sets'][set_num] %}
-                <tr class="last-time-row">
+                {% set hist_ns = namespace(items=[]) %}
+                {% for sess in recent_perf.get(exercise.exercise_name, []) %}
+                  {% if set_num in sess['sets'] %}
+                    {% set sv = sess['sets'][set_num] %}
+                    {% set hist_ns.items = hist_ns.items + [{'d': sess['date'].strftime('%b %d'), 'w': sv['weight'], 'r': sv['reps'], 'rpe': sv['rpe']}] %}
+                  {% endif %}
+                {% endfor %}
+                <tr class="last-time-row" {% if hist_ns.items | length > 1 %}data-history="{{ hist_ns.items | tojson | e }}" title="Hover for history"{% endif %}>
                     <td class="last-time-label">{{ perf['date'].strftime('%b %d') }}</td>
                     <td class="last-time-val">{{ (s['weight']|string + ' lbs') if s['weight'] else '—' }}</td>
                     <td class="last-time-val">{{ s['reps'] if s['reps'] else '—' }}</td>
@@ -264,6 +285,86 @@
         <button type="button" class="btn btn-success" onclick="confirmLogWorkout()">Log Workout</button>
     </div>
 </form>
+
+<!-- History tooltip -->
+<div id="histTooltip" class="hist-tooltip" style="display:none;"></div>
+
+<script>
+(function() {
+    const tooltip = document.getElementById('histTooltip');
+    let hideTimer = null;
+
+    function buildTooltip(history) {
+        return history.map(function(entry) {
+            const w = entry.w ? entry.w + ' lbs' : '—';
+            const r = entry.r ? entry.r + ' reps' : '—';
+            const rpe = entry.rpe ? ' · RPE ' + entry.rpe : '';
+            return '<div class="hist-row"><span class="hist-date">' + entry.d + '</span><span class="hist-vals">' + w + ' × ' + r + rpe + '</span></div>';
+        }).join('');
+    }
+
+    function showTooltip(row, e) {
+        let history;
+        try { history = JSON.parse(row.dataset.history); } catch(err) { return; }
+        if (!history || history.length <= 1) return;
+        tooltip.innerHTML = buildTooltip(history);
+        tooltip.style.display = 'block';
+        positionTooltip(e || row);
+    }
+
+    function positionTooltip(e) {
+        const gap = 12;
+        let x, y;
+        if (e.clientX !== undefined) {
+            x = e.clientX + gap;
+            y = e.clientY + gap;
+        } else {
+            const rect = e.getBoundingClientRect ? e.getBoundingClientRect() : {left: 0, bottom: 0};
+            x = rect.left;
+            y = rect.bottom + gap;
+        }
+        const tw = tooltip.offsetWidth || 200;
+        const th = tooltip.offsetHeight || 80;
+        if (x + tw > window.innerWidth - gap) x = window.innerWidth - tw - gap;
+        if (y + th > window.innerHeight - gap) y = y - th - gap * 2;
+        tooltip.style.left = x + window.scrollX + 'px';
+        tooltip.style.top  = y + window.scrollY + 'px';
+    }
+
+    function hideTooltip() {
+        tooltip.style.display = 'none';
+    }
+
+    document.querySelectorAll('tr.last-time-row[data-history]').forEach(function(row) {
+        row.addEventListener('mouseenter', function(e) {
+            if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+            showTooltip(row, e);
+        });
+        row.addEventListener('mousemove', function(e) {
+            positionTooltip(e);
+        });
+        row.addEventListener('mouseleave', function() {
+            hideTimer = setTimeout(hideTooltip, 150);
+        });
+        row.addEventListener('click', function(e) {
+            if (tooltip.style.display === 'none') {
+                showTooltip(row, null);
+            } else {
+                hideTooltip();
+            }
+            e.stopPropagation();
+        });
+    });
+
+    document.addEventListener('click', hideTooltip);
+    tooltip.addEventListener('mouseenter', function() {
+        if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+    });
+    tooltip.addEventListener('mouseleave', function() {
+        hideTimer = setTimeout(hideTooltip, 150);
+    });
+})();
+</script>
 
 <!-- Confirmation Modal -->
 <div id="confirmModal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.6); z-index:1000; align-items:center; justify-content:center;">
