@@ -1050,7 +1050,7 @@ tr.last-time-row[data-history] {
 }
 
 .hist-tooltip {
-    position: absolute;
+    position: fixed;
     z-index: 9999;
     background: #1e1e2e;
     color: #e0e0f0;

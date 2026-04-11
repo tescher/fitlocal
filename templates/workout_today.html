@@ -95,7 +95,7 @@
                     {% set hist_ns.items = hist_ns.items + [{'d': sess['date'].strftime('%b %d'), 'w': sv['weight'], 'r': sv['reps'], 'rpe': sv['rpe']}] %}
                   {% endif %}
                 {% endfor %}
-                <tr class="last-time-row" {% if hist_ns.items | length > 1 %}data-history="{{ hist_ns.items | tojson | e }}" title="Hover for history"{% endif %}>
+                <tr class="last-time-row" {% if hist_ns.items | length > 1 %}data-history="{{ hist_ns.items | tojson | e }}"{% endif %}>
                     <td class="last-time-label">{{ perf['date'].strftime('%b %d') }}</td>
                     <td class="last-time-val">{{ (s['weight']|string + ' lbs') if s['weight'] else '—' }}</td>
                     <td class="last-time-val">{{ s['reps'] if s['reps'] else '—' }}</td>
@@ -170,7 +170,7 @@
                     {% set hist_ns.items = hist_ns.items + [{'d': sess['date'].strftime('%b %d'), 'w': sv['weight'], 'r': sv['reps'], 'rpe': sv['rpe']}] %}
                   {% endif %}
                 {% endfor %}
-                <tr class="last-time-row" {% if hist_ns.items | length > 1 %}data-history="{{ hist_ns.items | tojson | e }}" title="Hover for history"{% endif %}>
+                <tr class="last-time-row" {% if hist_ns.items | length > 1 %}data-history="{{ hist_ns.items | tojson | e }}"{% endif %}>
                     <td class="last-time-label">{{ perf['date'].strftime('%b %d') }}</td>
                     <td class="last-time-val">{{ (s['weight']|string + ' lbs') if s['weight'] else '—' }}</td>
                     <td class="last-time-val">{{ s['reps'] if s['reps'] else '—' }}</td>
@@ -245,7 +245,7 @@
                     {% set hist_ns.items = hist_ns.items + [{'d': sess['date'].strftime('%b %d'), 'w': sv['weight'], 'r': sv['reps'], 'rpe': sv['rpe']}] %}
                   {% endif %}
                 {% endfor %}
-                <tr class="last-time-row" {% if hist_ns.items | length > 1 %}data-history="{{ hist_ns.items | tojson | e }}" title="Hover for history"{% endif %}>
+                <tr class="last-time-row" {% if hist_ns.items | length > 1 %}data-history="{{ hist_ns.items | tojson | e }}"{% endif %}>
                     <td class="last-time-label">{{ perf['date'].strftime('%b %d') }}</td>
                     <td class="last-time-val">{{ (s['weight']|string + ' lbs') if s['weight'] else '—' }}</td>
                     <td class="last-time-val">{{ s['reps'] if s['reps'] else '—' }}</td>
@@ -315,20 +315,24 @@
     function positionTooltip(e) {
         const gap = 12;
         let x, y;
-        if (e.clientX !== undefined) {
+        if (e && e.clientX !== undefined) {
             x = e.clientX + gap;
             y = e.clientY + gap;
-        } else {
-            const rect = e.getBoundingClientRect ? e.getBoundingClientRect() : {left: 0, bottom: 0};
+        } else if (e && e.getBoundingClientRect) {
+            const rect = e.getBoundingClientRect();
             x = rect.left;
             y = rect.bottom + gap;
+        } else {
+            x = gap;
+            y = gap;
         }
-        const tw = tooltip.offsetWidth || 200;
+        // position: fixed — coords are viewport-relative, no scroll offset needed
+        const tw = tooltip.offsetWidth || 220;
         const th = tooltip.offsetHeight || 80;
         if (x + tw > window.innerWidth - gap) x = window.innerWidth - tw - gap;
         if (y + th > window.innerHeight - gap) y = y - th - gap * 2;
-        tooltip.style.left = x + window.scrollX + 'px';
-        tooltip.style.top  = y + window.scrollY + 'px';
+        tooltip.style.left = x + 'px';
+        tooltip.style.top  = y + 'px';
     }
 
     function hideTooltip() {
