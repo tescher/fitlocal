@@ -232,7 +232,11 @@ def google_callback():
         profile = UserProfile.query.filter_by(account_id=account.id).first()
         return redirect(url_for("setup") if not profile else url_for("index"))
 
-    # New account via Google
+    # New account via Google — check whitelist before creating
+    if not _email_whitelisted(email):
+        flash("That Google account is not on the invite list.", "error")
+        return redirect(url_for("auth.login"))
+
     new_account = Account(email=email, google_id=google_id, email_claimed=True)
     db.session.add(new_account)
     db.session.commit()
