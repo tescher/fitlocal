@@ -636,6 +636,25 @@ def workout_today():
         plan_id=active_plan.id
     ).order_by(PlannedWorkout.order_index).all()
 
+    # Serialize perf data to JSON for use in addSet JS
+    last_perf_json = json.dumps({
+        name: {
+            "date": data["date"].strftime("%b %d"),
+            "sets": {str(k): {"weight": v["weight"], "reps": v["reps"], "rpe": v["rpe"], "notes": v.get("notes", "")}
+                     for k, v in data["sets"].items()}
+        }
+        for name, data in last_perf.items()
+    })
+    recent_perf_json = json.dumps({
+        name: [
+            {"date": sess["date"].strftime("%b %d"),
+             "sets": {str(k): {"weight": v["weight"], "reps": v["reps"], "rpe": v["rpe"]}
+                      for k, v in sess["sets"].items()}}
+            for sess in sessions
+        ]
+        for name, sessions in recent_perf.items()
+    })
+
     return render_template(
         "workout_today.html",
         workout=next_workout,
@@ -645,6 +664,8 @@ def workout_today():
         all_exercises=all_exercises,
         last_perf=last_perf,
         recent_perf=recent_perf,
+        last_perf_json=last_perf_json,
+        recent_perf_json=recent_perf_json,
         all_plan_workouts=all_plan_workouts,
     )
 

@@ -460,27 +460,102 @@ function stopRest() {
     document.getElementById('timerCard').classList.remove('timer-done');
 }
 
+const lastPerfData = {{ last_perf_json | safe }};
+const recentPerfData = {{ recent_perf_json | safe }};
+
+function isHistoryRow(tr) {
+    return tr && (tr.classList.contains('last-time-row') || tr.classList.contains('hist-detail-row'));
+}
+
+function lastRowOfSet(dataRow) {
+    let last = dataRow;
+    while (isHistoryRow(last.nextElementSibling)) {
+        last = last.nextElementSibling;
+    }
+    return last;
+}
+
+function makeRowId(exerciseName, setNum) {
+    return exerciseName.replace(/ /g, '_').replace(/\//g, '_') + '_s' + setNum;
+}
+
+function fmt(val, suffix) {
+    return val ? (val + suffix) : '—';
+}
+
+function buildHistoryRows(exerciseName, setNum) {
+    const setKey = String(setNum);
+    const last = lastPerfData[exerciseName];
+    if (!last || !last.sets[setKey]) return [];
+
+    const s = last.sets[setKey];
+    const recent = (recentPerfData[exerciseName] || []).filter(sess => sess.sets[setKey]);
+    const hasHistory = recent.length > 1;
+    const rowId = makeRowId(exerciseName, setNum);
+    const rows = [];
+
+    // last-time-row
+    const ltr = document.createElement('tr');
+    ltr.className = 'last-time-row' + (hasHistory ? ' has-history' : '');
+    if (hasHistory) {
+        ltr.onclick = function() {
+            const r = document.getElementById('hist_' + rowId);
+            r.style.display = r.style.display === 'none' ? 'table-row' : 'none';
+        };
+    }
+    ltr.innerHTML =
+        '<td class="last-time-label">' + last.date + (hasHistory ? ' <span class="hist-toggle-hint">?</span>' : '') + '</td>' +
+        '<td class="last-time-val">' + fmt(s.weight, ' lbs') + '</td>' +
+        '<td class="last-time-val">' + (s.reps || '—') + '</td>' +
+        '<td class="last-time-val">' + (s.rpe || '—') + '</td>' +
+        '<td class="last-time-val">' + (s.notes || '') + '</td>';
+    rows.push(ltr);
+
+    // hist-detail-row
+    if (hasHistory) {
+        const hdr = document.createElement('tr');
+        hdr.id = 'hist_' + rowId;
+        hdr.className = 'hist-detail-row';
+        hdr.style.display = 'none';
+        const inner = recent.map(function(sess) {
+            const sv = sess.sets[setKey];
+            return '<div class="hist-row"><span class="hist-date">' + sess.date + '</span>' +
+                '<span class="hist-vals">' + fmt(sv.weight, ' lbs') + ' × ' + (sv.reps || '—') + ' reps' +
+                (sv.rpe ? ' · RPE ' + sv.rpe : '') + '</span></div>';
+        }).join('');
+        hdr.innerHTML = '<td colspan="5"><div class="hist-popup">' + inner + '</div></td>';
+        rows.push(hdr);
+    }
+
+    return rows;
+}
+
 function addSet(btn) {
     const block = btn.closest('.exercise-block');
     const tbody = block.querySelector('tbody');
-    const dataRows = Array.from(tbody.querySelectorAll('tr:not(.last-time-row)'));
+    const dataRows = Array.from(tbody.querySelectorAll('tr:not(.last-time-row):not(.hist-detail-row)'));
     if (dataRows.length === 0) return;
 
     const lastDataRow = dataRows[dataRows.length - 1];
     const newRow = lastDataRow.cloneNode(true);
     const newSetNum = dataRows.length + 1;
+    const exerciseName = newRow.querySelector('input[name="exercise_name"]').value;
 
     newRow.querySelector('.set-num-display').textContent = newSetNum;
     newRow.querySelector('input[name="set_number"]').value = newSetNum;
     newRow.querySelectorAll('input[type="number"], input[type="text"]').forEach(inp => inp.value = '');
     newRow.querySelectorAll('select').forEach(sel => sel.selectedIndex = 0);
 
-    // Insert after the last data row (skip past any trailing last-time-row)
-    let insertAfter = lastDataRow;
-    if (insertAfter.nextElementSibling && insertAfter.nextElementSibling.classList.contains('last-time-row')) {
-        insertAfter = insertAfter.nextElementSibling;
-    }
-    insertAfter.after(newRow);
+    // Insert after all history rows that belong to the last set
+    let anchor = lastRowOfSet(lastDataRow);
+    anchor.after(newRow);
+    anchor = newRow;
+
+    // Append history rows for this set number if data exists
+    buildHistoryRows(exerciseName, newSetNum).forEach(function(r) {
+        anchor.after(r);
+        anchor = r;
+    });
 }
 
 function removeSet(btn) {
@@ -500,9 +575,12 @@ function removeSet(btn) {
     }
 
     const lastDataRow = dataRows[dataRows.length - 1];
-    // Remove any trailing last-time-row for this set first
-    if (lastDataRow.nextElementSibling && (lastDataRow.nextElementSibling.classList.contains('last-time-row') || lastDataRow.nextElementSibling.classList.contains('hist-detail-row'))) {
-        lastDataRow.nextElementSibling.remove();
+    // Remove all trailing history rows that belong to this set, then the data row itself
+    let sib = lastDataRow.nextElementSibling;
+    while (isHistoryRow(sib)) {
+        const next = sib.nextElementSibling;
+        sib.remove();
+        sib = next;
     }
     lastDataRow.remove();
 }
