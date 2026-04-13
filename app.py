@@ -29,6 +29,8 @@ app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 app.config["SESSION_COOKIE_SECURE"] = os.environ.get("HTTPS", "false").lower() == "true"
 app.config["REMEMBER_COOKIE_HTTPONLY"] = True
 app.config["REMEMBER_COOKIE_SECURE"] = app.config["SESSION_COOKIE_SECURE"]
+app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(hours=8)
+app.config["WTF_CSRF_TIME_LIMIT"] = 8 * 3600  # 8 hours in seconds
 
 # Trust one layer of reverse-proxy headers (Opalstack nginx)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
