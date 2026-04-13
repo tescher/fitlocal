@@ -17,6 +17,12 @@
                 </div>
                 <div class="text-muted">
                     {{ s.logged_sets | length }} sets
+                    {% if s.start_time and s.end_time %}
+                        {% set dur = (s.end_time - s.start_time).seconds %}
+                        {% set dur_h = dur // 3600 %}
+                        {% set dur_m = (dur % 3600) // 60 %}
+                        | {% if dur_h %}{{ dur_h }}h {% endif %}{{ dur_m }}m
+                    {% endif %}
                     {% if s.overall_feeling %} | Feeling: {{ s.overall_feeling }}/5{% endif %}
                 </div>
             </div>

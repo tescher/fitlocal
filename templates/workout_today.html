@@ -40,6 +40,7 @@
 
 <form method="POST" action="{{ url_for('workout_log') }}">
     <input type="hidden" name="planned_workout_id" value="{{ workout.id }}">
+    <input type="hidden" name="session_elapsed_seconds" id="sessionElapsedSeconds" value="0">
 
     {% if warmup_exercises %}
     <div class="section-header warmup-header">Warm-Up</div>
@@ -378,6 +379,8 @@ document.getElementById('confirmModal').addEventListener('click', function(e) {
 
 function confirmLogWorkout() {
     showModal('Log Workout?', 'Are you ready to save this workout session?', 'Save Workout', function() {
+        const elapsed = Math.floor((Date.now() - sessionStart) / 1000);
+        document.getElementById('sessionElapsedSeconds').value = elapsed;
         workoutSubmitted = true;
         document.querySelector('form[action$="/workout/log"]').submit();
     });
@@ -483,12 +486,22 @@ function addSet(btn) {
 function removeSet(btn) {
     const block = btn.closest('.exercise-block');
     const tbody = block.querySelector('tbody');
-    const dataRows = Array.from(tbody.querySelectorAll('tr:not(.last-time-row)'));
-    if (dataRows.length <= 1) return;  // always keep at least 1 set
+    const dataRows = Array.from(tbody.querySelectorAll('tr:not(.last-time-row):not(.hist-detail-row)'));
+
+    if (dataRows.length <= 1) {
+        const exerciseName = block.querySelector('h3').textContent.trim();
+        showModal(
+            'Remove Exercise?',
+            'This is the last set. Removing it will remove "' + exerciseName + '" from the session entirely. Continue?',
+            'Remove Exercise',
+            function() { block.remove(); }
+        );
+        return;
+    }
 
     const lastDataRow = dataRows[dataRows.length - 1];
     // Remove any trailing last-time-row for this set first
-    if (lastDataRow.nextElementSibling && lastDataRow.nextElementSibling.classList.contains('last-time-row')) {
+    if (lastDataRow.nextElementSibling && (lastDataRow.nextElementSibling.classList.contains('last-time-row') || lastDataRow.nextElementSibling.classList.contains('hist-detail-row'))) {
         lastDataRow.nextElementSibling.remove();
     }
     lastDataRow.remove();

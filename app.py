@@ -689,13 +689,17 @@ def workout_log():
     planned_workout_id = request.form.get("planned_workout_id")
     overall_feeling = request.form.get("overall_feeling", type=int)
     session_notes = request.form.get("session_notes", "")
+    elapsed_seconds = request.form.get("session_elapsed_seconds", 0, type=int)
+
+    end_time = datetime.now(timezone.utc)
+    start_time = end_time - timedelta(seconds=elapsed_seconds)
 
     workout_session = WorkoutSession(
         user_id=profile.id,
         planned_workout_id=int(planned_workout_id) if planned_workout_id else None,
         date=date.today(),
-        start_time=datetime.now(timezone.utc),
-        end_time=datetime.now(timezone.utc),
+        start_time=start_time,
+        end_time=end_time,
         overall_feeling=overall_feeling,
         session_notes=session_notes,
     )
