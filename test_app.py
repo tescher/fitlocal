@@ -359,9 +359,14 @@ check("Resume page has resume_session_id hidden field", f'name="resume_session_i
 check("Resume page has elapsed seconds", b'resumeElapsed = 432' in r.data)
 check("Pre-populated weight value", b'value="185.0"' in r.data or b'value="185"' in r.data)
 
-# Dashboard shows paused session banner
+# Dashboard shows paused session banner but NOT the Next Up card
 r = client.get("/")
 check("Dashboard shows paused session banner", b"Paused workout" in r.data or b"paused" in r.data.lower())
+check("Dashboard hides Next Up card when paused session exists", b"Next Up" not in r.data)
+
+# Workout today page (new session) does NOT show the paused session banner
+r = client.get("/workout/today", follow_redirects=False)
+check("Workout page does not show paused banner when starting new session", b"Paused workout" not in r.data)
 
 # History shows paused badge
 r = client.get("/history")

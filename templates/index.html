@@ -63,7 +63,7 @@
 </div>
 {% endif %}
 
-{% if active_plan %}
+{% if active_plan and not paused_session %}
     <div class="card">
         <h2>Next Up</h2>
         {% if next_workout %}
