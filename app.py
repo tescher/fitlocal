@@ -142,6 +142,9 @@ def redirect_unclaimed_account():
 
 DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
+SESSION_STATUS_COMPLETED = 'completed'
+SESSION_STATUS_PAUSED = 'paused'
+
 
 def get_profile():
     if not current_user.is_authenticated:
@@ -236,7 +239,7 @@ def get_paused_session(profile_id):
     """Return the most recent paused WorkoutSession for this user, or None."""
     return (
         WorkoutSession.query
-        .filter_by(user_id=profile_id, status='paused')
+        .filter_by(user_id=profile_id, status=SESSION_STATUS_PAUSED)
         .order_by(WorkoutSession.date.desc(), WorkoutSession.id.desc())
         .first()
     )
@@ -259,7 +262,7 @@ def get_plan_position(profile_id, active_plan):
     session_count = WorkoutSession.query.filter(
         WorkoutSession.user_id == profile_id,
         WorkoutSession.planned_workout_id.in_(workout_ids),
-        WorkoutSession.status == 'completed'
+        WorkoutSession.status == SESSION_STATUS_COMPLETED
     ).count()
     effective_count = session_count + (getattr(active_plan, "session_offset", 0) or 0)
 
@@ -272,7 +275,6 @@ def get_plan_position(profile_id, active_plan):
     phases = active_plan.phases  # TrainingPhase ORM objects
 
     if phases and phases_data:
-        workout_offset = 0
         sessions_accounted = 0
         for i, phase_data in enumerate(phases_data):
             week_start = phase_data.get("week_start", 1)
@@ -284,7 +286,6 @@ def get_plan_position(profile_id, active_plan):
                 session_in_phase = effective_count - sessions_accounted
                 week_in_phase = (session_in_phase // days_per_week) + 1
                 day_in_week = (session_in_phase % days_per_week) + 1
-                # Get the TrainingPhase ORM object for this index
                 phase_obj = phases[i] if i < len(phases) else None
                 phase_name = phase_obj.phase_name if phase_obj else phase_data.get("phase_name", f"Phase {i+1}")
                 is_recovery = (phase_obj.phase_type == 'recovery') if phase_obj else (phase_data.get("phase_type") == 'recovery')
@@ -299,7 +300,6 @@ def get_plan_position(profile_id, active_plan):
                 }
 
             sessions_accounted += phase_total_sessions
-            workout_offset += days_per_week
 
         # All phases done — back to start
         week_in_phase = (effective_count // days_per_week) + 1
@@ -347,7 +347,7 @@ def get_next_workout(profile_id, active_plan):
     session_count = WorkoutSession.query.filter(
         WorkoutSession.user_id == profile_id,
         WorkoutSession.planned_workout_id.in_(workout_ids),
-        WorkoutSession.status == 'completed'
+        WorkoutSession.status == SESSION_STATUS_COMPLETED
     ).count()
     effective_count = session_count + (getattr(active_plan, "session_offset", 0) or 0)
 
@@ -393,7 +393,7 @@ def get_last_performance(user_id, exercise_name):
         .filter(
             WorkoutSession.user_id == user_id,
             LoggedSet.exercise_name == exercise_name,
-            WorkoutSession.status == 'completed',
+            WorkoutSession.status == SESSION_STATUS_COMPLETED,
         )
         .order_by(WorkoutSession.date.desc())
         .first()
@@ -424,7 +424,7 @@ def get_recent_performance(user_id, exercise_name, limit=3):
         .filter(
             WorkoutSession.user_id == user_id,
             WorkoutSession.logged_sets.any(LoggedSet.exercise_name == exercise_name),
-            WorkoutSession.status == 'completed',
+            WorkoutSession.status == SESSION_STATUS_COMPLETED,
         )
         .order_by(WorkoutSession.date.desc())
         .limit(limit)
@@ -508,12 +508,12 @@ def index():
     days_trained = WorkoutSession.query.filter(
         WorkoutSession.user_id == profile.id,
         WorkoutSession.date >= week_start,
-        WorkoutSession.status == 'completed'
+        WorkoutSession.status == SESSION_STATUS_COMPLETED
     ).count()
 
     last_session = WorkoutSession.query.filter(
         WorkoutSession.user_id == profile.id,
-        WorkoutSession.status == 'completed'
+        WorkoutSession.status == SESSION_STATUS_COMPLETED
     ).order_by(
         WorkoutSession.date.desc()
     ).first()
@@ -736,7 +736,6 @@ def workout_today():
     if not profile:
         return redirect(url_for("setup"))
 
-    # If a paused session exists, send user to the choice page instead
     paused_session = get_paused_session(profile.id)
     if paused_session:
         return redirect(url_for("workout_paused_choice"))
@@ -747,73 +746,12 @@ def workout_today():
         return redirect(url_for("generate_plan"))
 
     next_workout = get_next_workout(profile.id, active_plan)
-
     if not next_workout:
         flash("No workouts found in your plan. Try regenerating it.", "error")
         return redirect(url_for("index"))
 
-    all_exercises = PlannedExercise.query.filter_by(
-        planned_workout_id=next_workout.id
-    ).all()
-
-    # Group by type
-    warmup = [e for e in all_exercises if e.exercise_type == "warmup"]
-    main = [e for e in all_exercises if e.exercise_type == "main"]
-    cooldown = [e for e in all_exercises if e.exercise_type == "cooldown"]
-
-    # Get last performance for each exercise
-    last_perf = {}
-    recent_perf = {}
-    for ex in all_exercises:
-        perf = get_last_performance(profile.id, ex.exercise_name)
-        if perf:
-            last_perf[ex.exercise_name] = perf
-        recent = get_recent_performance(profile.id, ex.exercise_name, limit=3)
-        if recent:
-            recent_perf[ex.exercise_name] = recent
-
-    all_plan_workouts = PlannedWorkout.query.filter_by(
-        plan_id=active_plan.id
-    ).order_by(PlannedWorkout.order_index).all()
-
-    # Serialize perf data to JSON for use in addSet JS
-    last_perf_json = json.dumps({
-        name: {
-            "date": data["date"].strftime("%b %d"),
-            "sets": {str(k): {"weight": v["weight"], "reps": v["reps"], "rpe": v["rpe"], "notes": v.get("notes", "")}
-                     for k, v in data["sets"].items()}
-        }
-        for name, data in last_perf.items()
-    })
-    recent_perf_json = json.dumps({
-        name: [
-            {"date": sess["date"].strftime("%b %d"),
-             "sets": {str(k): {"weight": v["weight"], "reps": v["reps"], "rpe": v["rpe"]}
-                      for k, v in sess["sets"].items()}}
-            for sess in sessions
-        ]
-        for name, sessions in recent_perf.items()
-    })
-
-    return render_template(
-        "workout_today.html",
-        workout=next_workout,
-        warmup_exercises=warmup,
-        main_exercises=main,
-        cooldown_exercises=cooldown,
-        all_exercises=all_exercises,
-        last_perf=last_perf,
-        recent_perf=recent_perf,
-        last_perf_json=last_perf_json,
-        recent_perf_json=recent_perf_json,
-        all_plan_workouts=all_plan_workouts,
-        paused_session=None,
-        resume_session_id=None,
-        resume_data=None,
-        resume_elapsed=0,
-        overall_feeling=None,
-        session_notes='',
-    )
+    ctx = _build_workout_context(profile, next_workout, active_plan)
+    return render_template("workout_today.html", **ctx)
 
 
 @app.route("/workout/choose", methods=["POST"])
@@ -832,7 +770,7 @@ def choose_workout():
     current_session_count = WorkoutSession.query.filter(
         WorkoutSession.user_id == profile.id,
         WorkoutSession.planned_workout_id.in_(workout_ids),
-        WorkoutSession.status == 'completed'
+        WorkoutSession.status == SESSION_STATUS_COMPLETED
     ).count()
 
     try:
@@ -860,6 +798,15 @@ def _parse_logged_sets_from_form():
 
 def _build_logged_sets(session_id, exercise_names, set_numbers, weights, reps, rpes, set_notes, skip_empty=False):
     """Create LoggedSet objects for the given session; returns list of LoggedSet instances."""
+    if not exercise_names:
+        return []
+
+    unique_lower = list({n.lower() for n in exercise_names})
+    lib_entries = ExerciseLibrary.query.filter(
+        db.func.lower(ExerciseLibrary.name).in_(unique_lower)
+    ).all()
+    lib_by_name = {e.name.lower(): e for e in lib_entries}
+
     logged_list = []
     for i in range(len(exercise_names)):
         weight_val = None
@@ -886,9 +833,7 @@ def _build_logged_sets(session_id, exercise_names, set_numbers, weights, reps, r
         if skip_empty and weight_val is None and reps_val is None:
             continue
 
-        lib_entry = ExerciseLibrary.query.filter(
-            db.func.lower(ExerciseLibrary.name) == exercise_names[i].lower()
-        ).first()
+        lib_entry = lib_by_name.get(exercise_names[i].lower())
         logged = LoggedSet(
             session_id=session_id,
             exercise_name=exercise_names[i],
@@ -903,13 +848,12 @@ def _build_logged_sets(session_id, exercise_names, set_numbers, weights, reps, r
     return logged_list
 
 
-@app.route("/workout/log", methods=["POST"])
-@login_required
-def workout_log():
-    profile = get_profile()
-    if not profile:
-        return redirect(url_for("setup"))
+def _upsert_workout_session(profile, status):
+    """Create or update a WorkoutSession from the current request form.
 
+    Returns the upserted WorkoutSession (flushed, not committed), or None if the
+    resume_session_id belongs to a different user.
+    """
     planned_workout_id = request.form.get("planned_workout_id")
     overall_feeling = request.form.get("overall_feeling", type=int)
     session_notes = request.form.get("session_notes", "")
@@ -919,16 +863,12 @@ def workout_log():
     end_time = datetime.now(timezone.utc)
     start_time = end_time - timedelta(seconds=elapsed_seconds)
 
-    exercise_names, set_numbers, weights, reps, rpes, set_notes = _parse_logged_sets_from_form()
-
     if resume_session_id:
-        # Update the existing paused session
         workout_session = WorkoutSession.query.get_or_404(resume_session_id)
         if workout_session.user_id != profile.id:
-            return redirect(url_for("index"))
-        # Delete existing logged sets
+            return None
         LoggedSet.query.filter_by(session_id=workout_session.id).delete()
-        workout_session.status = 'completed'
+        workout_session.status = status
         workout_session.end_time = end_time
         workout_session.start_time = start_time
         workout_session.overall_feeling = overall_feeling
@@ -936,8 +876,11 @@ def workout_log():
         workout_session.elapsed_seconds = elapsed_seconds
         if planned_workout_id:
             workout_session.planned_workout_id = int(planned_workout_id)
-        db.session.flush()
     else:
+        if status == SESSION_STATUS_PAUSED:
+            WorkoutSession.query.filter_by(
+                user_id=profile.id, status=SESSION_STATUS_PAUSED
+            ).update({"status": SESSION_STATUS_COMPLETED, "end_time": end_time})
         workout_session = WorkoutSession(
             user_id=profile.id,
             planned_workout_id=int(planned_workout_id) if planned_workout_id else None,
@@ -946,115 +889,16 @@ def workout_log():
             end_time=end_time,
             overall_feeling=overall_feeling,
             session_notes=session_notes,
-            status='completed',
+            status=status,
             elapsed_seconds=elapsed_seconds,
         )
         db.session.add(workout_session)
-        db.session.flush()
-
-    for ls in _build_logged_sets(workout_session.id, exercise_names, set_numbers,
-                                  weights, reps, rpes, set_notes):
-        db.session.add(ls)
-
-    # Update streak
-    update_streak(profile)
-
-    db.session.commit()
-
-    return render_template(
-        "workout_done.html",
-        session_obj=workout_session,
-        logged_sets=workout_session.logged_sets,
-    )
+    db.session.flush()
+    return workout_session
 
 
-@app.route("/workout/pause", methods=["POST"])
-@login_required
-def workout_pause():
-    profile = get_profile()
-    if not profile:
-        return redirect(url_for("setup"))
-
-    planned_workout_id = request.form.get("planned_workout_id")
-    overall_feeling = request.form.get("overall_feeling", type=int)
-    session_notes = request.form.get("session_notes", "")
-    elapsed_seconds = request.form.get("session_elapsed_seconds", 0, type=int)
-    resume_session_id = request.form.get("resume_session_id", type=int)
-
-    end_time = datetime.now(timezone.utc)
-    start_time = end_time - timedelta(seconds=elapsed_seconds)
-
-    exercise_names, set_numbers, weights, reps, rpes, set_notes = _parse_logged_sets_from_form()
-
-    if resume_session_id:
-        workout_session = WorkoutSession.query.get_or_404(resume_session_id)
-        if workout_session.user_id != profile.id:
-            return redirect(url_for("index"))
-        LoggedSet.query.filter_by(session_id=workout_session.id).delete()
-        workout_session.status = 'paused'
-        workout_session.end_time = end_time
-        workout_session.start_time = start_time
-        workout_session.overall_feeling = overall_feeling
-        workout_session.session_notes = session_notes
-        workout_session.elapsed_seconds = elapsed_seconds
-        if planned_workout_id:
-            workout_session.planned_workout_id = int(planned_workout_id)
-        db.session.flush()
-    else:
-        # Close out any existing paused sessions before creating a new one
-        existing_paused = WorkoutSession.query.filter_by(
-            user_id=profile.id, status='paused'
-        ).all()
-        for old in existing_paused:
-            old.status = 'completed'
-            old.end_time = end_time
-
-        workout_session = WorkoutSession(
-            user_id=profile.id,
-            planned_workout_id=int(planned_workout_id) if planned_workout_id else None,
-            date=date.today(),
-            start_time=start_time,
-            end_time=end_time,
-            overall_feeling=overall_feeling,
-            session_notes=session_notes,
-            status='paused',
-            elapsed_seconds=elapsed_seconds,
-        )
-        db.session.add(workout_session)
-        db.session.flush()
-
-    # Save ALL rows even if weight/reps are null
-    for ls in _build_logged_sets(workout_session.id, exercise_names, set_numbers,
-                                  weights, reps, rpes, set_notes, skip_empty=False):
-        db.session.add(ls)
-
-    db.session.commit()
-
-    flash("Workout paused. Resume it anytime from the dashboard.", "info")
-    return redirect(url_for("index"))
-
-
-@app.route("/workout/resume/<int:session_id>")
-@login_required
-def workout_resume(session_id):
-    profile = get_profile()
-    if not profile:
-        return redirect(url_for("setup"))
-
-    workout_session = WorkoutSession.query.get_or_404(session_id)
-    if workout_session.user_id != profile.id or workout_session.status != 'paused':
-        return redirect(url_for("history"))
-
-    active_plan = get_active_plan(profile.id)
-    planned_workout = workout_session.planned_workout
-
-    if not planned_workout and active_plan:
-        planned_workout = get_next_workout(profile.id, active_plan)
-
-    if not planned_workout:
-        flash("Cannot resume: workout not found.", "error")
-        return redirect(url_for("index"))
-
+def _build_workout_context(profile, planned_workout, active_plan, *, resume_session=None):
+    """Build the template context dict for rendering workout_today.html."""
     all_exercises = PlannedExercise.query.filter_by(
         planned_workout_id=planned_workout.id
     ).all()
@@ -1062,18 +906,6 @@ def workout_resume(session_id):
     warmup = [e for e in all_exercises if e.exercise_type == "warmup"]
     main = [e for e in all_exercises if e.exercise_type == "main"]
     cooldown = [e for e in all_exercises if e.exercise_type == "cooldown"]
-
-    # Build resume_data: exercise_name -> set_number -> {weight, reps, rpe, notes}
-    resume_data = {}
-    for ls in workout_session.logged_sets:
-        if ls.exercise_name not in resume_data:
-            resume_data[ls.exercise_name] = {}
-        resume_data[ls.exercise_name][ls.set_number] = {
-            'weight': ls.weight_lbs,
-            'reps': ls.reps_completed,
-            'rpe': ls.rpe,
-            'notes': ls.notes or '',
-        }
 
     last_perf = {}
     recent_perf = {}
@@ -1109,8 +941,29 @@ def workout_resume(session_id):
         for name, sessions in recent_perf.items()
     })
 
-    return render_template(
-        "workout_today.html",
+    resume_data = None
+    resume_session_id = None
+    resume_elapsed = 0
+    overall_feeling = None
+    session_notes = ''
+
+    if resume_session:
+        resume_session_id = resume_session.id
+        resume_elapsed = resume_session.elapsed_seconds or 0
+        overall_feeling = resume_session.overall_feeling
+        session_notes = resume_session.session_notes or ''
+        resume_data = {}
+        for ls in resume_session.logged_sets:
+            if ls.exercise_name not in resume_data:
+                resume_data[ls.exercise_name] = {}
+            resume_data[ls.exercise_name][ls.set_number] = {
+                'weight': ls.weight_lbs,
+                'reps': ls.reps_completed,
+                'rpe': ls.rpe,
+                'notes': ls.notes or '',
+            }
+
+    return dict(
         workout=planned_workout,
         warmup_exercises=warmup,
         main_exercises=main,
@@ -1121,13 +974,85 @@ def workout_resume(session_id):
         last_perf_json=last_perf_json,
         recent_perf_json=recent_perf_json,
         all_plan_workouts=all_plan_workouts,
-        resume_session_id=workout_session.id,
-        resume_data=resume_data,
-        resume_elapsed=workout_session.elapsed_seconds or 0,
-        overall_feeling=workout_session.overall_feeling,
-        session_notes=workout_session.session_notes or '',
         paused_session=None,
+        resume_session_id=resume_session_id,
+        resume_data=resume_data,
+        resume_elapsed=resume_elapsed,
+        overall_feeling=overall_feeling,
+        session_notes=session_notes,
     )
+
+
+@app.route("/workout/log", methods=["POST"])
+@login_required
+def workout_log():
+    profile = get_profile()
+    if not profile:
+        return redirect(url_for("setup"))
+
+    workout_session = _upsert_workout_session(profile, SESSION_STATUS_COMPLETED)
+    if workout_session is None:
+        return redirect(url_for("index"))
+
+    exercise_names, set_numbers, weights, reps, rpes, set_notes = _parse_logged_sets_from_form()
+    for ls in _build_logged_sets(workout_session.id, exercise_names, set_numbers,
+                                  weights, reps, rpes, set_notes):
+        db.session.add(ls)
+
+    update_streak(profile)
+    db.session.commit()
+
+    return render_template(
+        "workout_done.html",
+        session_obj=workout_session,
+        logged_sets=workout_session.logged_sets,
+    )
+
+
+@app.route("/workout/pause", methods=["POST"])
+@login_required
+def workout_pause():
+    profile = get_profile()
+    if not profile:
+        return redirect(url_for("setup"))
+
+    workout_session = _upsert_workout_session(profile, SESSION_STATUS_PAUSED)
+    if workout_session is None:
+        return redirect(url_for("index"))
+
+    exercise_names, set_numbers, weights, reps, rpes, set_notes = _parse_logged_sets_from_form()
+    for ls in _build_logged_sets(workout_session.id, exercise_names, set_numbers,
+                                  weights, reps, rpes, set_notes):
+        db.session.add(ls)
+
+    db.session.commit()
+    flash("Workout paused. Resume it anytime from the dashboard.", "info")
+    return redirect(url_for("index"))
+
+
+@app.route("/workout/resume/<int:session_id>")
+@login_required
+def workout_resume(session_id):
+    profile = get_profile()
+    if not profile:
+        return redirect(url_for("setup"))
+
+    workout_session = WorkoutSession.query.get_or_404(session_id)
+    if workout_session.user_id != profile.id or workout_session.status != SESSION_STATUS_PAUSED:
+        return redirect(url_for("history"))
+
+    active_plan = get_active_plan(profile.id)
+    planned_workout = workout_session.planned_workout
+
+    if not planned_workout and active_plan:
+        planned_workout = get_next_workout(profile.id, active_plan)
+
+    if not planned_workout:
+        flash("Cannot resume: workout not found.", "error")
+        return redirect(url_for("index"))
+
+    ctx = _build_workout_context(profile, planned_workout, active_plan, resume_session=workout_session)
+    return render_template("workout_today.html", **ctx)
 
 
 @app.route("/workout/finish-paused/<int:session_id>", methods=["POST"])
@@ -1141,7 +1066,7 @@ def workout_finish_paused(session_id):
     if workout_session.user_id != profile.id:
         return redirect(url_for("history"))
 
-    workout_session.status = 'completed'
+    workout_session.status = SESSION_STATUS_COMPLETED
     workout_session.end_time = datetime.now(timezone.utc)
     update_streak(profile)
     db.session.commit()
