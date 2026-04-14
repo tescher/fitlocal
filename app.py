@@ -962,6 +962,11 @@ def _build_workout_context(profile, planned_workout, active_plan, *, resume_sess
                 'rpe': ls.rpe,
                 'notes': ls.notes or '',
             }
+        # Only show exercises that were present in the saved session — removals must not reappear
+        warmup = [e for e in warmup if e.exercise_name in resume_data]
+        main = [e for e in main if e.exercise_name in resume_data]
+        cooldown = [e for e in cooldown if e.exercise_name in resume_data]
+        all_exercises = warmup + main + cooldown
 
     return dict(
         workout=planned_workout,

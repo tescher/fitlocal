@@ -620,9 +620,85 @@ check("Case 20: Plan position ignores paused sessions — covered in earlier tes
 
 # Clean up paused session left by case 14/18 before next test section
 with app.app_context():
-    from models import WorkoutSession as WS2
+    from models import WorkoutSession as WS2, LoggedSet as LS2
     profile = UserProfile.query.first()
+    paused_ids = [s.id for s in WS2.query.filter_by(user_id=profile.id, status='paused').all()]
+    if paused_ids:
+        LS2.query.filter(LS2.session_id.in_(paused_ids)).delete(synchronize_session=False)
     WS2.query.filter_by(user_id=profile.id, status='paused').delete()
+    db.session.commit()
+
+# 15. Resume fidelity: removed sets and removed exercises must not reappear
+print("\n--- Resume Fidelity: removed sets/exercises ---")
+with app.app_context():
+    profile = UserProfile.query.first()
+    pw_r = PlannedWorkout.query.first()
+    exercises_r = PlannedExercise.query.filter_by(planned_workout_id=pw_r.id).all()
+    # Find a multi-set exercise to test set removal
+    multi_ex = next((e for e in exercises_r if e.sets_prescribed >= 2), None)
+    # Find a second exercise to test exercise removal
+    second_ex = next((e for e in exercises_r if e != multi_ex), None)
+
+# Build pause form: include multi_ex with one fewer set than prescribed,
+# and omit second_ex entirely (simulating user removing it).
+fidelity_pause_items = [
+    ("planned_workout_id", str(pw_r.id)),
+    ("overall_feeling", "3"),
+    ("session_notes", ""),
+    ("session_elapsed_seconds", "60"),
+    ("resume_session_id", ""),
+]
+with app.app_context():
+    multi_ex = next((e for e in PlannedExercise.query.filter_by(planned_workout_id=pw_r.id).all()
+                     if e.sets_prescribed >= 2), None)
+    second_ex = next((e for e in PlannedExercise.query.filter_by(planned_workout_id=pw_r.id).all()
+                      if e != multi_ex), None)
+    reduced_sets = multi_ex.sets_prescribed - 1  # one fewer than planned
+    multi_ex_name = multi_ex.exercise_name
+    second_ex_name = second_ex.exercise_name if second_ex else None
+    for s in range(1, reduced_sets + 1):
+        fidelity_pause_items.append(("exercise_name", multi_ex_name))
+        fidelity_pause_items.append(("set_number", str(s)))
+        fidelity_pause_items.append(("weight", "100"))
+        fidelity_pause_items.append(("reps", "8"))
+        fidelity_pause_items.append(("rpe", ""))
+        fidelity_pause_items.append(("set_notes", ""))
+    # second_ex is intentionally excluded (simulates removal)
+
+r = client.post("/workout/pause", data=MultiDict(fidelity_pause_items), follow_redirects=False)
+check("Fidelity: pause with reduced sets succeeds", r.status_code == 302)
+
+with app.app_context():
+    profile = UserProfile.query.first()
+    paused_f = WorkoutSession.query.filter_by(user_id=profile.id, status='paused').first()
+    check("Fidelity: paused session created", paused_f is not None)
+    paused_f_id = paused_f.id if paused_f else None
+
+if paused_f_id:
+    r = client.get(f"/workout/resume/{paused_f_id}", follow_redirects=False)
+    check("Fidelity: resume page returns 200", r.status_code == 200)
+    html = r.data.decode()
+    # Count hidden inputs for multi_ex — should equal reduced_sets, not sets_prescribed
+    multi_ex_input_count = html.count(f'value="{multi_ex_name}"')
+    check(
+        f"Fidelity: removed set not restored on resume (expect {reduced_sets} inputs for '{multi_ex_name}', got {multi_ex_input_count})",
+        multi_ex_input_count == reduced_sets
+    )
+    # Removed exercise must not appear as a form input (it may still appear in JS perf history)
+    if second_ex_name:
+        check(
+            f"Fidelity: removed exercise '{second_ex_name}' does not reappear as form input on resume",
+            f'name="exercise_name" value="{second_ex_name}"' not in html
+        )
+
+# Clean up fidelity paused session
+with app.app_context():
+    from models import LoggedSet as LS3
+    profile = UserProfile.query.first()
+    paused_ids = [s.id for s in WorkoutSession.query.filter_by(user_id=profile.id, status='paused').all()]
+    if paused_ids:
+        LS3.query.filter(LS3.session_id.in_(paused_ids)).delete(synchronize_session=False)
+    WorkoutSession.query.filter_by(user_id=profile.id, status='paused').delete()
     db.session.commit()
 
 # 15. Review page

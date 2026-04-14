@@ -83,7 +83,7 @@
             </thead>
             <tbody>
                 {% set resume_sets = resume_data.get(exercise.exercise_name, {}) if resume_data else {} %}
-                {% set num_rows = [exercise.sets_prescribed, resume_sets|length]|max if resume_data else exercise.sets_prescribed %}
+                {% set num_rows = resume_sets|length if resume_data else exercise.sets_prescribed %}
                 {% for set_num in range(1, num_rows + 1) %}
                 {% set rv = resume_sets.get(set_num, {}) if resume_data else {} %}
                 <tr>
@@ -177,7 +177,7 @@
             </thead>
             <tbody>
                 {% set resume_sets = resume_data.get(exercise.exercise_name, {}) if resume_data else {} %}
-                {% set num_rows = [exercise.sets_prescribed, resume_sets|length]|max if resume_data else exercise.sets_prescribed %}
+                {% set num_rows = resume_sets|length if resume_data else exercise.sets_prescribed %}
                 {% for set_num in range(1, num_rows + 1) %}
                 {% set rv = resume_sets.get(set_num, {}) if resume_data else {} %}
                 <tr>
@@ -271,7 +271,7 @@
             </thead>
             <tbody>
                 {% set resume_sets = resume_data.get(exercise.exercise_name, {}) if resume_data else {} %}
-                {% set num_rows = [exercise.sets_prescribed, resume_sets|length]|max if resume_data else exercise.sets_prescribed %}
+                {% set num_rows = resume_sets|length if resume_data else exercise.sets_prescribed %}
                 {% for set_num in range(1, num_rows + 1) %}
                 {% set rv = resume_sets.get(set_num, {}) if resume_data else {} %}
                 <tr>
