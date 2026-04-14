@@ -365,9 +365,18 @@ check("Dashboard shows paused session banner", b"Paused workout" in r.data or b"
 check("Dashboard hides Next Up card when paused session exists", b"Next Up" not in r.data)
 check("Dashboard does not show Get Started when plan exists and session paused", b"Get Started" not in r.data)
 
-# Workout today page (new session) does NOT show the paused session banner
+# /workout/today with a paused session must redirect to a choice page, not load the workout
 r = client.get("/workout/today", follow_redirects=False)
-check("Workout page does not show paused banner when starting new session", b"Paused workout" not in r.data)
+check("GET /workout/today redirects when paused session exists", r.status_code == 302)
+check("Redirect goes to paused-choice page", b"paused-choice" in r.headers.get("Location", "").encode())
+
+r_choice = client.get("/workout/paused-choice", follow_redirects=False)
+check("GET /workout/paused-choice returns 200", r_choice.status_code == 200)
+check("Choice page shows workout name", b"Upper Body Strength" in r_choice.data)
+check("Choice page has Resume option", b"Resume" in r_choice.data)
+check("Choice page has Log as Finished option", b"Log as Finished" in r_choice.data)
+check("Choice page has Cancel option", b"Cancel" in r_choice.data)
+check("Choice page does NOT show the workout form", b"workoutForm" not in r_choice.data)
 
 # History shows paused badge
 r = client.get("/history")

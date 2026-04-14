@@ -717,12 +717,29 @@ def confirm_plan():
     return redirect(url_for("index"))
 
 
+@app.route("/workout/paused-choice")
+@login_required
+def workout_paused_choice():
+    profile = get_profile()
+    if not profile:
+        return redirect(url_for("setup"))
+    paused_session = get_paused_session(profile.id)
+    if not paused_session:
+        return redirect(url_for("workout_today"))
+    return render_template("workout_paused_choice.html", paused_session=paused_session)
+
+
 @app.route("/workout/today")
 @login_required
 def workout_today():
     profile = get_profile()
     if not profile:
         return redirect(url_for("setup"))
+
+    # If a paused session exists, send user to the choice page instead
+    paused_session = get_paused_session(profile.id)
+    if paused_session:
+        return redirect(url_for("workout_paused_choice"))
 
     active_plan = get_active_plan(profile.id)
     if not active_plan:
@@ -778,9 +795,6 @@ def workout_today():
         for name, sessions in recent_perf.items()
     })
 
-    # Detect a paused session (only show banner if not already resuming)
-    paused_session = get_paused_session(profile.id)
-
     return render_template(
         "workout_today.html",
         workout=next_workout,
@@ -793,7 +807,7 @@ def workout_today():
         last_perf_json=last_perf_json,
         recent_perf_json=recent_perf_json,
         all_plan_workouts=all_plan_workouts,
-        paused_session=paused_session,
+        paused_session=None,
         resume_session_id=None,
         resume_data=None,
         resume_elapsed=0,
