@@ -1001,6 +1001,14 @@ def workout_pause():
             workout_session.planned_workout_id = int(planned_workout_id)
         db.session.flush()
     else:
+        # Close out any existing paused sessions before creating a new one
+        existing_paused = WorkoutSession.query.filter_by(
+            user_id=profile.id, status='paused'
+        ).all()
+        for old in existing_paused:
+            old.status = 'completed'
+            old.end_time = end_time
+
         workout_session = WorkoutSession(
             user_id=profile.id,
             planned_workout_id=int(planned_workout_id) if planned_workout_id else None,

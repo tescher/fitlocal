@@ -398,6 +398,22 @@ with app.app_context():
     from models import WorkoutSession
     finished = WorkoutSession.query.get(paused_id)
     check("finish-paused sets status=completed", finished is not None and finished.status == 'completed')
+    # No paused sessions should remain
+    remaining_paused = WorkoutSession.query.filter_by(user_id=profile.id, status='paused').count()
+    check("No paused sessions remain after finish-paused", remaining_paused == 0)
+
+# After finish-paused, workout_today should load the workout directly (not redirect to choice page)
+r = client.get("/workout/today", follow_redirects=False)
+check("workout_today loads directly after finish-paused (no paused sessions)", r.status_code == 200)
+
+# Pausing twice should not create two paused sessions
+r = client.post("/workout/pause", data=MultiDict(pause_items), follow_redirects=False)
+r = client.post("/workout/pause", data=MultiDict(pause_items), follow_redirects=False)
+with app.app_context():
+    from models import WorkoutSession
+    profile = UserProfile.query.first()
+    paused_count = WorkoutSession.query.filter_by(user_id=profile.id, status='paused').count()
+    check("Only one paused session exists after pausing twice", paused_count == 1)
 
 # Completing via workout/log with resume_session_id
 r = client.post("/workout/pause", data=MultiDict(pause_items), follow_redirects=False)
