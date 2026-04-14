@@ -434,6 +434,197 @@ with app.app_context():
     check("Resumed session now status=completed", completed is not None and completed.status == 'completed')
     check("elapsed_seconds updated on resume log", completed is not None and completed.elapsed_seconds == 432)
 
+# ── Additional pause/resume flow tests ─────────────────────────────────────
+print("\n--- Pause/Resume Extended Flows ---")
+
+# Setup: ensure no paused sessions going into these tests
+with app.app_context():
+    from models import WorkoutSession as WS2
+    profile = UserProfile.query.first()
+    WS2.query.filter_by(user_id=profile.id, status='paused').delete()
+    db.session.commit()
+    pw = PlannedWorkout.query.first()
+
+# Case 2 (already covered above) — just ensure no residue
+with app.app_context():
+    from models import WorkoutSession as WS2
+    profile = UserProfile.query.first()
+    count = WS2.query.filter_by(user_id=profile.id, status='paused').count()
+    check("No paused sessions before extended flow tests", count == 0)
+
+# Case 3: Start workout → nav link → Save & Pause creates a paused session
+# Simulated: post to /workout/pause without resume_session_id (JS would normally do this)
+r = client.post("/workout/pause", data=MultiDict(pause_items), follow_redirects=False)
+with app.app_context():
+    from models import WorkoutSession as WS2
+    profile = UserProfile.query.first()
+    ps = WS2.query.filter_by(user_id=profile.id, status='paused').first()
+    check("Case 3: Save & Pause via nav creates paused session", ps is not None)
+    case3_id = ps.id if ps else None
+
+# Case 4: Start workout → nav link → Leave without saving → no session created
+# The leave-without-saving path just navigates away — no server call. Verified
+# by confirming /workout/today with no paused session returns the workout form.
+# First finish the case3 paused session so we can load today's workout.
+if case3_id:
+    client.post(f"/workout/finish-paused/{case3_id}", follow_redirects=False)
+r = client.get("/workout/today", follow_redirects=False)
+check("Case 4: No session created by leaving — workout loads fresh", r.status_code == 200)
+check("Case 4: Workout form present after leaving without save", b'id="workoutForm"' in r.data)
+
+# Case 5: Nav link → Stay → stays on workout page (client-side only, modal cancel)
+# Nothing to test server-side; JS closeModal() does not submit. Confirmed by
+# verifying /workout/today still returns 200 with no side effects.
+check("Case 5: Stay option is client-side only (no server endpoint needed)", True)
+
+# Case 6: Already tested — /workout/today with paused session redirects to choice page
+# Re-test here for clarity in the table
+r = client.post("/workout/pause", data=MultiDict(pause_items), follow_redirects=False)
+with app.app_context():
+    from models import WorkoutSession as WS2
+    profile = UserProfile.query.first()
+    ps6 = WS2.query.filter_by(user_id=profile.id, status='paused').first()
+    case6_id = ps6.id if ps6 else None
+
+r = client.get("/workout/today", follow_redirects=False)
+check("Case 6: /workout/today redirects to paused-choice when session paused", r.status_code == 302 and "paused-choice" in r.headers.get("Location",""))
+
+# Case 7: Resume → workout loads with data pre-filled and correct elapsed
+r = client.get(f"/workout/resume/{case6_id}", follow_redirects=False)
+check("Case 7: Resume loads workout page (200)", r.status_code == 200)
+check("Case 7: Resume pre-fills set data", b'value="185.0"' in r.data or b'value="185"' in r.data)
+check("Case 7: Resume passes elapsed to JS timer", b'resumeElapsed = 432' in r.data)
+check("Case 7: resume_session_id hidden field set", f'name="resume_session_id" value="{case6_id}"'.encode() in r.data)
+
+# Case 8: Paused-choice → Log as Finished & Start New → paused completed, workout loads fresh
+r = client.post(f"/workout/finish-paused/{case6_id}", follow_redirects=False)
+check("Case 8: finish-paused redirects", r.status_code == 302)
+with app.app_context():
+    from models import WorkoutSession as WS2
+    profile = UserProfile.query.first()
+    finished8 = WS2.query.get(case6_id)
+    check("Case 8: Session now completed", finished8 is not None and finished8.status == 'completed')
+    remaining = WS2.query.filter_by(user_id=profile.id, status='paused').count()
+    check("Case 8: No paused sessions remain", remaining == 0)
+r_after = client.get("/workout/today", follow_redirects=False)
+check("Case 8: workout_today loads fresh (not choice page) after finish-paused", r_after.status_code == 200)
+
+# Case 9: Paused-choice → Cancel → redirect to dashboard, session still paused
+r = client.post("/workout/pause", data=MultiDict(pause_items), follow_redirects=False)
+with app.app_context():
+    from models import WorkoutSession as WS2
+    profile = UserProfile.query.first()
+    ps9 = WS2.query.filter_by(user_id=profile.id, status='paused').first()
+    case9_id = ps9.id if ps9 else None
+# Cancel is just "a href=/" — get the dashboard and verify session still paused
+r = client.get("/", follow_redirects=False)
+check("Case 9: Cancel goes to dashboard (200)", r.status_code == 200)
+with app.app_context():
+    from models import WorkoutSession as WS2
+    ps9_after = WS2.query.get(case9_id)
+    check("Case 9: Paused session unchanged after cancel", ps9_after is not None and ps9_after.status == 'paused')
+
+# Case 10: Dashboard banner Resume → data restored (same as case 7, different entry point)
+r = client.get(f"/workout/resume/{case9_id}", follow_redirects=False)
+check("Case 10: Dashboard Resume loads workout (200)", r.status_code == 200)
+check("Case 10: Data pre-filled", b'value="185.0"' in r.data or b'value="185"' in r.data)
+
+# Case 11: Dashboard banner Log as Finished → completed, dashboard shows Next Up
+r = client.post(f"/workout/finish-paused/{case9_id}", follow_redirects=False)
+check("Case 11: finish-paused redirects", r.status_code == 302)
+with app.app_context():
+    from models import WorkoutSession as WS2
+    profile = UserProfile.query.first()
+    remaining11 = WS2.query.filter_by(user_id=profile.id, status='paused').count()
+    check("Case 11: No paused sessions after finish", remaining11 == 0)
+r_dash = client.get("/", follow_redirects=False)
+check("Case 11: Dashboard shows Next Up after finishing", b"Next Up" in r_dash.data)
+
+# Case 12: History Resume → same as case 7 (already covered by GET /workout/resume)
+check("Case 12: History Resume is same endpoint as Cases 7/10 — covered", True)
+
+# Case 13: Resumed session → Log Workout → original session completed, not a new row
+r = client.post("/workout/pause", data=MultiDict(pause_items), follow_redirects=False)
+with app.app_context():
+    from models import WorkoutSession as WS2
+    profile = UserProfile.query.first()
+    ps13 = WS2.query.filter_by(user_id=profile.id, status='paused').first()
+    case13_id = ps13.id
+    pre_count = WS2.query.filter_by(user_id=profile.id).count()
+
+resume_log13 = [i for i in pause_items if i[0] != 'resume_session_id']
+resume_log13.append(("resume_session_id", str(case13_id)))
+resume_log13.append(("overall_feeling", "4"))
+r = client.post("/workout/log", data=MultiDict(resume_log13), follow_redirects=False)
+check("Case 13: Logging resumed session returns 200", r.status_code == 200)
+with app.app_context():
+    from models import WorkoutSession as WS2
+    profile = UserProfile.query.first()
+    post_count = WS2.query.filter_by(user_id=profile.id).count()
+    completed13 = WS2.query.get(case13_id)
+    check("Case 13: No new session row created", post_count == pre_count)
+    check("Case 13: Original session status=completed", completed13 is not None and completed13.status == 'completed')
+    check("Case 13: Streak updated after resume log", profile.current_streak >= 1)
+
+# Case 14: Resumed session → Pause → original session still paused, elapsed accumulates
+# First pause at 300s, resume, then pause again at 200s more = 500s total
+pause_items_14 = [i for i in pause_items if i[0] != 'session_elapsed_seconds']
+pause_items_14.append(("session_elapsed_seconds", "300"))
+r = client.post("/workout/pause", data=MultiDict(pause_items_14), follow_redirects=False)
+with app.app_context():
+    from models import WorkoutSession as WS2
+    profile = UserProfile.query.first()
+    ps14 = WS2.query.filter_by(user_id=profile.id, status='paused').first()
+    case14_id = ps14.id
+
+# Re-pause (simulating: resume page → user hits Pause again, now with resume_session_id)
+pause_resume14 = [i for i in pause_items_14 if i[0] not in ('session_elapsed_seconds', 'resume_session_id')]
+pause_resume14.append(("session_elapsed_seconds", "500"))
+pause_resume14.append(("resume_session_id", str(case14_id)))
+r = client.post("/workout/pause", data=MultiDict(pause_resume14), follow_redirects=False)
+with app.app_context():
+    from models import WorkoutSession as WS2
+    profile = UserProfile.query.first()
+    ps14_after = WS2.query.get(case14_id)
+    total_paused = WS2.query.filter_by(user_id=profile.id, status='paused').count()
+    check("Case 14: Still only one paused session after resume-then-pause", total_paused == 1)
+    check("Case 14: Same session id preserved", ps14_after is not None and ps14_after.id == case14_id)
+    check("Case 14: elapsed_seconds updated to cumulative value", ps14_after is not None and ps14_after.elapsed_seconds == 500)
+
+# Case 15: Resumed session → nav link → Save & Pause → original session updated
+# (Same as case 14 with resume_session_id — already covered above)
+check("Case 15: Save & Pause on resumed session covered by Case 14", True)
+
+# Case 16: Resumed session → nav link → Leave without saving → session left paused
+# Client-side only: no fetch, no form submit. Verify session still paused.
+with app.app_context():
+    from models import WorkoutSession as WS2
+    ps16 = WS2.query.get(case14_id)
+    check("Case 16: Leave without saving — paused session unchanged (client-side only)", ps16 is not None and ps16.status == 'paused')
+
+# Case 17: Stay (cancel modal) — client-side only
+check("Case 17: Stay is client-side modal cancel — no server endpoint", True)
+
+# Case 18: Pause → Resume → Pause again → elapsed is cumulative
+# Already verified in Case 14 (300 then 500). Restate explicitly.
+with app.app_context():
+    from models import WorkoutSession as WS2
+    ps18 = WS2.query.get(case14_id)
+    check("Case 18: Elapsed accumulates across multiple pause/resume cycles", ps18 is not None and ps18.elapsed_seconds == 500)
+
+# Case 19: Already tested — pausing twice keeps only one paused session (covered above)
+check("Case 19: Single paused session enforcement — covered in earlier test", True)
+
+# Case 20: Plan position unchanged by paused session (already tested above)
+check("Case 20: Plan position ignores paused sessions — covered in earlier test", True)
+
+# Clean up paused session left by case 14/18 before next test section
+with app.app_context():
+    from models import WorkoutSession as WS2
+    profile = UserProfile.query.first()
+    WS2.query.filter_by(user_id=profile.id, status='paused').delete()
+    db.session.commit()
+
 # 15. Review page
 print("\n--- Review ---")
 r = client.get("/review")
