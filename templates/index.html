@@ -80,7 +80,7 @@
             <p class="text-muted">No workouts found in your plan.</p>
         {% endif %}
     </div>
-{% else %}
+{% elif not active_plan %}
     <div class="card">
         <h2>Get Started</h2>
         <p class="mb-2">You don't have an active workout plan yet.</p>

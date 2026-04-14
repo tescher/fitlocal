@@ -363,6 +363,7 @@ check("Pre-populated weight value", b'value="185.0"' in r.data or b'value="185"'
 r = client.get("/")
 check("Dashboard shows paused session banner", b"Paused workout" in r.data or b"paused" in r.data.lower())
 check("Dashboard hides Next Up card when paused session exists", b"Next Up" not in r.data)
+check("Dashboard does not show Get Started when plan exists and session paused", b"Get Started" not in r.data)
 
 # Workout today page (new session) does NOT show the paused session banner
 r = client.get("/workout/today", follow_redirects=False)
