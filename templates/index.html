@@ -56,7 +56,7 @@
     from {{ paused_session.date.strftime('%b %d') }}.
     <div style="margin-top:0.5rem; display:flex; gap:0.5rem; flex-wrap:wrap;">
         <a href="{{ url_for('workout_resume', session_id=paused_session.id) }}" class="btn btn-primary btn-sm">Resume Workout</a>
-        <form method="POST" action="{{ url_for('workout_finish_paused', session_id=paused_session.id) }}" style="display:inline">
+        <form method="POST" action="{{ url_for('workout_finish_paused', session_id=paused_session.id) }}" style="display:contents">
             <button type="submit" class="btn btn-secondary btn-sm">Log as Finished &amp; Start New</button>
         </form>
     </div>
