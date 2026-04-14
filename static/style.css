@@ -1210,3 +1210,69 @@ tr.hist-detail-row td {
 }
 
 .link-row-danger strong { color: var(--danger); }
+
+/* Pause Session button — sits under the session timer display */
+.btn-pause-session {
+    display: block;
+    margin-top: 0.35rem;
+    padding: 0.2rem 0.6rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    background: #d97706;
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    letter-spacing: 0.02em;
+}
+.btn-pause-session:hover {
+    background: #b45309;
+}
+
+/* Warning alert box */
+.alert-warning {
+    background: #fffbeb;
+    border: 1px solid #fcd34d;
+    border-left: 4px solid #d97706;
+    border-radius: var(--radius);
+    padding: 0.85rem 1rem;
+    color: #92400e;
+    margin-bottom: 1rem;
+}
+
+/* Warning modal button */
+.btn-warning {
+    background: #d97706;
+    color: #fff;
+    border: none;
+    padding: 0.6rem 1.2rem;
+    border-radius: var(--radius);
+    font-size: 1rem;
+    cursor: pointer;
+    font-weight: 500;
+}
+.btn-warning:hover {
+    background: #b45309;
+}
+
+/* Inline badges */
+.badge {
+    display: inline-block;
+    padding: 0.15rem 0.5rem;
+    border-radius: 9999px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    vertical-align: middle;
+    line-height: 1.4;
+}
+.badge-warning {
+    background: #fef3c7;
+    color: #92400e;
+    border: 1px solid #fcd34d;
+}
+
+/* Small button variant */
+.btn-sm {
+    padding: 0.3rem 0.75rem;
+    font-size: 0.85rem;
+}

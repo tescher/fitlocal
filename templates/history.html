@@ -14,6 +14,9 @@
                     {% if s.planned_workout %}
                         &mdash; {{ s.planned_workout.workout_name }}
                     {% endif %}
+                    {% if s.status == 'paused' %}
+                        <span class="badge badge-warning">Paused</span>
+                    {% endif %}
                 </div>
                 <div class="text-muted">
                     {{ s.logged_sets | length }} sets
@@ -27,11 +30,15 @@
                 </div>
             </div>
         </a>
-        <form method="POST" action="{{ url_for('delete_session', session_id=s.id) }}"
-              onsubmit="return confirm('Delete this workout?')"
-              style="margin-left: 1rem; flex-shrink: 0;">
-            <button type="submit" class="btn-delete" title="Delete">&times;</button>
-        </form>
+        <div style="display:flex; align-items:center; gap:0.5rem; flex-shrink:0; margin-left:1rem;">
+            {% if s.status == 'paused' %}
+            <a href="{{ url_for('workout_resume', session_id=s.id) }}" class="btn btn-sm btn-primary">Resume</a>
+            {% endif %}
+            <form method="POST" action="{{ url_for('delete_session', session_id=s.id) }}"
+                  onsubmit="return confirm('Delete this workout?')">
+                <button type="submit" class="btn-delete" title="Delete">&times;</button>
+            </form>
+        </div>
     </div>
     {% endfor %}
 </div>

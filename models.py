@@ -101,6 +101,8 @@ class WorkoutSession(db.Model):
     end_time = db.Column(db.DateTime)
     overall_feeling = db.Column(db.Integer)
     session_notes = db.Column(db.Text)
+    status = db.Column(db.String(20), default='completed')
+    elapsed_seconds = db.Column(db.Integer, default=0)
 
     logged_sets = db.relationship("LoggedSet", backref="session", cascade="all, delete-orphan")
     planned_workout = db.relationship("PlannedWorkout")

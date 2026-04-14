@@ -2,17 +2,21 @@
 import json
 import os
 import sys
+import tempfile
 from datetime import date
 from werkzeug.datastructures import MultiDict
 
-# Delete DB first for clean test
-db_path = os.path.join(os.path.dirname(__file__), "instance", "fitlocal.db")
-if os.path.exists(db_path):
-    os.remove(db_path)
-    print("Deleted old database")
+# Point at a fresh temp DB BEFORE importing app (engine is created at import time)
+_db_fd, _db_path = tempfile.mkstemp(suffix='_fitlocal_test.db')
+os.close(_db_fd)
+os.environ["DATABASE_URL"] = f"sqlite:///{_db_path}"
 
 from app import app
-from models import db, UserProfile, WorkoutPlan, PlannedWorkout, PlannedExercise, TrainingPhase, FitnessTest
+app.config["WTF_CSRF_ENABLED"] = False   # disable CSRF tokens in tests
+app.config["TESTING"] = True
+
+from models import db, Account, UserProfile, WorkoutPlan, PlannedWorkout, PlannedExercise, TrainingPhase, FitnessTest
+from extensions import bcrypt
 
 passed = 0
 failed = 0
@@ -27,6 +31,19 @@ def check(label, condition):
         failed += 1
 
 client = app.test_client()
+
+# Bootstrap: create an account (no profile yet) and log in via session
+with app.app_context():
+    db.create_all()
+    account = Account(email="test@fitlocal.test", email_claimed=True, is_admin=True)
+    account.password_hash = bcrypt.generate_password_hash("testpass").decode()
+    db.session.add(account)
+    db.session.commit()
+    test_account_id = account.id
+
+with client.session_transaction() as sess:
+    sess['_user_id'] = str(test_account_id)
+    sess['_fresh'] = True
 
 # 1. Home redirects to setup when no profile
 print("\n--- No Profile ---")
@@ -274,19 +291,129 @@ with app.app_context():
     perf = get_last_performance(profile.id, "Bench Press")
     check("Last performance found", perf is not None)
     if perf:
-        check(f"Last perf weight={perf['weight']}, reps={perf['reps']}", perf["weight"] == 135 and perf["reps"] == 10)
+        s1 = perf["sets"].get(1, {})
+        check(f"Last perf set1 weight={s1.get('weight')}, reps={s1.get('reps')}", s1.get("weight") == 135.0 and s1.get("reps") == 10)
 
-# 14. Review page
+# 14. Pause / Resume
+print("\n--- Pause / Resume ---")
+with app.app_context():
+    from app import get_paused_session
+    from models import WorkoutSession, LoggedSet
+    pw = PlannedWorkout.query.first()
+    exercises = PlannedExercise.query.filter_by(planned_workout_id=pw.id).all()
+
+pause_items = [
+    ("planned_workout_id", str(pw.id)),
+    ("overall_feeling", "3"),
+    ("session_notes", "Interrupted"),
+    ("session_elapsed_seconds", "432"),  # 7m 12s
+    ("resume_session_id", ""),
+]
+with app.app_context():
+    pw = PlannedWorkout.query.first()
+    exercises = PlannedExercise.query.filter_by(planned_workout_id=pw.id).all()
+    for ex in exercises:
+        for s in range(1, ex.sets_prescribed + 1):
+            pause_items.append(("exercise_name", ex.exercise_name))
+            pause_items.append(("set_number", str(s)))
+            pause_items.append(("weight", "185" if s <= 2 else ""))
+            pause_items.append(("reps", "8" if s <= 2 else ""))
+            pause_items.append(("rpe", "7" if s <= 2 else ""))
+            pause_items.append(("set_notes", ""))
+
+r = client.post("/workout/pause", data=MultiDict(pause_items), follow_redirects=False)
+check("POST /workout/pause redirects to index", r.status_code == 302 and "//" not in r.headers.get("Location","") )
+
+with app.app_context():
+    from models import WorkoutSession
+    profile = UserProfile.query.first()
+    paused = WorkoutSession.query.filter_by(user_id=profile.id, status='paused').first()
+    check("Session saved with status=paused", paused is not None)
+    check("elapsed_seconds saved correctly", paused is not None and paused.elapsed_seconds == 432)
+    check("planned_workout_id saved", paused is not None and paused.planned_workout_id == pw.id)
+    check("planned_workout relationship loads", paused is not None and paused.planned_workout is not None)
+    check("All logged sets saved (including empty)", paused is not None and len(paused.logged_sets) > 0)
+
+    # Verify paused session excluded from plan session count
+    from app import get_next_workout, get_active_plan
+    active_plan = get_active_plan(profile.id)
+    workout_ids = [w.id for w in active_plan.planned_workouts]
+    completed_count = WorkoutSession.query.filter(
+        WorkoutSession.user_id == profile.id,
+        WorkoutSession.planned_workout_id.in_(workout_ids),
+        WorkoutSession.status == 'completed'
+    ).count()
+    total_count = WorkoutSession.query.filter(
+        WorkoutSession.user_id == profile.id,
+        WorkoutSession.planned_workout_id.in_(workout_ids),
+    ).count()
+    check("Paused session excluded from completed count", completed_count < total_count)
+
+    paused_id = paused.id
+
+# Resume page loads with correct data
+r = client.get(f"/workout/resume/{paused_id}", follow_redirects=False)
+check("GET /workout/resume returns 200", r.status_code == 200)
+check("Resume page has workoutForm", b'id="workoutForm"' in r.data)
+check("Resume page has resume_session_id hidden field", f'name="resume_session_id" value="{paused_id}"'.encode() in r.data)
+check("Resume page has elapsed seconds", b'resumeElapsed = 432' in r.data)
+check("Pre-populated weight value", b'value="185.0"' in r.data or b'value="185"' in r.data)
+
+# Dashboard shows paused session banner
+r = client.get("/")
+check("Dashboard shows paused session banner", b"Paused workout" in r.data or b"paused" in r.data.lower())
+
+# History shows paused badge
+r = client.get("/history")
+check("History shows Paused badge", b"Paused" in r.data)
+check("History shows Resume button", b"Resume" in r.data)
+
+# Paused session does not appear in last_performance history
+r = client.post("/workout/log", data=MultiDict(form_items), follow_redirects=False)  # log a fresh completed session
+with app.app_context():
+    from app import get_last_performance
+    profile = UserProfile.query.first()
+    perf = get_last_performance(profile.id, "Bench Press")
+    check("Last performance ignores paused sessions", perf is not None and perf["sets"][1]["weight"] == 135.0)
+
+# Complete a paused session via finish-paused
+r = client.post(f"/workout/finish-paused/{paused_id}", follow_redirects=False)
+check("POST /workout/finish-paused redirects", r.status_code == 302)
+with app.app_context():
+    from models import WorkoutSession
+    finished = WorkoutSession.query.get(paused_id)
+    check("finish-paused sets status=completed", finished is not None and finished.status == 'completed')
+
+# Completing via workout/log with resume_session_id
+r = client.post("/workout/pause", data=MultiDict(pause_items), follow_redirects=False)
+with app.app_context():
+    profile = UserProfile.query.first()
+    paused2 = WorkoutSession.query.filter_by(user_id=profile.id, status='paused').first()
+    paused2_id = paused2.id
+
+resume_log_items = list(pause_items)
+resume_log_items = [i for i in resume_log_items if i[0] != 'resume_session_id']
+resume_log_items.append(("resume_session_id", str(paused2_id)))
+resume_log_items.append(("overall_feeling", "5"))
+r = client.post("/workout/log", data=MultiDict(resume_log_items), follow_redirects=False)
+check("Logging a resumed session returns 200", r.status_code == 200)
+with app.app_context():
+    from models import WorkoutSession
+    completed = WorkoutSession.query.get(paused2_id)
+    check("Resumed session now status=completed", completed is not None and completed.status == 'completed')
+    check("elapsed_seconds updated on resume log", completed is not None and completed.elapsed_seconds == 432)
+
+# 15. Review page
 print("\n--- Review ---")
 r = client.get("/review")
 check("GET /review returns 200", r.status_code == 200)
 
-# 15. Settings
+# 16. Settings
 print("\n--- Settings ---")
 r = client.get("/settings")
 check("GET /settings returns 200", r.status_code == 200)
 
-# 16. Export
+# 17. Export
 print("\n--- Export ---")
 r = client.get("/export")
 check("GET /export returns 200", r.status_code == 200)
@@ -294,6 +421,13 @@ check("GET /export returns 200", r.status_code == 200)
 # Summary
 print(f"\n{'='*50}")
 print(f"Results: {passed} passed, {failed} failed out of {passed + failed} tests")
+
+# Clean up temp DB
+try:
+    os.unlink(_db_path)
+except Exception:
+    pass
+
 if failed > 0:
     sys.exit(1)
 else:

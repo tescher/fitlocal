@@ -49,11 +49,32 @@
 </div>
 {% endif %}
 
+{% if paused_session %}
+<div class="alert alert-warning mb-2">
+    <strong>Paused workout:</strong>
+    {{ paused_session.planned_workout.workout_name if paused_session.planned_workout else 'Unstructured' }}
+    from {{ paused_session.date.strftime('%b %d') }}.
+    <div style="margin-top:0.5rem; display:flex; gap:0.5rem; flex-wrap:wrap;">
+        <a href="{{ url_for('workout_resume', session_id=paused_session.id) }}" class="btn btn-primary btn-sm">Resume Workout</a>
+        <form method="POST" action="{{ url_for('workout_finish_paused', session_id=paused_session.id) }}" style="display:inline">
+            <button type="submit" class="btn btn-secondary btn-sm">Log as Finished &amp; Start New</button>
+        </form>
+    </div>
+</div>
+{% endif %}
+
 {% if active_plan %}
     <div class="card">
         <h2>Next Up</h2>
         {% if next_workout %}
             <p class="mb-2"><strong>{{ next_workout.workout_name }}</strong></p>
+            {% if plan_position %}
+            <p class="text-muted" style="font-size:0.85rem; margin-bottom:0.75rem;">
+                {{ plan_position.phase_name }}{% if plan_position.is_recovery %} (Recovery){% endif %}
+                · Week {{ plan_position.week_in_phase }}{% if plan_position.total_weeks_in_phase %} of {{ plan_position.total_weeks_in_phase }}{% endif %}
+                · Day {{ plan_position.day_in_week }} of {{ plan_position.days_per_week }}
+            </p>
+            {% endif %}
             <a href="{{ url_for('workout_today') }}" class="btn btn-primary">Start Workout</a>
         {% else %}
             <p class="text-muted">No workouts found in your plan.</p>
