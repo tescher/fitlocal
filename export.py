@@ -1,6 +1,6 @@
 import io
 from openpyxl import Workbook
-from models import WorkoutSession, LoggedSet, PlannedWorkout
+from models import WorkoutSession
 
 
 def generate_xlsx(user_id):

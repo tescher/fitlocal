@@ -82,6 +82,7 @@ def set_security_headers(response):
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     return response
 
+
 with app.app_context():
     # Add account_id column to user_profile if it doesn't exist yet
     # (db.create_all won't alter existing tables)
@@ -304,7 +305,10 @@ def get_plan_position(profile_id, active_plan):
                 day_in_week = (session_in_phase % days_per_week) + 1
                 phase_obj = phases[i] if i < len(phases) else None
                 phase_name = phase_obj.phase_name if phase_obj else phase_data.get("phase_name", f"Phase {i+1}")
-                is_recovery = (phase_obj.phase_type == 'recovery') if phase_obj else (phase_data.get("phase_type") == 'recovery')
+                is_recovery = (
+                    (phase_obj.phase_type == 'recovery') if phase_obj
+                    else (phase_data.get("phase_type") == 'recovery')
+                )
                 return {
                     'phase_index': i + 1,
                     'phase_name': phase_name,
@@ -1039,8 +1043,9 @@ def workout_log():
         return redirect(url_for("index"))
 
     exercise_names, set_numbers, weights, reps, rpes, set_notes = _parse_logged_sets_from_form()
-    for ls in _build_logged_sets(workout_session.id, exercise_names, set_numbers,
-                                  weights, reps, rpes, set_notes):
+    for ls in _build_logged_sets(
+            workout_session.id, exercise_names, set_numbers,
+            weights, reps, rpes, set_notes):
         db.session.add(ls)
 
     update_streak(profile)
@@ -1065,8 +1070,9 @@ def workout_pause():
         return redirect(url_for("index"))
 
     exercise_names, set_numbers, weights, reps, rpes, set_notes = _parse_logged_sets_from_form()
-    for ls in _build_logged_sets(workout_session.id, exercise_names, set_numbers,
-                                  weights, reps, rpes, set_notes):
+    for ls in _build_logged_sets(
+            workout_session.id, exercise_names, set_numbers,
+            weights, reps, rpes, set_notes):
         db.session.add(ls)
 
     db.session.commit()

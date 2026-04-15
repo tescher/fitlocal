@@ -137,7 +137,9 @@ def migrate():
 
     # --- Exercise library FK columns ---
     if not column_exists("planned_exercise", "exercise_library_id"):
-        cursor.execute("ALTER TABLE planned_exercise ADD COLUMN exercise_library_id INTEGER REFERENCES exercise_library(id)")
+        cursor.execute(
+            "ALTER TABLE planned_exercise ADD COLUMN exercise_library_id INTEGER REFERENCES exercise_library(id)"
+        )
         print("  Added planned_exercise.exercise_library_id")
         # Backfill FK where name matches
         cursor.execute("""
