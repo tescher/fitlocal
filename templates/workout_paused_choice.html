@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}FitLocal - Resume or Start New?{% endblock %}
+{% block content %}
+<h1>You have a paused workout</h1>
+
+<div class="card">
+    <p class="mb-2">
+        <strong>{{ paused_session.planned_workout.workout_name if paused_session.planned_workout else 'Unstructured' }}</strong>
+        &mdash; {{ paused_session.date.strftime('%A, %b %d') }}
+        {% if paused_session.elapsed_seconds %}
+            &mdash; {{ '%d:%02d'|format(paused_session.elapsed_seconds // 60, paused_session.elapsed_seconds % 60) }} elapsed
+        {% endif %}
+    </p>
+    <p class="text-muted mb-2">What would you like to do?</p>
+
+    <div style="display:flex; flex-direction:column; gap:0.75rem; max-width:360px;">
+        <a href="{{ url_for('workout_resume', session_id=paused_session.id) }}" class="btn btn-primary">
+            Resume Workout
+        </a>
+
+        <form method="POST" action="{{ url_for('workout_finish_paused', session_id=paused_session.id) }}" style="display:contents">
+            <button type="submit" class="btn btn-secondary">
+                Log as Finished &amp; Start New
+            </button>
+        </form>
+
+        <a href="{{ url_for('index') }}" class="btn btn-secondary">
+            Cancel
+        </a>
+    </div>
+</div>
+{% endblock %}

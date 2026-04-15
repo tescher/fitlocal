@@ -22,6 +22,7 @@
         <div class="timer-section">
             <span class="timer-label">Session</span>
             <span class="timer-display" id="sessionTimer">00:00</span>
+            <button type="button" class="btn-pause-session" onclick="pauseWorkout()">&#9646;&#9646; Pause Session</button>
         </div>
         <div class="timer-section">
             <span class="timer-label">Rest</span>
@@ -38,9 +39,21 @@
     </div>
 </div>
 
-<form method="POST" action="{{ url_for('workout_log') }}">
+{% if paused_session %}
+<div class="alert alert-warning">
+    You have a paused workout <strong>{{ paused_session.planned_workout.workout_name if paused_session.planned_workout else 'Unstructured' }}</strong>
+    from {{ paused_session.date.strftime('%b %d') }}.
+    <a href="{{ url_for('workout_resume', session_id=paused_session.id) }}" class="btn btn-sm btn-primary">Resume</a>
+    <form method="POST" action="{{ url_for('workout_finish_paused', session_id=paused_session.id) }}" style="display:inline">
+        <button type="submit" class="btn btn-sm btn-secondary">Log as Finished &amp; Start New</button>
+    </form>
+</div>
+{% endif %}
+
+<form id="workoutForm" method="POST" action="{{ url_for('workout_log') }}">
     <input type="hidden" name="planned_workout_id" value="{{ workout.id }}">
     <input type="hidden" name="session_elapsed_seconds" id="sessionElapsedSeconds" value="0">
+    <input type="hidden" name="resume_session_id" value="{{ resume_session_id or '' }}">
 
     {% if warmup_exercises %}
     <div class="section-header warmup-header">Warm-Up</div>
@@ -69,24 +82,27 @@
                 </tr>
             </thead>
             <tbody>
-                {% for set_num in range(1, exercise.sets_prescribed + 1) %}
+                {% set resume_sets = resume_data.get(exercise.exercise_name, {}) if resume_data else {} %}
+                {% set num_rows = resume_sets|length if resume_data else exercise.sets_prescribed %}
+                {% for set_num in range(1, num_rows + 1) %}
+                {% set rv = resume_sets.get(set_num, {}) if resume_data else {} %}
                 <tr>
                     <td>
                         <span class="set-num-display">{{ set_num }}</span>
                         <input type="hidden" name="exercise_name" value="{{ exercise.exercise_name }}">
                         <input type="hidden" name="set_number" value="{{ set_num }}">
                     </td>
-                    <td><input type="number" name="weight" step="0.5" min="0" placeholder="0"></td>
-                    <td><input type="number" name="reps" min="0" placeholder="0"></td>
+                    <td><input type="number" name="weight" step="0.5" min="0" placeholder="0" {% if rv and rv.weight is not none %}value="{{ rv.weight }}"{% endif %}></td>
+                    <td><input type="number" name="reps" min="0" placeholder="0" {% if rv and rv.reps is not none %}value="{{ rv.reps }}"{% endif %}></td>
                     <td>
                         <select name="rpe">
                             <option value="">-</option>
                             {% for r in range(1, 11) %}
-                            <option value="{{ r }}">{{ r }}</option>
+                            <option value="{{ r }}" {{ 'selected' if rv and rv.rpe == r else '' }}>{{ r }}</option>
                             {% endfor %}
                         </select>
                     </td>
-                    <td><input type="text" name="set_notes" placeholder=""></td>
+                    <td><input type="text" name="set_notes" placeholder="" value="{{ rv.notes if rv and rv.notes else '' }}"></td>
                 </tr>
                 {% set perf = last_perf.get(exercise.exercise_name) %}
                 {% if perf and set_num in perf['sets'] %}
@@ -160,24 +176,27 @@
                 </tr>
             </thead>
             <tbody>
-                {% for set_num in range(1, exercise.sets_prescribed + 1) %}
+                {% set resume_sets = resume_data.get(exercise.exercise_name, {}) if resume_data else {} %}
+                {% set num_rows = resume_sets|length if resume_data else exercise.sets_prescribed %}
+                {% for set_num in range(1, num_rows + 1) %}
+                {% set rv = resume_sets.get(set_num, {}) if resume_data else {} %}
                 <tr>
                     <td>
                         <span class="set-num-display">{{ set_num }}</span>
                         <input type="hidden" name="exercise_name" value="{{ exercise.exercise_name }}">
                         <input type="hidden" name="set_number" value="{{ set_num }}">
                     </td>
-                    <td><input type="number" name="weight" step="0.5" min="0" placeholder="0"></td>
-                    <td><input type="number" name="reps" min="0" placeholder="0"></td>
+                    <td><input type="number" name="weight" step="0.5" min="0" placeholder="0" {% if rv and rv.weight is not none %}value="{{ rv.weight }}"{% endif %}></td>
+                    <td><input type="number" name="reps" min="0" placeholder="0" {% if rv and rv.reps is not none %}value="{{ rv.reps }}"{% endif %}></td>
                     <td>
                         <select name="rpe">
                             <option value="">-</option>
                             {% for r in range(1, 11) %}
-                            <option value="{{ r }}">{{ r }}</option>
+                            <option value="{{ r }}" {{ 'selected' if rv and rv.rpe == r else '' }}>{{ r }}</option>
                             {% endfor %}
                         </select>
                     </td>
-                    <td><input type="text" name="set_notes" placeholder=""></td>
+                    <td><input type="text" name="set_notes" placeholder="" value="{{ rv.notes if rv and rv.notes else '' }}"></td>
                 </tr>
                 {% set perf = last_perf.get(exercise.exercise_name) %}
                 {% if perf and set_num in perf['sets'] %}
@@ -251,24 +270,27 @@
                 </tr>
             </thead>
             <tbody>
-                {% for set_num in range(1, exercise.sets_prescribed + 1) %}
+                {% set resume_sets = resume_data.get(exercise.exercise_name, {}) if resume_data else {} %}
+                {% set num_rows = resume_sets|length if resume_data else exercise.sets_prescribed %}
+                {% for set_num in range(1, num_rows + 1) %}
+                {% set rv = resume_sets.get(set_num, {}) if resume_data else {} %}
                 <tr>
                     <td>
                         <span class="set-num-display">{{ set_num }}</span>
                         <input type="hidden" name="exercise_name" value="{{ exercise.exercise_name }}">
                         <input type="hidden" name="set_number" value="{{ set_num }}">
                     </td>
-                    <td><input type="number" name="weight" step="0.5" min="0" placeholder="0"></td>
-                    <td><input type="number" name="reps" min="0" placeholder="0"></td>
+                    <td><input type="number" name="weight" step="0.5" min="0" placeholder="0" {% if rv and rv.weight is not none %}value="{{ rv.weight }}"{% endif %}></td>
+                    <td><input type="number" name="reps" min="0" placeholder="0" {% if rv and rv.reps is not none %}value="{{ rv.reps }}"{% endif %}></td>
                     <td>
                         <select name="rpe">
                             <option value="">-</option>
                             {% for r in range(1, 11) %}
-                            <option value="{{ r }}">{{ r }}</option>
+                            <option value="{{ r }}" {{ 'selected' if rv and rv.rpe == r else '' }}>{{ r }}</option>
                             {% endfor %}
                         </select>
                     </td>
-                    <td><input type="text" name="set_notes" placeholder=""></td>
+                    <td><input type="text" name="set_notes" placeholder="" value="{{ rv.notes if rv and rv.notes else '' }}"></td>
                 </tr>
                 {% set perf = last_perf.get(exercise.exercise_name) %}
                 {% if perf and set_num in perf['sets'] %}
@@ -321,7 +343,7 @@
             <div class="feeling-group">
                 {% for i in range(1, 6) %}
                 <label>
-                    <input type="radio" name="overall_feeling" value="{{ i }}">
+                    <input type="radio" name="overall_feeling" value="{{ i }}" {{ 'checked' if overall_feeling == i else '' }}>
                     <span>{{ i }}{% if i == 1 %} Rough{% elif i == 3 %} OK{% elif i == 5 %} Great{% endif %}</span>
                 </label>
                 {% endfor %}
@@ -330,7 +352,7 @@
 
         <div class="form-group">
             <label for="session_notes">Session Notes</label>
-            <textarea id="session_notes" name="session_notes" placeholder="How was the workout? Anything to note?"></textarea>
+            <textarea id="session_notes" name="session_notes" placeholder="How was the workout? Anything to note?">{{ session_notes or '' }}</textarea>
         </div>
 
         <button type="button" class="btn btn-success" onclick="confirmLogWorkout()">Log Workout</button>
@@ -340,24 +362,35 @@
 
 <!-- Confirmation Modal -->
 <div id="confirmModal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.6); z-index:1000; align-items:center; justify-content:center;">
-    <div style="background:#fff; border-radius:12px; padding:2rem; max-width:380px; width:90%; text-align:center; box-shadow:0 8px 32px rgba(0,0,0,0.3);">
+    <div style="background:#fff; border-radius:12px; padding:2rem; max-width:420px; width:90%; text-align:center; box-shadow:0 8px 32px rgba(0,0,0,0.3);">
         <h2 style="margin-top:0;" id="modalTitle">Log Workout?</h2>
         <p id="modalMessage">Are you ready to save this workout session?</p>
-        <div style="display:flex; gap:1rem; justify-content:center; margin-top:1.5rem;">
-            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-            <button class="btn btn-success" id="modalConfirmBtn">Save Workout</button>
+        <div style="display:flex; gap:0.75rem; justify-content:center; margin-top:1.5rem; flex-wrap:wrap;">
+            <button class="btn btn-secondary" onclick="closeModal()">Stay</button>
+            <button class="btn btn-warning" id="modalSecondaryBtn" style="display:none">Save &amp; Pause</button>
+            <button class="btn btn-danger" id="modalConfirmBtn">Confirm</button>
         </div>
     </div>
 </div>
 
 <script>
 let modalConfirmAction = null;
+let modalSecondaryAction = null;
 
-function showModal(title, message, confirmLabel, onConfirm) {
+function showModal(title, message, confirmLabel, onConfirm, secondaryLabel, onSecondary) {
     document.getElementById('modalTitle').textContent = title;
     document.getElementById('modalMessage').textContent = message;
     document.getElementById('modalConfirmBtn').textContent = confirmLabel;
     modalConfirmAction = onConfirm;
+    const secBtn = document.getElementById('modalSecondaryBtn');
+    if (secondaryLabel && onSecondary) {
+        secBtn.textContent = secondaryLabel;
+        secBtn.style.display = '';
+        modalSecondaryAction = onSecondary;
+    } else {
+        secBtn.style.display = 'none';
+        modalSecondaryAction = null;
+    }
     const modal = document.getElementById('confirmModal');
     modal.style.display = 'flex';
 }
@@ -365,10 +398,17 @@ function showModal(title, message, confirmLabel, onConfirm) {
 function closeModal() {
     document.getElementById('confirmModal').style.display = 'none';
     modalConfirmAction = null;
+    modalSecondaryAction = null;
 }
 
 document.getElementById('modalConfirmBtn').addEventListener('click', function() {
     const action = modalConfirmAction;
+    closeModal();
+    if (action) action();
+});
+
+document.getElementById('modalSecondaryBtn').addEventListener('click', function() {
+    const action = modalSecondaryAction;
     closeModal();
     if (action) action();
 });
@@ -382,8 +422,23 @@ function confirmLogWorkout() {
         const elapsed = Math.floor((Date.now() - sessionStart) / 1000);
         document.getElementById('sessionElapsedSeconds').value = elapsed;
         workoutSubmitted = true;
-        document.querySelector('form[action$="/workout/log"]').submit();
+        document.getElementById('workoutForm').submit();
     });
+}
+
+function pauseWorkout() {
+    showModal('Pause Workout?', 'Your progress will be saved and you can resume later.', 'Save & Pause', function() {
+        submitPause();
+    });
+}
+
+function submitPause() {
+    const elapsed = Math.floor((Date.now() - sessionStart) / 1000);
+    document.getElementById('sessionElapsedSeconds').value = elapsed;
+    workoutSubmitted = true;
+    const form = document.getElementById('workoutForm');
+    form.action = '{{ url_for("workout_pause") }}';
+    form.submit();
 }
 
 // Warn before leaving page via navigation links or browser back/refresh
@@ -402,17 +457,22 @@ document.querySelectorAll('nav a, a.nav-link, .navbar a').forEach(function(link)
         if (workoutSubmitted) return;
         e.preventDefault();
         const href = this.href;
-        showModal('Leave Workout?', 'Your workout data will not be saved if you leave. Are you sure?', 'Leave Page', function() {
-            workoutSubmitted = true;
-            window.location.href = href;
-        });
+        showModal(
+            'Leave Workout?',
+            'Your workout data will not be saved if you leave.',
+            'Leave without saving',
+            function() { workoutSubmitted = true; window.location.href = href; },
+            'Save & Pause',
+            function() { submitPause(); }
+        );
     });
 });
 </script>
 
 <script>
 // Session elapsed timer
-let sessionStart = Date.now();
+let resumeElapsed = {{ resume_elapsed or 0 }};
+let sessionStart = Date.now() - (resumeElapsed * 1000);
 let sessionInterval = setInterval(function() {
     let elapsed = Math.floor((Date.now() - sessionStart) / 1000);
     let mins = Math.floor(elapsed / 60).toString().padStart(2, '0');
