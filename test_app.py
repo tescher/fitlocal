@@ -360,9 +360,10 @@ with app.app_context():
 # 14. Pause / Resume
 print("\n--- Pause / Resume ---")
 with app.app_context():
-    from app import get_paused_session
+    from app import get_paused_session, get_active_plan as _gap
     from models import WorkoutSession, LoggedSet
-    pw = PlannedWorkout.query.first()
+    profile = UserProfile.query.first()
+    pw = PlannedWorkout.query.filter_by(plan_id=_gap(profile.id).id).first()
     exercises = PlannedExercise.query.filter_by(planned_workout_id=pw.id).all()
 
 pause_items = [
@@ -373,7 +374,9 @@ pause_items = [
     ("resume_session_id", ""),
 ]
 with app.app_context():
-    pw = PlannedWorkout.query.first()
+    from app import get_active_plan as _gap2
+    profile = UserProfile.query.first()
+    pw = PlannedWorkout.query.filter_by(plan_id=_gap2(profile.id).id).first()
     exercises = PlannedExercise.query.filter_by(planned_workout_id=pw.id).all()
     for ex in exercises:
         for s in range(1, ex.sets_prescribed + 1):
