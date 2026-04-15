@@ -160,7 +160,7 @@ with app.app_context():
     pending = WorkoutPlan(
         user_id=profile.id, name=plan_data["plan_name"],
         description=plan_data["description"], days_per_week=3,
-        plan_json=json.dumps(plan_data), is_active=False, notes="pending",
+        plan_json=json.dumps(plan_data), status="pending",
         total_weeks=12,
     )
     db.session.add(pending)
@@ -171,8 +171,8 @@ r = client.post("/generate-plan/confirm", follow_redirects=False)
 check("POST /confirm redirects", r.status_code == 302)
 
 with app.app_context():
-    plan = WorkoutPlan.query.filter_by(is_active=True).first()
-    check("Plan is active", plan is not None and plan.is_active)
+    plan = WorkoutPlan.query.filter_by(status="active").first()
+    check("Plan is active", plan is not None and plan.status == "active")
     check("Plan has 6 phases", len(plan.phases) == 6)
     check("Plan has start_date", plan.start_date == date.today())
     check("Plan has 3 workouts", len(plan.planned_workouts) == 3)
@@ -193,6 +193,69 @@ r = client.get("/plan")
 check("GET /plan returns 200", r.status_code == 200)
 check("Plan shows phases", b"Foundation" in r.data and b"Recovery" in r.data)
 check("Plan shows phase timeline", b"phase-timeline" in r.data)
+check("Plan view has Past Plans link", b"plan/history" in r.data)
+
+# 6b. Plan status field
+print("\n--- Plan Status Field ---")
+with app.app_context():
+    profile = UserProfile.query.first()
+    active_plan = WorkoutPlan.query.filter_by(user_id=profile.id, status="active").first()
+    pending_plans = WorkoutPlan.query.filter_by(user_id=profile.id, status="pending").all()
+    inactive_plans = WorkoutPlan.query.filter_by(user_id=profile.id, status="inactive").all()
+    check("Exactly one active plan", active_plan is not None)
+    check("No pending plans after confirm", len(pending_plans) == 0)
+    check("No inactive plans yet (first plan)", len(inactive_plans) == 0)
+
+# 6c. Plan history page (empty — no inactive plans yet)
+print("\n--- Plan History ---")
+r = client.get("/plan/history")
+check("GET /plan/history returns 200", r.status_code == 200)
+check("Plan history shows empty state when no past plans", b"No past plans yet" in r.data)
+
+# 6d. Generate plan page shows current plan in past plans section
+r = client.get("/generate-plan")
+check("GET /generate-plan returns 200", r.status_code == 200)
+check("Generate plan page shows current plan in Past Plans", b"CURRENT" in r.data)
+check("Generate plan page Past Plans section present", b"Past Plans" in r.data)
+
+# 6e. Activate a second plan — first plan should become inactive
+print("\n--- Second Plan Activation (status transitions) ---")
+plan_data2 = dict(plan_data, plan_name="Plan Two")
+with app.app_context():
+    profile = UserProfile.query.first()
+    pending2 = WorkoutPlan(
+        user_id=profile.id, name=plan_data2["plan_name"],
+        description=plan_data2["description"], days_per_week=3,
+        plan_json=json.dumps(plan_data2), status="pending",
+        total_weeks=12,
+    )
+    db.session.add(pending2)
+    db.session.commit()
+
+r = client.post("/generate-plan/confirm", follow_redirects=False)
+check("POST /confirm second plan redirects", r.status_code == 302)
+
+with app.app_context():
+    profile = UserProfile.query.first()
+    all_plans = WorkoutPlan.query.filter_by(user_id=profile.id).all()
+    active_plans = [p for p in all_plans if p.status == "active"]
+    inactive_plans = [p for p in all_plans if p.status == "inactive"]
+    pending_plans = [p for p in all_plans if p.status == "pending"]
+    check("Exactly one active plan after second activation", len(active_plans) == 1)
+    check("First plan is now inactive", len(inactive_plans) == 1)
+    check("No pending plans after second confirm", len(pending_plans) == 0)
+    check("Active plan is Plan Two", active_plans[0].name == "Plan Two")
+    check("Inactive plan is original plan", inactive_plans[0].name == plan_data["plan_name"])
+
+# 6f. Plan history now shows the inactive plan
+r = client.get("/plan/history")
+check("Plan history shows inactive plan", plan_data["plan_name"].encode() in r.data)
+check("Plan history does not show active plan", b"Plan Two" not in r.data)
+
+# 6g. Generate plan page shows both active and inactive plans
+r = client.get("/generate-plan")
+check("Generate plan Past Plans shows active plan", b"Plan Two" in r.data)
+check("Generate plan Past Plans shows inactive plan", plan_data["plan_name"].encode() in r.data)
 
 # 7. Dashboard
 print("\n--- Dashboard ---")
