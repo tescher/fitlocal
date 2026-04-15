@@ -67,6 +67,17 @@ def migrate():
         cursor.execute("ALTER TABLE workout_plan ADD COLUMN session_offset INTEGER NOT NULL DEFAULT 0")
         print("  Added workout_plan.session_offset")
 
+    if not column_exists("workout_plan", "status"):
+        cursor.execute("ALTER TABLE workout_plan ADD COLUMN status VARCHAR(20) DEFAULT 'inactive'")
+        cursor.execute("""
+            UPDATE workout_plan SET status = CASE
+                WHEN is_active = 1 THEN 'active'
+                WHEN notes = 'pending' THEN 'pending'
+                ELSE 'inactive'
+            END
+        """)
+        print("  Added workout_plan.status and backfilled from is_active/notes")
+
     # --- PlannedExercise new columns ---
     if not column_exists("planned_exercise", "exercise_type"):
         cursor.execute("ALTER TABLE planned_exercise ADD COLUMN exercise_type VARCHAR(20) DEFAULT 'main'")

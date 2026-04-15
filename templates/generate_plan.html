@@ -16,7 +16,7 @@
     <div class="loading-card">
         <div class="loading-spinner"></div>
         <h2>Building Your Plan</h2>
-        <p class="text-muted">Generating your plan with AI — this usually takes 30-60 seconds.</p>
+        <p class="text-muted">Generating your plan with AI — this usually takes 3-5 minutes.</p>
         <p class="loading-timer" id="loadingTimer">0s</p>
     </div>
 </div>
@@ -94,9 +94,51 @@
         </div>
     </div>
 {% else %}
-    <form method="POST" action="{{ url_for('generate_plan_api') }}" onsubmit="showLoading()">
+    <form method="POST" action="{{ url_for('generate_plan_api') }}" onsubmit="showLoading()" style="margin-bottom: 1.5rem;">
         <button type="submit" class="btn btn-primary">Generate My Workout Plan</button>
     </form>
+{% endif %}
+
+{% if past_plans %}
+<div class="card mb-2">
+    <h2>Past Plans</h2>
+    <p class="text-muted" style="margin-bottom: 0.75rem;">Reference your previous plans while reviewing the new one.</p>
+    {% for entry in past_plans %}
+    {% set p = entry.plan %}
+    <details style="margin-bottom: 0.75rem;">
+        <summary style="cursor: pointer; font-weight: 600;">
+            {{ p.name }}
+            {% if p.status == "active" %}<span class="phase-badge progressive" style="margin-left: 0.4rem; font-size: 0.75rem;">CURRENT</span>{% endif %}
+            <span class="text-muted" style="font-weight: normal; font-size: 0.85rem; margin-left: 0.5rem;">
+                — {{ p.days_per_week }} days/week, {{ p.total_weeks }} weeks
+                {% if p.start_date %} · started {{ p.start_date.strftime('%b %Y') }}{% endif %}
+                · {{ entry.session_count }} sessions
+            </span>
+        </summary>
+        <div style="margin-top: 0.5rem; padding-left: 0.75rem; border-left: 3px solid var(--border);">
+            {% if entry.plan_json.get('phases') %}
+            <div style="margin-bottom: 0.5rem;">
+                {% for phase in entry.plan_json.phases %}
+                <span class="phase-badge {{ phase.phase_type }}" style="margin-right: 0.3rem;">
+                    {{ phase.phase_name }} (Wks {{ phase.week_start }}–{{ phase.week_end }})
+                </span>
+                {% endfor %}
+            </div>
+            {% endif %}
+            {% for workout in entry.workouts %}
+            <div style="margin-bottom: 0.5rem;">
+                <strong>{{ workout.day_of_week }}: {{ workout.workout_name }}</strong>
+                <ul style="margin: 0.25rem 0 0 1rem; padding: 0;">
+                    {% for ex in workout.planned_exercises %}
+                    <li style="font-size: 0.9rem;">{{ ex.exercise_name }} — {{ ex.sets_prescribed }}×{{ ex.reps_prescribed }}</li>
+                    {% endfor %}
+                </ul>
+            </div>
+            {% endfor %}
+        </div>
+    </details>
+    {% endfor %}
+</div>
 {% endif %}
 
 <script>

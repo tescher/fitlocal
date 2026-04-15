@@ -1,7 +1,10 @@
 {% extends "base.html" %}
 {% block title %}FitLocal - Current Plan{% endblock %}
 {% block content %}
-<h1>Current Plan</h1>
+<div class="flex-between mb-2">
+    <h1>Current Plan</h1>
+    <a href="{{ url_for('plan_history') }}" class="btn btn-secondary">Past Plans</a>
+</div>
 
 {% if plan %}
 <div class="card mb-2">

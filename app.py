@@ -96,6 +96,22 @@ with app.app_context():
                 ))
                 conn.commit()
 
+        # Add status column to workout_plan if it doesn't exist, backfilling from is_active + notes
+        if insp.has_table("workout_plan"):
+            wp_cols = [c["name"] for c in insp.get_columns("workout_plan")]
+            if "status" not in wp_cols:
+                conn.execute(text(
+                    "ALTER TABLE workout_plan ADD COLUMN status VARCHAR(20) DEFAULT 'inactive'"
+                ))
+                conn.execute(text("""
+                    UPDATE workout_plan SET status = CASE
+                        WHEN is_active = 1 THEN 'active'
+                        WHEN notes = 'pending' THEN 'pending'
+                        ELSE 'inactive'
+                    END
+                """))
+                conn.commit()
+
         # Add status and elapsed_seconds columns to workout_session if they don't exist
         if insp.has_table("workout_session"):
             ws_cols = [c["name"] for c in insp.get_columns("workout_session")]
@@ -153,7 +169,7 @@ def get_profile():
 
 
 def get_active_plan(user_id):
-    return WorkoutPlan.query.filter_by(is_active=True, user_id=user_id).first()
+    return WorkoutPlan.query.filter_by(status="active", user_id=user_id).first()
 
 
 def get_current_phase(plan):
@@ -568,7 +584,7 @@ def setup():
 def get_pending_plan(profile):
     """Get a pending (not yet activated) plan from the database."""
     return WorkoutPlan.query.filter_by(
-        user_id=profile.id, is_active=False, notes="pending"
+        user_id=profile.id, status="pending"
     ).order_by(WorkoutPlan.created_at.desc()).first()
 
 
@@ -592,8 +608,32 @@ def generate_plan():
             ).count()
             suggested_start_index = _compute_suggested_start(old_plan, old_session_count, pending_plan)
 
+    past_plan_records = (
+        WorkoutPlan.query
+        .filter(WorkoutPlan.user_id == profile.id, WorkoutPlan.status.in_(["active", "inactive"]))
+        .order_by(WorkoutPlan.created_at.desc())
+        .all()
+    )
+    past_plans = []
+    for p in past_plan_records:
+        try:
+            pj = json.loads(p.plan_json or "{}")
+        except Exception:
+            pj = {}
+        session_count = WorkoutSession.query.filter(
+            WorkoutSession.user_id == profile.id,
+            WorkoutSession.planned_workout_id.in_([w.id for w in p.planned_workouts]),
+            WorkoutSession.status == SESSION_STATUS_COMPLETED,
+        ).count()
+        past_plans.append({
+            "plan": p,
+            "plan_json": pj,
+            "session_count": session_count,
+            "workouts": PlannedWorkout.query.filter_by(plan_id=p.id).order_by(PlannedWorkout.order_index).all(),
+        })
+
     return render_template("generate_plan.html", profile=profile, pending_plan=pending_plan,
-                           suggested_start_index=suggested_start_index)
+                           suggested_start_index=suggested_start_index, past_plans=past_plans)
 
 
 @app.route("/generate-plan/generate", methods=["POST"])
@@ -613,7 +653,7 @@ def generate_plan_api():
         plan_data = generate_workout_plan(profile, fitness_test=fitness_test)
 
         # Remove any old pending plans
-        WorkoutPlan.query.filter_by(user_id=profile.id, is_active=False, notes="pending").delete()
+        WorkoutPlan.query.filter_by(user_id=profile.id, status="pending").delete()
 
         pending = WorkoutPlan(
             user_id=profile.id,
@@ -621,8 +661,7 @@ def generate_plan_api():
             description=plan_data.get("description", ""),
             days_per_week=plan_data.get("days_per_week", 3),
             plan_json=json.dumps(plan_data),
-            is_active=False,
-            notes="pending",
+            status="pending",
             total_weeks=plan_data.get("total_weeks", 12),
         )
         db.session.add(pending)
@@ -653,7 +692,7 @@ def confirm_plan():
     db.session.delete(pending)
 
     # Deactivate existing plans for this user only
-    WorkoutPlan.query.filter_by(is_active=True, user_id=profile.id).update({"is_active": False})
+    WorkoutPlan.query.filter_by(status="active", user_id=profile.id).update({"status": "inactive"})
 
     plan = WorkoutPlan(
         user_id=profile.id,
@@ -661,7 +700,7 @@ def confirm_plan():
         description=pending_plan.get("description", ""),
         days_per_week=pending_plan.get("days_per_week", 3),
         plan_json=json.dumps(pending_plan),
-        is_active=True,
+        status="active",
         total_weeks=pending_plan.get("total_weeks", 12),
         current_week=1,
         start_date=date.today(),
@@ -1264,6 +1303,42 @@ def plan_view():
         phases=phases,
         current_phase=current_phase,
     )
+
+
+@app.route("/plan/history")
+@login_required
+def plan_history():
+    profile = get_profile()
+    if not profile:
+        return redirect(url_for("setup"))
+
+    past_plans = (
+        WorkoutPlan.query
+        .filter_by(user_id=profile.id, status="inactive")
+        .order_by(WorkoutPlan.created_at.desc())
+        .all()
+    )
+
+    # Attach parsed plan_json and workout counts for display
+    plans_data = []
+    for p in past_plans:
+        try:
+            pj = json.loads(p.plan_json or "{}")
+        except Exception:
+            pj = {}
+        session_count = WorkoutSession.query.filter(
+            WorkoutSession.user_id == profile.id,
+            WorkoutSession.planned_workout_id.in_([w.id for w in p.planned_workouts]),
+            WorkoutSession.status == SESSION_STATUS_COMPLETED,
+        ).count()
+        plans_data.append({
+            "plan": p,
+            "plan_json": pj,
+            "session_count": session_count,
+            "workouts": PlannedWorkout.query.filter_by(plan_id=p.id).order_by(PlannedWorkout.order_index).all(),
+        })
+
+    return render_template("plan_history.html", plans_data=plans_data)
 
 
 @app.route("/settings")

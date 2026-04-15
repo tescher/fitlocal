@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block title %}FitLocal - Plan History{% endblock %}
+{% block content %}
+<div class="flex-between mb-2">
+    <h1>Plan History</h1>
+    <a href="{{ url_for('plan_view') }}" class="btn btn-secondary">Current Plan</a>
+</div>
+
+{% if plans_data %}
+    {% for entry in plans_data %}
+    {% set p = entry.plan %}
+    {% set pj = entry.plan_json %}
+    <div class="card mb-2">
+        <div class="flex-between" style="align-items: flex-start;">
+            <div>
+                <h2 style="margin-bottom: 0.25rem;">{{ p.name }}</h2>
+                <p class="text-muted" style="margin: 0;">{{ p.description }}</p>
+            </div>
+            <div style="text-align: right; flex-shrink: 0; margin-left: 1rem;">
+                <span class="text-muted" style="font-size: 0.85rem;">
+                    Started {{ p.start_date.strftime('%b %d, %Y') if p.start_date else p.created_at.strftime('%b %d, %Y') }}
+                </span>
+            </div>
+        </div>
+
+        <div style="display: flex; gap: 1.5rem; margin: 0.75rem 0; flex-wrap: wrap;">
+            <span><strong>{{ p.days_per_week }}</strong> days/week</span>
+            <span><strong>{{ p.total_weeks }}</strong> weeks</span>
+            <span><strong>{{ entry.session_count }}</strong> sessions completed</span>
+            {% if pj.get('phases') %}
+            <span><strong>{{ pj.phases|length }}</strong> phases</span>
+            {% endif %}
+        </div>
+
+        {% if pj.get('phases') %}
+        <div style="margin-bottom: 0.75rem;">
+            {% for phase in pj.phases %}
+            <span class="phase-badge {{ phase.phase_type }}" style="margin-right: 0.4rem;">
+                {{ phase.phase_name }} (Wks {{ phase.week_start }}–{{ phase.week_end }})
+            </span>
+            {% endfor %}
+        </div>
+        {% endif %}
+
+        <details>
+            <summary style="cursor: pointer; font-weight: 600; padding: 0.4rem 0;">
+                View full plan ({{ entry.workouts|length }} workouts)
+            </summary>
+            <div style="margin-top: 0.75rem;">
+                {% for workout in entry.workouts %}
+                <div class="exercise-block" style="margin-bottom: 1rem;">
+                    <h3>{{ workout.day_of_week }}: {{ workout.workout_name }}</h3>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Exercise</th>
+                                <th>Sets</th>
+                                <th>Reps</th>
+                                <th>Rest</th>
+                                <th>Notes</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for ex in workout.planned_exercises %}
+                            <tr>
+                                <td>{{ ex.exercise_name }}</td>
+                                <td>{{ ex.sets_prescribed }}</td>
+                                <td>{{ ex.reps_prescribed }}</td>
+                                <td>{{ ex.rest_seconds or '-' }}{% if ex.rest_seconds %}s{% endif %}</td>
+                                <td>{{ ex.notes or '' }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% endfor %}
+            </div>
+        </details>
+    </div>
+    {% endfor %}
+{% else %}
+    <div class="card text-center">
+        <p class="text-muted">No past plans yet. Past plans will appear here after you generate and activate a new plan.</p>
+        <a href="{{ url_for('generate_plan') }}" class="btn btn-primary mt-2">Generate a Plan</a>
+    </div>
+{% endif %}
+{% endblock %}

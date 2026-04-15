@@ -48,7 +48,8 @@ class WorkoutPlan(db.Model):
     description = db.Column(db.Text)
     days_per_week = db.Column(db.Integer)
     plan_json = db.Column(db.Text, nullable=False)
-    is_active = db.Column(db.Boolean, default=False)
+    is_active = db.Column(db.Boolean, default=False)  # deprecated — use status
+    status = db.Column(db.String(20), default="inactive")  # "active", "inactive", "pending"
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     notes = db.Column(db.Text)
     # Periodization
