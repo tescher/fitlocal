@@ -861,6 +861,101 @@ if superset_session_id:
                              if getattr(ls, 'weight_b', None) is not None]
         check("weight_b persists after completion", len(ss_completed_sets) > 0)
 
+# 15g. Superset data in workout done page, session detail, and performance history
+print("\n--- Superset Display ---")
+
+# Log a new workout with superset data to test the workout done page response
+with app.app_context():
+    from app import get_active_plan as _gap4
+    profile = UserProfile.query.first()
+    pw_d = PlannedWorkout.query.filter_by(plan_id=_gap4(profile.id).id).first()
+    ex_d = PlannedExercise.query.filter_by(planned_workout_id=pw_d.id).first()
+    superset_display_ex = ex_d.exercise_name
+
+done_items = [
+    ("planned_workout_id", str(pw_d.id)),
+    ("overall_feeling", "4"),
+    ("session_notes", "Superset display test"),
+    ("session_elapsed_seconds", "120"),
+    ("resume_session_id", ""),
+    ("superset_exercise", superset_display_ex),
+]
+with app.app_context():
+    ex_d = PlannedExercise.query.filter_by(planned_workout_id=pw_d.id).first()
+    for s in range(1, ex_d.sets_prescribed + 1):
+        done_items.extend([
+            ("exercise_name", ex_d.exercise_name),
+            ("set_number", str(s)),
+            ("weight", "100"),
+            ("reps", "10"),
+            ("weight_b", "75"),
+            ("reps_b", "12"),
+            ("rpe", "7"),
+            ("set_notes", ""),
+        ])
+
+r = client.post("/workout/log", data=MultiDict(done_items), follow_redirects=False)
+check("Superset log POST redirects or returns 200",
+      r.status_code in (200, 302))
+
+if r.status_code == 200:
+    html_done = r.data.decode()
+else:
+    r2 = client.get(r.headers.get("Location", "/"), follow_redirects=True)
+    html_done = r2.data.decode()
+
+check("Workout done page shows Weight B column", "Weight B" in html_done)
+check("Workout done page shows weight_b value (75.0 or 75)", "75" in html_done)
+check("Workout done page shows reps_b value (12)", "12" in html_done)
+
+# Session detail page
+with app.app_context():
+    profile = UserProfile.query.first()
+    last_session = WorkoutSession.query.filter_by(
+        user_id=profile.id, status='completed'
+    ).order_by(WorkoutSession.date.desc()).first()
+    last_session_id = last_session.id if last_session else None
+
+if last_session_id:
+    r = client.get(f"/history/{last_session_id}", follow_redirects=False)
+    check("Session detail returns 200", r.status_code == 200)
+    html_detail = r.data.decode()
+    check("Session detail shows Weight B column header", "Weight B" in html_detail)
+    check("Session detail shows weight_b value (75.0 or 75)", "75" in html_detail)
+    check("Session detail shows reps_b value (12)", "12" in html_detail)
+else:
+    check("Session detail returns 200", False)
+    check("Session detail shows Weight B column header", False)
+    check("Session detail shows weight_b value (75.0 or 75)", False)
+    check("Session detail shows reps_b value (12)", False)
+
+# get_last_performance returns weight_b and reps_b
+with app.app_context():
+    from app import get_last_performance as _glp
+    profile = UserProfile.query.first()
+    perf = _glp(profile.id, superset_display_ex)
+    check("get_last_performance returns weight_b",
+          perf is not None and any(
+              v.get('weight_b') is not None for v in perf['sets'].values()
+          ))
+    check("get_last_performance returns reps_b",
+          perf is not None and any(
+              v.get('reps_b') is not None for v in perf['sets'].values()
+          ))
+
+# Performance history row in workout_today embeds weight_b in last_perf_json
+# We logged weight_b=75 and reps_b=12, so the JSON data should contain those values
+r = client.get("/workout/today", follow_redirects=False)
+if r.status_code == 200:
+    html_today = r.data.decode()
+    check("workout_today last_perf_json includes weight_b with value",
+          '"weight_b": 75' in html_today or '"weight_b":75' in html_today)
+    check("workout_today last_perf_json includes reps_b with value",
+          '"reps_b": 12' in html_today or '"reps_b":12' in html_today)
+else:
+    check("workout_today last_perf_json includes weight_b with value", False)
+    check("workout_today last_perf_json includes reps_b with value", False)
+
 # 16. Review page
 print("\n--- Review ---")
 r = client.get("/review")
