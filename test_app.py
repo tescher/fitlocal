@@ -767,7 +767,102 @@ with app.app_context():
     WorkoutSession.query.filter_by(user_id=profile.id, status='paused').delete()
     db.session.commit()
 
-# 15. Review page
+# 15. Superset support
+print("\n--- Superset Support ---")
+
+# 15a. LoggedSet has weight_b and reps_b fields
+with app.app_context():
+    from models import LoggedSet as LS4
+    cols = [c.name for c in LS4.__table__.columns]
+    check("LoggedSet has weight_b column", "weight_b" in cols)
+    check("LoggedSet has reps_b column", "reps_b" in cols)
+
+# 15b. WorkoutSession has superset_exercises field
+with app.app_context():
+    from models import WorkoutSession as WS3
+    cols = [c.name for c in WS3.__table__.columns]
+    check("WorkoutSession has superset_exercises column", "superset_exercises" in cols)
+
+# 15c. Pause with superset state saves superset_exercises to session
+with app.app_context():
+    from app import get_active_plan as _gap3
+    profile = UserProfile.query.first()
+    pw_s = PlannedWorkout.query.filter_by(plan_id=_gap3(profile.id).id).first()
+    ex_s = PlannedExercise.query.filter_by(planned_workout_id=pw_s.id).first()
+    superset_ex_name = ex_s.exercise_name
+
+superset_pause_items = [
+    ("planned_workout_id", str(pw_s.id)),
+    ("overall_feeling", "3"),
+    ("session_notes", ""),
+    ("session_elapsed_seconds", "60"),
+    ("resume_session_id", ""),
+    ("superset_exercise", superset_ex_name),  # marks this exercise as superset
+]
+with app.app_context():
+    ex_s = PlannedExercise.query.filter_by(planned_workout_id=pw_s.id).first()
+    for s in range(1, ex_s.sets_prescribed + 1):
+        superset_pause_items.extend([
+            ("exercise_name", ex_s.exercise_name),
+            ("set_number", str(s)),
+            ("weight", "100"),
+            ("reps", "10"),
+            ("weight_b", "80"),
+            ("reps_b", "12"),
+            ("rpe", ""),
+            ("set_notes", ""),
+        ])
+
+r = client.post("/workout/pause", data=MultiDict(superset_pause_items), follow_redirects=False)
+check("Superset pause redirects", r.status_code == 302)
+
+import json as _json
+with app.app_context():
+    profile = UserProfile.query.first()
+    sp = WorkoutSession.query.filter_by(user_id=profile.id, status='paused').first()
+    check("Superset session saved as paused", sp is not None)
+    raw_ss = getattr(sp, 'superset_exercises', None) if sp else None
+    ss_exercises = _json.loads(raw_ss or "[]") if raw_ss is not None else []
+    check("superset_exercises saved on pause", superset_ex_name in ss_exercises)
+    superset_session_id = sp.id if sp else None
+
+# 15d. Resume page renders superset columns for exercises in superset_exercises
+if superset_session_id:
+    r = client.get(f"/workout/resume/{superset_session_id}", follow_redirects=False)
+    check("Superset resume page returns 200", r.status_code == 200)
+    html = r.data.decode()
+    check("Resume page shows superset toggle active for superset exercise",
+          'superset-active' in html)
+    check("Resume page has Weight B column header", "Weight B" in html)
+
+# 15e. LoggedSets from superset pause have weight_b and reps_b populated
+with app.app_context():
+    profile = UserProfile.query.first()
+    sp = WorkoutSession.query.filter_by(user_id=profile.id, status='paused').first()
+    if sp:
+        ss_sets = [ls for ls in sp.logged_sets if getattr(ls, 'weight_b', None) is not None]
+        check("Superset LoggedSets have weight_b populated", len(ss_sets) > 0)
+        check("Superset LoggedSets have reps_b populated",
+              len(ss_sets) > 0 and all(getattr(ls, 'reps_b', None) is not None for ls in ss_sets))
+    else:
+        check("Superset LoggedSets have weight_b populated", False)
+        check("Superset LoggedSets have reps_b populated", False)
+
+# 15f. Complete the superset session and verify weight_b/reps_b persisted
+if superset_session_id:
+    r = client.post("/workout/finish-paused",
+                    data={"session_id": str(superset_session_id)},
+                    follow_redirects=False)
+    check("Finish superset paused session redirects", r.status_code == 302)
+    with app.app_context():
+        from models import WorkoutSession as WS4
+        completed_sp = WS4.query.get(superset_session_id)
+        check("Superset session marked completed", completed_sp and completed_sp.status == 'completed')
+        ss_completed_sets = [ls for ls in completed_sp.logged_sets
+                             if getattr(ls, 'weight_b', None) is not None]
+        check("weight_b persists after completion", len(ss_completed_sets) > 0)
+
+# 16. Review page
 print("\n--- Review ---")
 r = client.get("/review")
 check("GET /review returns 200", r.status_code == 200)
