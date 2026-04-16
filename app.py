@@ -430,7 +430,7 @@ def get_last_performance(user_id, exercise_name):
             LoggedSet.exercise_name == exercise_name,
             WorkoutSession.status == SESSION_STATUS_COMPLETED,
         )
-        .order_by(WorkoutSession.date.desc())
+        .order_by(WorkoutSession.date.desc(), WorkoutSession.id.desc())
         .first()
     )
     if not last_session:
@@ -444,6 +444,8 @@ def get_last_performance(user_id, exercise_name):
             s.set_number: {
                 "weight": s.weight_lbs,
                 "reps": s.reps_completed,
+                "weight_b": s.weight_b,
+                "reps_b": s.reps_b,
                 "rpe": s.rpe,
                 "notes": s.notes or "",
             }
@@ -461,7 +463,7 @@ def get_recent_performance(user_id, exercise_name, limit=3):
             WorkoutSession.logged_sets.any(LoggedSet.exercise_name == exercise_name),
             WorkoutSession.status == SESSION_STATUS_COMPLETED,
         )
-        .order_by(WorkoutSession.date.desc())
+        .order_by(WorkoutSession.date.desc(), WorkoutSession.id.desc())
         .limit(limit)
         .all()
     )
@@ -475,6 +477,8 @@ def get_recent_performance(user_id, exercise_name, limit=3):
                     s.set_number: {
                         "weight": s.weight_lbs,
                         "reps": s.reps_completed,
+                        "weight_b": s.weight_b,
+                        "reps_b": s.reps_b,
                         "rpe": s.rpe,
                     }
                     for s in sets
@@ -1006,16 +1010,22 @@ def _build_workout_context(profile, planned_workout, active_plan, *, resume_sess
     last_perf_json = json.dumps({
         name: {
             "date": data["date"].strftime("%b %d"),
-            "sets": {str(k): {"weight": v["weight"], "reps": v["reps"], "rpe": v["rpe"], "notes": v.get("notes", "")}
-                     for k, v in data["sets"].items()}
+            "sets": {str(k): {
+                "weight": v["weight"], "reps": v["reps"],
+                "weight_b": v.get("weight_b"), "reps_b": v.get("reps_b"),
+                "rpe": v["rpe"], "notes": v.get("notes", ""),
+            } for k, v in data["sets"].items()}
         }
         for name, data in last_perf.items()
     })
     recent_perf_json = json.dumps({
         name: [
             {"date": sess["date"].strftime("%b %d"),
-             "sets": {str(k): {"weight": v["weight"], "reps": v["reps"], "rpe": v["rpe"]}
-                      for k, v in sess["sets"].items()}}
+             "sets": {str(k): {
+                 "weight": v["weight"], "reps": v["reps"],
+                 "weight_b": v.get("weight_b"), "reps_b": v.get("reps_b"),
+                 "rpe": v["rpe"],
+             } for k, v in sess["sets"].items()}}
             for sess in sessions
         ]
         for name, sessions in recent_perf.items()

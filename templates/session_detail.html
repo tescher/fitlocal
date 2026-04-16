@@ -16,6 +16,7 @@
 </div>
 
 {% for exercise_name, sets in exercises.items() %}
+{% set exercise_has_superset = sets | selectattr('weight_b') | list | length > 0 %}
 <div class="exercise-block">
     <h3>{{ exercise_name }}</h3>
     <table>
@@ -24,6 +25,7 @@
                 <th>Set</th>
                 <th>Weight (lbs)</th>
                 <th>Reps</th>
+                {% if exercise_has_superset %}<th>Weight B</th><th>Reps B</th>{% endif %}
                 <th>RPE</th>
                 <th>Notes</th>
             </tr>
@@ -34,6 +36,7 @@
                 <td>{{ s.set_number }}</td>
                 <td>{{ s.weight_lbs or '-' }}</td>
                 <td>{{ s.reps_completed or '-' }}</td>
+                {% if exercise_has_superset %}<td>{{ s.weight_b or '-' }}</td><td>{{ s.reps_b or '-' }}</td>{% endif %}
                 <td>{{ s.rpe or '-' }}</td>
                 <td>{{ s.notes or '' }}</td>
             </tr>

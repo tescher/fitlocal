@@ -129,12 +129,14 @@
                     <td class="last-time-label">{{ perf['date'].strftime('%b %d') }}{% if has_history %} <span class="hist-toggle-hint">?</span>{% endif %}</td>
                     <td class="last-time-val">{{ (s['weight']|string + ' lbs') if s['weight'] else '—' }}</td>
                     <td class="last-time-val">{{ s['reps'] if s['reps'] else '—' }}</td>
+                    <td class="last-time-val superset-col" style="{{ '' if is_superset else 'display:none' }}">{{ (s['weight_b']|string + ' lbs') if s.get('weight_b') else '—' }}</td>
+                    <td class="last-time-val superset-col" style="{{ '' if is_superset else 'display:none' }}">{{ s.get('reps_b') if s.get('reps_b') else '—' }}</td>
                     <td class="last-time-val">{{ s['rpe'] if s['rpe'] else '—' }}</td>
                     <td class="last-time-val">{{ s['notes'] if s['notes'] else '' }}</td>
                 </tr>
                 {% if has_history %}
                 <tr id="hist_{{ row_id }}" class="hist-detail-row" style="display:none;">
-                    <td colspan="5">
+                    <td colspan="7">
                         <div class="hist-popup">
                             {% for entry in hist_ns.items %}
                             <div class="hist-row">
@@ -232,12 +234,14 @@
                     <td class="last-time-label">{{ perf['date'].strftime('%b %d') }}{% if has_history %} <span class="hist-toggle-hint">?</span>{% endif %}</td>
                     <td class="last-time-val">{{ (s['weight']|string + ' lbs') if s['weight'] else '—' }}</td>
                     <td class="last-time-val">{{ s['reps'] if s['reps'] else '—' }}</td>
+                    <td class="last-time-val superset-col" style="{{ '' if is_superset else 'display:none' }}">{{ (s['weight_b']|string + ' lbs') if s.get('weight_b') else '—' }}</td>
+                    <td class="last-time-val superset-col" style="{{ '' if is_superset else 'display:none' }}">{{ s.get('reps_b') if s.get('reps_b') else '—' }}</td>
                     <td class="last-time-val">{{ s['rpe'] if s['rpe'] else '—' }}</td>
                     <td class="last-time-val">{{ s['notes'] if s['notes'] else '' }}</td>
                 </tr>
                 {% if has_history %}
                 <tr id="hist_{{ row_id }}" class="hist-detail-row" style="display:none;">
-                    <td colspan="5">
+                    <td colspan="7">
                         <div class="hist-popup">
                             {% for entry in hist_ns.items %}
                             <div class="hist-row">
@@ -335,12 +339,14 @@
                     <td class="last-time-label">{{ perf['date'].strftime('%b %d') }}{% if has_history %} <span class="hist-toggle-hint">?</span>{% endif %}</td>
                     <td class="last-time-val">{{ (s['weight']|string + ' lbs') if s['weight'] else '—' }}</td>
                     <td class="last-time-val">{{ s['reps'] if s['reps'] else '—' }}</td>
+                    <td class="last-time-val superset-col" style="{{ '' if is_superset else 'display:none' }}">{{ (s['weight_b']|string + ' lbs') if s.get('weight_b') else '—' }}</td>
+                    <td class="last-time-val superset-col" style="{{ '' if is_superset else 'display:none' }}">{{ s.get('reps_b') if s.get('reps_b') else '—' }}</td>
                     <td class="last-time-val">{{ s['rpe'] if s['rpe'] else '—' }}</td>
                     <td class="last-time-val">{{ s['notes'] if s['notes'] else '' }}</td>
                 </tr>
                 {% if has_history %}
                 <tr id="hist_{{ row_id }}" class="hist-detail-row" style="display:none;">
-                    <td colspan="5">
+                    <td colspan="7">
                         <div class="hist-popup">
                             {% for entry in hist_ns.items %}
                             <div class="hist-row">

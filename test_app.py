@@ -913,7 +913,7 @@ with app.app_context():
     profile = UserProfile.query.first()
     last_session = WorkoutSession.query.filter_by(
         user_id=profile.id, status='completed'
-    ).order_by(WorkoutSession.date.desc()).first()
+    ).order_by(WorkoutSession.date.desc(), WorkoutSession.id.desc()).first()
     last_session_id = last_session.id if last_session else None
 
 if last_session_id:
