@@ -58,8 +58,13 @@
     {% if warmup_exercises %}
     <div class="section-header warmup-header">Warm-Up</div>
     {% for exercise in warmup_exercises %}
-    <div class="exercise-block warmup-block">
-        <h3>{{ exercise.exercise_name }}</h3>
+    {% set is_superset = exercise.exercise_name in superset_exercises %}
+    <div class="exercise-block warmup-block" data-superset-active="{{ 'true' if is_superset else 'false' }}">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+            <h3 style="margin:0;">{{ exercise.exercise_name }}</h3>
+            <button type="button" class="btn-superset {{ 'superset-active' if is_superset else '' }}" onclick="toggleSuperset(this)">Superset</button>
+        </div>
+        <input type="checkbox" name="superset_exercise" value="{{ exercise.exercise_name }}" class="superset-checkbox" {{ 'checked' if is_superset else '' }} style="display:none">
         <div class="exercise-meta">
             {{ exercise.sets_prescribed }} sets x {{ exercise.reps_prescribed }} reps
             {% if exercise.rest_seconds %} | Rest: {{ exercise.rest_seconds }}s{% endif %}
@@ -77,6 +82,8 @@
                     <th>Set</th>
                     <th>Weight (lbs)</th>
                     <th>Reps</th>
+                    <th class="superset-col" style="{{ '' if is_superset else 'display:none' }}">Weight B</th>
+                    <th class="superset-col" style="{{ '' if is_superset else 'display:none' }}">Reps B</th>
                     <th>RPE</th>
                     <th>Notes</th>
                 </tr>
@@ -94,6 +101,8 @@
                     </td>
                     <td><input type="number" name="weight" step="0.5" min="0" placeholder="0" {% if rv and rv.weight is not none %}value="{{ rv.weight }}"{% endif %}></td>
                     <td><input type="number" name="reps" min="0" placeholder="0" {% if rv and rv.reps is not none %}value="{{ rv.reps }}"{% endif %}></td>
+                    <td class="superset-col" style="{{ '' if is_superset else 'display:none' }}"><input type="number" name="weight_b" step="0.5" min="0" placeholder="0" {% if rv and rv.weight_b is not none %}value="{{ rv.weight_b }}"{% endif %}></td>
+                    <td class="superset-col" style="{{ '' if is_superset else 'display:none' }}"><input type="number" name="reps_b" min="0" placeholder="0" {% if rv and rv.reps_b is not none %}value="{{ rv.reps_b }}"{% endif %}></td>
                     <td>
                         <select name="rpe">
                             <option value="">-</option>
@@ -152,8 +161,13 @@
     {% if main_exercises %}
     <div class="section-header main-header">Main Workout</div>
     {% for exercise in main_exercises %}
-    <div class="exercise-block">
-        <h3>{{ exercise.exercise_name }}</h3>
+    {% set is_superset = exercise.exercise_name in superset_exercises %}
+    <div class="exercise-block" data-superset-active="{{ 'true' if is_superset else 'false' }}">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+            <h3 style="margin:0;">{{ exercise.exercise_name }}</h3>
+            <button type="button" class="btn-superset {{ 'superset-active' if is_superset else '' }}" onclick="toggleSuperset(this)">Superset</button>
+        </div>
+        <input type="checkbox" name="superset_exercise" value="{{ exercise.exercise_name }}" class="superset-checkbox" {{ 'checked' if is_superset else '' }} style="display:none">
         <div class="exercise-meta">
             {{ exercise.sets_prescribed }} sets x {{ exercise.reps_prescribed }} reps
             {% if exercise.rest_seconds %} | Rest: {{ exercise.rest_seconds }}s{% endif %}
@@ -171,6 +185,8 @@
                     <th>Set</th>
                     <th>Weight (lbs)</th>
                     <th>Reps</th>
+                    <th class="superset-col" style="{{ '' if is_superset else 'display:none' }}">Weight B</th>
+                    <th class="superset-col" style="{{ '' if is_superset else 'display:none' }}">Reps B</th>
                     <th>RPE</th>
                     <th>Notes</th>
                 </tr>
@@ -188,6 +204,8 @@
                     </td>
                     <td><input type="number" name="weight" step="0.5" min="0" placeholder="0" {% if rv and rv.weight is not none %}value="{{ rv.weight }}"{% endif %}></td>
                     <td><input type="number" name="reps" min="0" placeholder="0" {% if rv and rv.reps is not none %}value="{{ rv.reps }}"{% endif %}></td>
+                    <td class="superset-col" style="{{ '' if is_superset else 'display:none' }}"><input type="number" name="weight_b" step="0.5" min="0" placeholder="0" {% if rv and rv.weight_b is not none %}value="{{ rv.weight_b }}"{% endif %}></td>
+                    <td class="superset-col" style="{{ '' if is_superset else 'display:none' }}"><input type="number" name="reps_b" min="0" placeholder="0" {% if rv and rv.reps_b is not none %}value="{{ rv.reps_b }}"{% endif %}></td>
                     <td>
                         <select name="rpe">
                             <option value="">-</option>
@@ -246,8 +264,13 @@
     {% if cooldown_exercises %}
     <div class="section-header cooldown-header">Cool-Down</div>
     {% for exercise in cooldown_exercises %}
-    <div class="exercise-block cooldown-block">
-        <h3>{{ exercise.exercise_name }}</h3>
+    {% set is_superset = exercise.exercise_name in superset_exercises %}
+    <div class="exercise-block cooldown-block" data-superset-active="{{ 'true' if is_superset else 'false' }}">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+            <h3 style="margin:0;">{{ exercise.exercise_name }}</h3>
+            <button type="button" class="btn-superset {{ 'superset-active' if is_superset else '' }}" onclick="toggleSuperset(this)">Superset</button>
+        </div>
+        <input type="checkbox" name="superset_exercise" value="{{ exercise.exercise_name }}" class="superset-checkbox" {{ 'checked' if is_superset else '' }} style="display:none">
         <div class="exercise-meta">
             {{ exercise.sets_prescribed }} sets x {{ exercise.reps_prescribed }} reps
             {% if exercise.rest_seconds %} | Rest: {{ exercise.rest_seconds }}s{% endif %}
@@ -265,6 +288,8 @@
                     <th>Set</th>
                     <th>Weight (lbs)</th>
                     <th>Reps</th>
+                    <th class="superset-col" style="{{ '' if is_superset else 'display:none' }}">Weight B</th>
+                    <th class="superset-col" style="{{ '' if is_superset else 'display:none' }}">Reps B</th>
                     <th>RPE</th>
                     <th>Notes</th>
                 </tr>
@@ -282,6 +307,8 @@
                     </td>
                     <td><input type="number" name="weight" step="0.5" min="0" placeholder="0" {% if rv and rv.weight is not none %}value="{{ rv.weight }}"{% endif %}></td>
                     <td><input type="number" name="reps" min="0" placeholder="0" {% if rv and rv.reps is not none %}value="{{ rv.reps }}"{% endif %}></td>
+                    <td class="superset-col" style="{{ '' if is_superset else 'display:none' }}"><input type="number" name="weight_b" step="0.5" min="0" placeholder="0" {% if rv and rv.weight_b is not none %}value="{{ rv.weight_b }}"{% endif %}></td>
+                    <td class="superset-col" style="{{ '' if is_superset else 'display:none' }}"><input type="number" name="reps_b" min="0" placeholder="0" {% if rv and rv.reps_b is not none %}value="{{ rv.reps_b }}"{% endif %}></td>
                     <td>
                         <select name="rpe">
                             <option value="">-</option>
@@ -662,5 +689,34 @@ function playBeep() {
         }
     } catch(e) {}
 }
+
+function toggleSuperset(btn) {
+    var block = btn.closest('.exercise-block');
+    var checkbox = block.querySelector('.superset-checkbox');
+    var active = !checkbox.checked;
+    checkbox.checked = active;
+    btn.classList.toggle('superset-active', active);
+    block.querySelectorAll('.superset-col').forEach(function(el) {
+        el.style.display = active ? '' : 'none';
+    });
+}
 </script>
+
+<style>
+.btn-superset {
+    font-size: 0.75rem;
+    padding: 0.25rem 0.6rem;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--surface);
+    color: var(--text-muted);
+    cursor: pointer;
+    white-space: nowrap;
+}
+.btn-superset.superset-active {
+    background: var(--primary);
+    color: #fff;
+    border-color: var(--primary);
+}
+</style>
 {% endblock %}

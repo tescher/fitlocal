@@ -745,7 +745,7 @@ if paused_f_id:
     check("Fidelity: resume page returns 200", r.status_code == 200)
     html = r.data.decode()
     # Count hidden inputs for multi_ex — should equal reduced_sets, not sets_prescribed
-    multi_ex_input_count = html.count(f'value="{multi_ex_name}"')
+    multi_ex_input_count = html.count(f'name="exercise_name" value="{multi_ex_name}"')
     check(
         f"Fidelity: removed set not restored on resume (expect {reduced_sets} inputs for '{multi_ex_name}', got {multi_ex_input_count})",
         multi_ex_input_count == reduced_sets
@@ -850,8 +850,7 @@ with app.app_context():
 
 # 15f. Complete the superset session and verify weight_b/reps_b persisted
 if superset_session_id:
-    r = client.post("/workout/finish-paused",
-                    data={"session_id": str(superset_session_id)},
+    r = client.post(f"/workout/finish-paused/{superset_session_id}",
                     follow_redirects=False)
     check("Finish superset paused session redirects", r.status_code == 302)
     with app.app_context():

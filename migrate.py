@@ -67,6 +67,18 @@ def migrate():
         cursor.execute("ALTER TABLE workout_plan ADD COLUMN session_offset INTEGER NOT NULL DEFAULT 0")
         print("  Added workout_plan.session_offset")
 
+    if not column_exists("workout_session", "superset_exercises"):
+        cursor.execute("ALTER TABLE workout_session ADD COLUMN superset_exercises TEXT")
+        print("  Added workout_session.superset_exercises")
+
+    if not column_exists("logged_set", "weight_b"):
+        cursor.execute("ALTER TABLE logged_set ADD COLUMN weight_b FLOAT")
+        print("  Added logged_set.weight_b")
+
+    if not column_exists("logged_set", "reps_b"):
+        cursor.execute("ALTER TABLE logged_set ADD COLUMN reps_b INTEGER")
+        print("  Added logged_set.reps_b")
+
     if not column_exists("workout_plan", "status"):
         cursor.execute("ALTER TABLE workout_plan ADD COLUMN status VARCHAR(20) DEFAULT 'inactive'")
         cursor.execute("""

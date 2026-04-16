@@ -113,7 +113,7 @@ with app.app_context():
                 """))
                 conn.commit()
 
-        # Add status and elapsed_seconds columns to workout_session if they don't exist
+        # Add status, elapsed_seconds, superset_exercises columns to workout_session if missing
         if insp.has_table("workout_session"):
             ws_cols = [c["name"] for c in insp.get_columns("workout_session")]
             if "status" not in ws_cols:
@@ -125,6 +125,21 @@ with app.app_context():
                 conn.execute(text(
                     "ALTER TABLE workout_session ADD COLUMN elapsed_seconds INTEGER DEFAULT 0"
                 ))
+                conn.commit()
+            if "superset_exercises" not in ws_cols:
+                conn.execute(text(
+                    "ALTER TABLE workout_session ADD COLUMN superset_exercises TEXT"
+                ))
+                conn.commit()
+
+        # Add weight_b and reps_b to logged_set if missing
+        if insp.has_table("logged_set"):
+            ls_cols = [c["name"] for c in insp.get_columns("logged_set")]
+            if "weight_b" not in ls_cols:
+                conn.execute(text("ALTER TABLE logged_set ADD COLUMN weight_b FLOAT"))
+                conn.commit()
+            if "reps_b" not in ls_cols:
+                conn.execute(text("ALTER TABLE logged_set ADD COLUMN reps_b INTEGER"))
                 conn.commit()
 
     db.create_all()
@@ -836,10 +851,13 @@ def _parse_logged_sets_from_form():
     reps = request.form.getlist("reps")
     rpes = request.form.getlist("rpe")
     set_notes = request.form.getlist("set_notes")
-    return exercise_names, set_numbers, weights, reps, rpes, set_notes
+    weights_b = request.form.getlist("weight_b")
+    reps_b = request.form.getlist("reps_b")
+    return exercise_names, set_numbers, weights, reps, rpes, set_notes, weights_b, reps_b
 
 
-def _build_logged_sets(session_id, exercise_names, set_numbers, weights, reps, rpes, set_notes, skip_empty=False):
+def _build_logged_sets(session_id, exercise_names, set_numbers, weights, reps, rpes, set_notes,
+                       weights_b=None, reps_b=None, skip_empty=False):
     """Create LoggedSet objects for the given session; returns list of LoggedSet instances."""
     if not exercise_names:
         return []
@@ -876,6 +894,20 @@ def _build_logged_sets(session_id, exercise_names, set_numbers, weights, reps, r
         if skip_empty and weight_val is None and reps_val is None:
             continue
 
+        weight_b_val = None
+        if weights_b and i < len(weights_b) and weights_b[i]:
+            try:
+                weight_b_val = float(weights_b[i])
+            except ValueError:
+                pass
+
+        reps_b_val = None
+        if reps_b and i < len(reps_b) and reps_b[i]:
+            try:
+                reps_b_val = int(reps_b[i])
+            except ValueError:
+                pass
+
         lib_entry = lib_by_name.get(exercise_names[i].lower())
         logged = LoggedSet(
             session_id=session_id,
@@ -884,6 +916,8 @@ def _build_logged_sets(session_id, exercise_names, set_numbers, weights, reps, r
             set_number=int(set_numbers[i]) if i < len(set_numbers) and set_numbers[i] else 1,
             weight_lbs=weight_val,
             reps_completed=reps_val,
+            weight_b=weight_b_val,
+            reps_b=reps_b_val,
             rpe=rpe_val,
             notes=set_notes[i] if i < len(set_notes) else "",
         )
@@ -902,6 +936,7 @@ def _upsert_workout_session(profile, status):
     session_notes = request.form.get("session_notes", "")
     elapsed_seconds = request.form.get("session_elapsed_seconds", 0, type=int)
     resume_session_id = request.form.get("resume_session_id", type=int)
+    superset_exercises = json.dumps(request.form.getlist("superset_exercise"))
 
     end_time = datetime.now(timezone.utc)
     start_time = end_time - timedelta(seconds=elapsed_seconds)
@@ -917,6 +952,7 @@ def _upsert_workout_session(profile, status):
         workout_session.overall_feeling = overall_feeling
         workout_session.session_notes = session_notes
         workout_session.elapsed_seconds = elapsed_seconds
+        workout_session.superset_exercises = superset_exercises
         if planned_workout_id:
             workout_session.planned_workout_id = int(planned_workout_id)
     else:
@@ -934,6 +970,7 @@ def _upsert_workout_session(profile, status):
             session_notes=session_notes,
             status=status,
             elapsed_seconds=elapsed_seconds,
+            superset_exercises=superset_exercises,
         )
         db.session.add(workout_session)
     db.session.flush()
@@ -989,12 +1026,14 @@ def _build_workout_context(profile, planned_workout, active_plan, *, resume_sess
     resume_elapsed = 0
     overall_feeling = None
     session_notes = ''
+    superset_exercises = []
 
     if resume_session:
         resume_session_id = resume_session.id
         resume_elapsed = resume_session.elapsed_seconds or 0
         overall_feeling = resume_session.overall_feeling
         session_notes = resume_session.session_notes or ''
+        superset_exercises = json.loads(resume_session.superset_exercises or "[]")
         resume_data = {}
         for ls in resume_session.logged_sets:
             if ls.exercise_name not in resume_data:
@@ -1004,6 +1043,8 @@ def _build_workout_context(profile, planned_workout, active_plan, *, resume_sess
                 'reps': ls.reps_completed,
                 'rpe': ls.rpe,
                 'notes': ls.notes or '',
+                'weight_b': ls.weight_b,
+                'reps_b': ls.reps_b,
             }
         # Only show exercises that were present in the saved session — removals must not reappear
         warmup = [e for e in warmup if e.exercise_name in resume_data]
@@ -1028,6 +1069,7 @@ def _build_workout_context(profile, planned_workout, active_plan, *, resume_sess
         resume_elapsed=resume_elapsed,
         overall_feeling=overall_feeling,
         session_notes=session_notes,
+        superset_exercises=superset_exercises,
     )
 
 
@@ -1042,10 +1084,10 @@ def workout_log():
     if workout_session is None:
         return redirect(url_for("index"))
 
-    exercise_names, set_numbers, weights, reps, rpes, set_notes = _parse_logged_sets_from_form()
+    exercise_names, set_numbers, weights, reps, rpes, set_notes, weights_b, reps_b = _parse_logged_sets_from_form()
     for ls in _build_logged_sets(
             workout_session.id, exercise_names, set_numbers,
-            weights, reps, rpes, set_notes):
+            weights, reps, rpes, set_notes, weights_b, reps_b):
         db.session.add(ls)
 
     update_streak(profile)
@@ -1069,10 +1111,10 @@ def workout_pause():
     if workout_session is None:
         return redirect(url_for("index"))
 
-    exercise_names, set_numbers, weights, reps, rpes, set_notes = _parse_logged_sets_from_form()
+    exercise_names, set_numbers, weights, reps, rpes, set_notes, weights_b, reps_b = _parse_logged_sets_from_form()
     for ls in _build_logged_sets(
             workout_session.id, exercise_names, set_numbers,
-            weights, reps, rpes, set_notes):
+            weights, reps, rpes, set_notes, weights_b, reps_b):
         db.session.add(ls)
 
     db.session.commit()

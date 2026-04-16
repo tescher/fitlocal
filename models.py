@@ -104,6 +104,7 @@ class WorkoutSession(db.Model):
     session_notes = db.Column(db.Text)
     status = db.Column(db.String(20), default='completed')
     elapsed_seconds = db.Column(db.Integer, default=0)
+    superset_exercises = db.Column(db.Text, nullable=True)  # JSON list of exercise names
 
     logged_sets = db.relationship("LoggedSet", backref="session", cascade="all, delete-orphan")
     planned_workout = db.relationship("PlannedWorkout")
@@ -118,6 +119,8 @@ class LoggedSet(db.Model):
     set_number = db.Column(db.Integer, nullable=False)
     weight_lbs = db.Column(db.Float)
     reps_completed = db.Column(db.Integer)
+    weight_b = db.Column(db.Float, nullable=True)
+    reps_b = db.Column(db.Integer, nullable=True)
     rpe = db.Column(db.Integer)
     notes = db.Column(db.Text)
 
