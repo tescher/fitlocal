@@ -956,6 +956,52 @@ else:
     check("workout_today last_perf_json includes weight_b with value", False)
     check("workout_today last_perf_json includes reps_b with value", False)
 
+# 15b. Recent performance includes notes; workout_today renders them in history dropdown
+print("\n--- Perf History Notes ---")
+with app.app_context():
+    pw_note = PlannedWorkout.query.first()
+    exercises_note = PlannedExercise.query.filter_by(planned_workout_id=pw_note.id).all()
+
+note_items = []
+note_items.append(("planned_workout_id", str(pw_note.id)))
+note_items.append(("overall_feeling", "4"))
+note_items.append(("session_notes", ""))
+with app.app_context():
+    pw_note = PlannedWorkout.query.first()
+    exercises_note = PlannedExercise.query.filter_by(planned_workout_id=pw_note.id).all()
+    first_ex_name = exercises_note[0].exercise_name
+    for i, ex in enumerate(exercises_note):
+        for s in range(1, ex.sets_prescribed + 1):
+            note_items.append(("exercise_name", ex.exercise_name))
+            note_items.append(("set_number", str(s)))
+            note_items.append(("weight", "140"))
+            note_items.append(("reps", "8"))
+            note_items.append(("rpe", "8"))
+            # Add a note only on set 1 of the first exercise
+            if ex.exercise_name == first_ex_name and s == 1:
+                note_items.append(("set_notes", "felt strong today"))
+            else:
+                note_items.append(("set_notes", ""))
+
+r = client.post("/workout/log", data=MultiDict(note_items), follow_redirects=False)
+check("Noted workout logged", r.status_code == 200)
+
+with app.app_context():
+    from app import get_recent_performance
+    profile = UserProfile.query.first()
+    recent = get_recent_performance(profile.id, first_ex_name, limit=3)
+    # The most recent session has notes on set 1; verify notes key present
+    latest_set1 = recent[0]["sets"].get(1, {}) if recent else {}
+    check("get_recent_performance includes notes key", "notes" in latest_set1)
+    check("get_recent_performance notes value correct", latest_set1.get("notes") == "felt strong today")
+
+r = client.get("/workout/today", follow_redirects=False)
+if r.status_code == 200:
+    html_today = r.data.decode()
+    check("workout_today hist-detail includes notes text", "felt strong today" in html_today)
+else:
+    check("workout_today hist-detail includes notes text", False)
+
 # 16. Review page
 print("\n--- Review ---")
 r = client.get("/review")

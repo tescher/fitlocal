@@ -120,7 +120,7 @@
                 {% for sess in recent_perf.get(exercise.exercise_name, []) %}
                   {% if set_num in sess['sets'] %}
                     {% set sv = sess['sets'][set_num] %}
-                    {% set hist_ns.items = hist_ns.items + [{'d': sess['date'].strftime('%b %d'), 'w': sv['weight'], 'r': sv['reps'], 'rpe': sv['rpe']}] %}
+                    {% set hist_ns.items = hist_ns.items + [{'d': sess['date'].strftime('%b %d'), 'w': sv['weight'], 'r': sv['reps'], 'rpe': sv['rpe'], 'n': sv.get('notes', '')}] %}
                   {% endif %}
                 {% endfor %}
                 {% set has_history = hist_ns.items | length > 1 %}
@@ -141,7 +141,7 @@
                             {% for entry in hist_ns.items %}
                             <div class="hist-row">
                                 <span class="hist-date">{{ entry.d }}</span>
-                                <span class="hist-vals">{{ (entry.w|string + ' lbs') if entry.w else '—' }} × {{ entry.r if entry.r else '—' }} reps{% if entry.rpe %} · RPE {{ entry.rpe }}{% endif %}</span>
+                                <span class="hist-vals">{{ (entry.w|string + ' lbs') if entry.w else '—' }} × {{ entry.r if entry.r else '—' }} reps{% if entry.rpe %} · RPE {{ entry.rpe }}{% endif %}{% if entry.n %} · {{ entry.n }}{% endif %}</span>
                             </div>
                             {% endfor %}
                         </div>
@@ -225,7 +225,7 @@
                 {% for sess in recent_perf.get(exercise.exercise_name, []) %}
                   {% if set_num in sess['sets'] %}
                     {% set sv = sess['sets'][set_num] %}
-                    {% set hist_ns.items = hist_ns.items + [{'d': sess['date'].strftime('%b %d'), 'w': sv['weight'], 'r': sv['reps'], 'rpe': sv['rpe']}] %}
+                    {% set hist_ns.items = hist_ns.items + [{'d': sess['date'].strftime('%b %d'), 'w': sv['weight'], 'r': sv['reps'], 'rpe': sv['rpe'], 'n': sv.get('notes', '')}] %}
                   {% endif %}
                 {% endfor %}
                 {% set has_history = hist_ns.items | length > 1 %}
@@ -246,7 +246,7 @@
                             {% for entry in hist_ns.items %}
                             <div class="hist-row">
                                 <span class="hist-date">{{ entry.d }}</span>
-                                <span class="hist-vals">{{ (entry.w|string + ' lbs') if entry.w else '—' }} × {{ entry.r if entry.r else '—' }} reps{% if entry.rpe %} · RPE {{ entry.rpe }}{% endif %}</span>
+                                <span class="hist-vals">{{ (entry.w|string + ' lbs') if entry.w else '—' }} × {{ entry.r if entry.r else '—' }} reps{% if entry.rpe %} · RPE {{ entry.rpe }}{% endif %}{% if entry.n %} · {{ entry.n }}{% endif %}</span>
                             </div>
                             {% endfor %}
                         </div>
@@ -330,7 +330,7 @@
                 {% for sess in recent_perf.get(exercise.exercise_name, []) %}
                   {% if set_num in sess['sets'] %}
                     {% set sv = sess['sets'][set_num] %}
-                    {% set hist_ns.items = hist_ns.items + [{'d': sess['date'].strftime('%b %d'), 'w': sv['weight'], 'r': sv['reps'], 'rpe': sv['rpe']}] %}
+                    {% set hist_ns.items = hist_ns.items + [{'d': sess['date'].strftime('%b %d'), 'w': sv['weight'], 'r': sv['reps'], 'rpe': sv['rpe'], 'n': sv.get('notes', '')}] %}
                   {% endif %}
                 {% endfor %}
                 {% set has_history = hist_ns.items | length > 1 %}
@@ -351,7 +351,7 @@
                             {% for entry in hist_ns.items %}
                             <div class="hist-row">
                                 <span class="hist-date">{{ entry.d }}</span>
-                                <span class="hist-vals">{{ (entry.w|string + ' lbs') if entry.w else '—' }} × {{ entry.r if entry.r else '—' }} reps{% if entry.rpe %} · RPE {{ entry.rpe }}{% endif %}</span>
+                                <span class="hist-vals">{{ (entry.w|string + ' lbs') if entry.w else '—' }} × {{ entry.r if entry.r else '—' }} reps{% if entry.rpe %} · RPE {{ entry.rpe }}{% endif %}{% if entry.n %} · {{ entry.n }}{% endif %}</span>
                             </div>
                             {% endfor %}
                         </div>

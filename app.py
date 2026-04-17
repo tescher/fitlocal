@@ -480,6 +480,7 @@ def get_recent_performance(user_id, exercise_name, limit=3):
                         "weight_b": s.weight_b,
                         "reps_b": s.reps_b,
                         "rpe": s.rpe,
+                        "notes": s.notes or "",
                     }
                     for s in sets
                 },
