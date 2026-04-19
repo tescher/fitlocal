@@ -3,9 +3,9 @@
 {% block content %}
 <div class="flex-between mb-2">
     <h1>Current Plan</h1>
-    <div style="display:flex;gap:.5rem;align-items:center;">
+    <div style="display:flex;gap:.5rem;align-items:stretch;">
         {% if plan %}
-        <button id="editToggle" class="btn btn-secondary" onclick="toggleEditMode()">Edit Plan</button>
+        <button id="editToggle" class="btn btn-secondary" style="margin:0;" onclick="toggleEditMode()">Edit Plan</button>
         {% endif %}
         <a href="{{ url_for('plan_history') }}" class="btn btn-secondary">Past Plans</a>
     </div>
@@ -90,7 +90,7 @@
                             <input type="checkbox" class="superset-default-cb"
                                    {% if ex.is_superset_default %}checked{% endif %}
                                    onchange="patchSuperset({{ ex.id }}, this.checked)">
-                            Default
+                            Yes
                         </label>
                     </td>
                     <td class="edit-only action-col" style="display:none;">

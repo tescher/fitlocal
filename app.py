@@ -1445,6 +1445,7 @@ def _get_planned_workout_for_user(workout_id, profile_id):
 
 
 @app.route("/api/plan/exercise/<int:exercise_id>", methods=["PATCH"])
+@csrf.exempt
 @login_required
 def api_patch_exercise(exercise_id):
     profile = get_profile()
@@ -1469,6 +1470,7 @@ def api_patch_exercise(exercise_id):
 
 
 @app.route("/api/plan/workout/<int:workout_id>/reorder", methods=["POST"])
+@csrf.exempt
 @login_required
 def api_reorder_exercises(workout_id):
     profile = get_profile()
@@ -1508,6 +1510,7 @@ def api_reorder_exercises(workout_id):
 
 
 @app.route("/api/plan/exercise/<int:exercise_id>", methods=["DELETE"])
+@csrf.exempt
 @login_required
 def api_delete_exercise(exercise_id):
     profile = get_profile()
@@ -1521,6 +1524,7 @@ def api_delete_exercise(exercise_id):
 
 
 @app.route("/api/plan/workout/<int:workout_id>/exercise", methods=["POST"])
+@csrf.exempt
 @login_required
 def api_add_exercise(workout_id):
     profile = get_profile()
