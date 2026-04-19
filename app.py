@@ -4,7 +4,7 @@ import calendar as cal_module
 from datetime import datetime, date, timedelta, timezone
 
 from dotenv import load_dotenv
-from flask import Flask, render_template, request, redirect, url_for, flash, send_file
+from flask import Flask, render_template, request, redirect, url_for, flash, send_file, jsonify
 from flask_login import login_required, current_user
 from werkzeug.middleware.proxy_fix import ProxyFix
 
@@ -129,6 +129,20 @@ with app.app_context():
             if "superset_exercises" not in ws_cols:
                 conn.execute(text(
                     "ALTER TABLE workout_session ADD COLUMN superset_exercises TEXT"
+                ))
+                conn.commit()
+
+        # Add order_index and is_superset_default to planned_exercise if missing
+        if insp.has_table("planned_exercise"):
+            pe_cols = [c["name"] for c in insp.get_columns("planned_exercise")]
+            if "order_index" not in pe_cols:
+                conn.execute(text(
+                    "ALTER TABLE planned_exercise ADD COLUMN order_index INTEGER DEFAULT 0"
+                ))
+                conn.commit()
+            if "is_superset_default" not in pe_cols:
+                conn.execute(text(
+                    "ALTER TABLE planned_exercise ADD COLUMN is_superset_default BOOLEAN DEFAULT 0"
                 ))
                 conn.commit()
 
@@ -1037,7 +1051,10 @@ def _build_workout_context(profile, planned_workout, active_plan, *, resume_sess
     resume_elapsed = 0
     overall_feeling = None
     session_notes = ''
-    superset_exercises = []
+    # Seed superset defaults from the plan; resume will override if applicable
+    superset_exercises = [
+        ex.exercise_name for ex in all_exercises if ex.is_superset_default
+    ]
 
     if resume_session:
         resume_session_id = resume_session.id
@@ -1398,6 +1415,184 @@ def plan_history():
         })
 
     return render_template("plan_history.html", plans_data=plans_data)
+
+
+# --- Plan Edit API ---
+
+def _get_planned_exercise_for_user(exercise_id, profile_id):
+    """Return PlannedExercise if it belongs to the current user's plan, else None."""
+    ex = PlannedExercise.query.get(exercise_id)
+    if ex is None:
+        return None
+    pw = PlannedWorkout.query.get(ex.planned_workout_id)
+    if pw is None:
+        return None
+    plan = WorkoutPlan.query.get(pw.plan_id)
+    if plan is None or plan.user_id != profile_id:
+        return None
+    return ex
+
+
+def _get_planned_workout_for_user(workout_id, profile_id):
+    """Return PlannedWorkout if it belongs to the current user's active plan, else None."""
+    pw = PlannedWorkout.query.get(workout_id)
+    if pw is None:
+        return None
+    plan = WorkoutPlan.query.get(pw.plan_id)
+    if plan is None or plan.user_id != profile_id:
+        return None
+    return pw
+
+
+@app.route("/api/plan/exercise/<int:exercise_id>", methods=["PATCH"])
+@login_required
+def api_patch_exercise(exercise_id):
+    profile = get_profile()
+    ex = _get_planned_exercise_for_user(exercise_id, profile.id if profile else -1)
+    if ex is None:
+        return jsonify({"error": "not found"}), 404
+
+    data = request.get_json(silent=True) or {}
+    if "sets" in data:
+        ex.sets_prescribed = int(data["sets"])
+    if "reps" in data:
+        ex.reps_prescribed = str(data["reps"])
+    if "rest_seconds" in data:
+        ex.rest_seconds = int(data["rest_seconds"]) if data["rest_seconds"] is not None else None
+    if "notes" in data:
+        ex.notes = str(data["notes"])
+    if "is_superset_default" in data:
+        ex.is_superset_default = bool(data["is_superset_default"])
+
+    db.session.commit()
+    return jsonify({"id": ex.id, "ok": True})
+
+
+@app.route("/api/plan/workout/<int:workout_id>/reorder", methods=["POST"])
+@login_required
+def api_reorder_exercises(workout_id):
+    profile = get_profile()
+    if not profile:
+        return jsonify({"error": "no profile"}), 401
+
+    pw = _get_planned_workout_for_user(workout_id, profile.id)
+    if pw is None:
+        return jsonify({"error": "not found"}), 404
+
+    data = request.get_json(silent=True) or {}
+    exercises = data.get("exercises", [])
+
+    if not exercises:
+        return jsonify({"error": "no exercises"}), 400
+
+    # Load all exercises and verify they all belong to this workout
+    ids = [item["id"] for item in exercises]
+    db_exercises = {ex.id: ex for ex in PlannedExercise.query.filter(
+        PlannedExercise.id.in_(ids),
+        PlannedExercise.planned_workout_id == workout_id,
+    ).all()}
+
+    if len(db_exercises) != len(ids):
+        return jsonify({"error": "invalid exercise ids"}), 400
+
+    # All exercises in the payload must share the same exercise_type (no cross-group moves)
+    types = {db_exercises[eid].exercise_type for eid in ids}
+    if len(types) > 1:
+        return jsonify({"error": "cannot mix exercise types in reorder"}), 400
+
+    for item in exercises:
+        db_exercises[item["id"]].order_index = int(item["order_index"])
+
+    db.session.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/plan/exercise/<int:exercise_id>", methods=["DELETE"])
+@login_required
+def api_delete_exercise(exercise_id):
+    profile = get_profile()
+    ex = _get_planned_exercise_for_user(exercise_id, profile.id if profile else -1)
+    if ex is None:
+        return jsonify({"error": "not found"}), 404
+
+    db.session.delete(ex)
+    db.session.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/plan/workout/<int:workout_id>/exercise", methods=["POST"])
+@login_required
+def api_add_exercise(workout_id):
+    profile = get_profile()
+    if not profile:
+        return jsonify({"error": "no profile"}), 401
+
+    pw = _get_planned_workout_for_user(workout_id, profile.id)
+    if pw is None:
+        return jsonify({"error": "not found"}), 404
+
+    data = request.get_json(silent=True) or {}
+
+    library_id = data.get("library_id")
+    exercise_name = data.get("exercise_name")
+
+    if library_id:
+        lib = ExerciseLibrary.query.get(library_id)
+        if lib is None:
+            return jsonify({"error": "library entry not found"}), 404
+        exercise_name = lib.name
+    elif not exercise_name:
+        return jsonify({"error": "exercise_name or library_id required"}), 400
+
+    # Place at end of its type group
+    ex_type = data.get("exercise_type", "main")
+    max_order = db.session.query(db.func.max(PlannedExercise.order_index)).filter_by(
+        planned_workout_id=workout_id, exercise_type=ex_type
+    ).scalar() or 0
+
+    new_ex = PlannedExercise(
+        planned_workout_id=workout_id,
+        exercise_name=exercise_name,
+        exercise_library_id=library_id,
+        exercise_type=ex_type,
+        sets_prescribed=int(data.get("sets", 3)),
+        reps_prescribed=str(data.get("reps", "10")),
+        rest_seconds=int(data["rest_seconds"]) if data.get("rest_seconds") is not None else None,
+        notes=data.get("notes", ""),
+        is_superset_default=bool(data.get("is_superset_default", False)),
+        order_index=max_order + 1,
+    )
+    db.session.add(new_ex)
+    db.session.commit()
+    return jsonify({"id": new_ex.id, "ok": True}), 201
+
+
+@app.route("/api/plan/exercise-library")
+@login_required
+def api_exercise_library():
+    profile = get_profile()
+    if not profile:
+        return jsonify([]), 401
+
+    lib_entries = ExerciseLibrary.query.order_by(ExerciseLibrary.name).all()
+    lib_names = {e.name for e in lib_entries}
+
+    # Also include exercise names from user's own history not already in library
+    history_names = {
+        row[0] for row in
+        db.session.query(LoggedSet.exercise_name)
+        .join(WorkoutSession, LoggedSet.session_id == WorkoutSession.id)
+        .filter(WorkoutSession.user_id == profile.id)
+        .distinct()
+        .all()
+    } - lib_names
+
+    result = [{"id": e.id, "name": e.name, "muscle_group": e.muscle_group,
+               "equipment": e.equipment} for e in lib_entries]
+    result += [{"id": None, "name": n, "muscle_group": None, "equipment": None}
+               for n in sorted(history_names)]
+
+    return jsonify(result)
 
 
 @app.route("/settings")

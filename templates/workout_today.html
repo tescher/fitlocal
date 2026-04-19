@@ -59,7 +59,7 @@
     <div class="section-header warmup-header">Warm-Up</div>
     {% for exercise in warmup_exercises %}
     {% set is_superset = exercise.exercise_name in superset_exercises %}
-    <div class="exercise-block warmup-block" data-superset-active="{{ 'true' if is_superset else 'false' }}">
+    <div class="exercise-block warmup-block {{ 'superset-default' if exercise.is_superset_default else '' }}" data-superset-active="{{ 'true' if is_superset else 'false' }}" data-exercise-name="{{ exercise.exercise_name }}">
         <div style="display:flex; justify-content:space-between; align-items:center;">
             <h3 style="margin:0;">{{ exercise.exercise_name }}</h3>
             <button type="button" class="btn-superset {{ 'superset-active' if is_superset else '' }}" onclick="toggleSuperset(this)">Superset</button>
@@ -164,7 +164,7 @@
     <div class="section-header main-header">Main Workout</div>
     {% for exercise in main_exercises %}
     {% set is_superset = exercise.exercise_name in superset_exercises %}
-    <div class="exercise-block" data-superset-active="{{ 'true' if is_superset else 'false' }}">
+    <div class="exercise-block {{ 'superset-default' if exercise.is_superset_default else '' }}" data-superset-active="{{ 'true' if is_superset else 'false' }}" data-exercise-name="{{ exercise.exercise_name }}">
         <div style="display:flex; justify-content:space-between; align-items:center;">
             <h3 style="margin:0;">{{ exercise.exercise_name }}</h3>
             <button type="button" class="btn-superset {{ 'superset-active' if is_superset else '' }}" onclick="toggleSuperset(this)">Superset</button>
@@ -269,7 +269,7 @@
     <div class="section-header cooldown-header">Cool-Down</div>
     {% for exercise in cooldown_exercises %}
     {% set is_superset = exercise.exercise_name in superset_exercises %}
-    <div class="exercise-block cooldown-block" data-superset-active="{{ 'true' if is_superset else 'false' }}">
+    <div class="exercise-block cooldown-block {{ 'superset-default' if exercise.is_superset_default else '' }}" data-superset-active="{{ 'true' if is_superset else 'false' }}" data-exercise-name="{{ exercise.exercise_name }}">
         <div style="display:flex; justify-content:space-between; align-items:center;">
             <h3 style="margin:0;">{{ exercise.exercise_name }}</h3>
             <button type="button" class="btn-superset {{ 'superset-active' if is_superset else '' }}" onclick="toggleSuperset(this)">Superset</button>

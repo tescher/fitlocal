@@ -3,7 +3,12 @@
 {% block content %}
 <div class="flex-between mb-2">
     <h1>Current Plan</h1>
-    <a href="{{ url_for('plan_history') }}" class="btn btn-secondary">Past Plans</a>
+    <div style="display:flex;gap:.5rem;">
+        {% if plan %}
+        <button id="editToggle" class="btn btn-secondary" onclick="toggleEditMode()">Edit Plan</button>
+        {% endif %}
+        <a href="{{ url_for('plan_history') }}" class="btn btn-secondary">Past Plans</a>
+    </div>
 </div>
 
 {% if plan %}
@@ -34,32 +39,129 @@
 {% endif %}
 
 {% for workout in workouts %}
-<div class="exercise-block">
+<div class="exercise-block" id="workout-{{ workout.id }}">
     <h3>{{ workout.day_of_week }}: {{ workout.workout_name }}</h3>
-    <table>
-        <thead>
-            <tr>
-                <th>Type</th>
-                <th>Exercise</th>
-                <th>Sets</th>
-                <th>Reps</th>
-                <th>Rest</th>
-                <th>Notes</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for ex in workout.planned_exercises %}
-            <tr class="exercise-row-{{ ex.exercise_type }}">
-                <td><span class="type-badge {{ ex.exercise_type }}">{{ ex.exercise_type }}</span></td>
-                <td>{{ ex.exercise_name }}</td>
-                <td>{{ ex.sets_prescribed }}</td>
-                <td>{{ ex.reps_prescribed }}</td>
-                <td>{{ ex.rest_seconds or '-' }}s</td>
-                <td>{{ ex.notes or '' }}</td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
+
+    {% for group_type, group_label in [('warmup','Warm-Up'), ('main','Main'), ('cooldown','Cool-Down')] %}
+    {% set group_exercises = workout.planned_exercises | selectattr('exercise_type','equalto',group_type) | sort(attribute='order_index') | list %}
+    {% if group_exercises %}
+    <div class="plan-group" data-type="{{ group_type }}" data-workout-id="{{ workout.id }}">
+        <div class="plan-group-label">{{ group_label }}</div>
+        <table>
+            <thead>
+                <tr>
+                    <th class="edit-only drag-col" style="display:none;width:24px;"></th>
+                    <th>Exercise</th>
+                    <th>Sets</th>
+                    <th>Reps</th>
+                    <th>Rest</th>
+                    <th>Notes</th>
+                    <th class="edit-only superset-col" style="display:none;">Superset</th>
+                    <th class="edit-only action-col" style="display:none;"></th>
+                </tr>
+            </thead>
+            <tbody class="sortable-group" data-workout-id="{{ workout.id }}" data-type="{{ group_type }}">
+                {% for ex in group_exercises %}
+                <tr class="exercise-row exercise-row-{{ ex.exercise_type }}" data-ex-id="{{ ex.id }}" data-order="{{ ex.order_index }}">
+                    <td class="edit-only drag-col" style="display:none;cursor:grab;user-select:none;" title="Drag to reorder">⠿</td>
+                    <td>{{ ex.exercise_name }}</td>
+                    <td>
+                        <span class="view-val">{{ ex.sets_prescribed }}</span>
+                        <input class="edit-only inline-edit" style="display:none;width:3.5rem;" type="number" min="1" max="20"
+                               value="{{ ex.sets_prescribed }}" data-field="sets">
+                    </td>
+                    <td>
+                        <span class="view-val">{{ ex.reps_prescribed }}</span>
+                        <input class="edit-only inline-edit" style="display:none;width:5rem;" type="text"
+                               value="{{ ex.reps_prescribed }}" data-field="reps">
+                    </td>
+                    <td>
+                        <span class="view-val">{{ ex.rest_seconds or '-' }}{% if ex.rest_seconds %}s{% endif %}</span>
+                        <input class="edit-only inline-edit" style="display:none;width:4rem;" type="number" min="0"
+                               value="{{ ex.rest_seconds or '' }}" placeholder="sec" data-field="rest_seconds">
+                    </td>
+                    <td>
+                        <span class="view-val">{{ ex.notes or '' }}</span>
+                        <input class="edit-only inline-edit" style="display:none;width:8rem;" type="text"
+                               value="{{ ex.notes or '' }}" data-field="notes">
+                    </td>
+                    <td class="edit-only superset-col" style="display:none;">
+                        <label style="cursor:pointer;font-size:.85rem;">
+                            <input type="checkbox" class="superset-default-cb"
+                                   {% if ex.is_superset_default %}checked{% endif %}
+                                   onchange="patchSuperset({{ ex.id }}, this.checked)">
+                            Default
+                        </label>
+                    </td>
+                    <td class="edit-only action-col" style="display:none;">
+                        <div style="display:flex;gap:.25rem;">
+                            <button class="btn-save-row btn btn-sm btn-primary" style="font-size:.75rem;padding:.2rem .5rem;"
+                                    onclick="saveRow(this, {{ ex.id }})">Save</button>
+                            <button class="btn btn-sm" style="font-size:.75rem;padding:.2rem .5rem;background:#e74c3c;color:#fff;border:none;border-radius:4px;"
+                                    onclick="confirmDelete(this, {{ ex.id }}, '{{ ex.exercise_name|e }}')">✕</button>
+                        </div>
+                        <div class="delete-confirm" style="display:none;margin-top:.25rem;font-size:.8rem;">
+                            Remove <strong>{{ ex.exercise_name|e }}</strong>?
+                            <a href="#" style="color:#e74c3c;" onclick="doDelete(event,{{ ex.id }},this)">Yes</a> /
+                            <a href="#" onclick="cancelDelete(event,this)">No</a>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+
+        <!-- Add exercise panel (edit mode only) -->
+        <div class="add-ex-panel edit-only" style="display:none;margin-top:.5rem;">
+            <button class="btn btn-sm btn-secondary" style="font-size:.8rem;"
+                    onclick="toggleAddPanel(this, {{ workout.id }}, '{{ group_type }}')">+ Add Exercise</button>
+            <div class="add-ex-form" style="display:none;margin-top:.5rem;padding:.75rem;background:#f8f9fa;border-radius:6px;">
+                <div style="display:flex;gap:.5rem;margin-bottom:.5rem;">
+                    <button class="tab-btn active" onclick="switchTab(this,'search')">From Library</button>
+                    <button class="tab-btn" onclick="switchTab(this,'new')">New Exercise</button>
+                </div>
+                <!-- Library search tab -->
+                <div class="tab-pane tab-search">
+                    <input type="text" placeholder="Search exercises…" class="lib-search" oninput="filterLib(this)"
+                           style="width:100%;margin-bottom:.4rem;">
+                    <div class="lib-results" style="max-height:160px;overflow-y:auto;border:1px solid #ddd;border-radius:4px;"></div>
+                    <div class="lib-selected" style="margin-top:.4rem;font-size:.85rem;color:#555;"></div>
+                    <input type="hidden" class="lib-selected-id">
+                    <input type="hidden" class="lib-selected-name">
+                </div>
+                <!-- New exercise tab -->
+                <div class="tab-pane tab-new" style="display:none;">
+                    <input type="text" placeholder="Exercise name" class="new-ex-name"
+                           style="width:100%;margin-bottom:.4rem;">
+                </div>
+                <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.4rem;">
+                    <label style="font-size:.85rem;">Sets<br>
+                        <input type="number" class="add-sets" value="3" min="1" max="20" style="width:3.5rem;">
+                    </label>
+                    <label style="font-size:.85rem;">Reps<br>
+                        <input type="text" class="add-reps" value="10" style="width:5rem;">
+                    </label>
+                    <label style="font-size:.85rem;">Rest (s)<br>
+                        <input type="number" class="add-rest" value="60" min="0" style="width:4rem;">
+                    </label>
+                    <label style="font-size:.85rem;">Notes<br>
+                        <input type="text" class="add-notes" style="width:8rem;">
+                    </label>
+                    <label style="font-size:.85rem;">Superset default<br>
+                        <input type="checkbox" class="add-superset">
+                    </label>
+                </div>
+                <div style="margin-top:.5rem;display:flex;gap:.5rem;">
+                    <button class="btn btn-primary btn-sm" style="font-size:.8rem;"
+                            onclick="doAddExercise(this, {{ workout.id }}, '{{ group_type }}')">Add</button>
+                    <button class="btn btn-secondary btn-sm" style="font-size:.8rem;"
+                            onclick="closeAddPanel(this)">Cancel</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+    {% endfor %}
 </div>
 {% endfor %}
 
@@ -69,4 +171,238 @@
     <a href="{{ url_for('generate_plan') }}" class="btn btn-primary mt-2">Generate Plan</a>
 </div>
 {% endif %}
+
+<style>
+.plan-group { margin-bottom: .75rem; }
+.plan-group-label { font-size: .8rem; font-weight: 600; color: #888; text-transform: uppercase;
+                    letter-spacing: .05em; margin-bottom: .25rem; }
+.inline-edit { font-size: .9rem; padding: .2rem .3rem; border: 1px solid #ccc; border-radius: 4px; }
+.tab-btn { background: none; border: 1px solid #ccc; border-radius: 4px; padding: .2rem .6rem;
+           font-size: .8rem; cursor: pointer; }
+.tab-btn.active { background: #3498db; color: #fff; border-color: #3498db; }
+.lib-result-item { padding: .3rem .5rem; cursor: pointer; font-size: .85rem; }
+.lib-result-item:hover, .lib-result-item.selected { background: #e8f4fc; }
+.drag-col { color: #aaa; font-size: 1.1rem; }
+tr.drag-over { outline: 2px dashed #3498db; }
+.btn-sm { padding: .25rem .6rem; font-size: .85rem; }
+</style>
+
+<script>
+let editMode = false;
+let libraryCache = null;
+
+function toggleEditMode() {
+    editMode = !editMode;
+    document.getElementById('editToggle').textContent = editMode ? 'Done Editing' : 'Edit Plan';
+    document.querySelectorAll('.edit-only').forEach(el => {
+        el.style.display = editMode ? '' : 'none';
+    });
+    document.querySelectorAll('.view-val').forEach(el => {
+        el.style.display = editMode ? 'none' : '';
+    });
+    if (editMode) initDragDrop();
+}
+
+// ── Inline save ──────────────────────────────────────────────────────────────
+function saveRow(btn, exId) {
+    const row = btn.closest('tr');
+    const data = {};
+    row.querySelectorAll('.inline-edit').forEach(inp => {
+        const field = inp.dataset.field;
+        let val = inp.value;
+        if (field === 'sets') val = parseInt(val) || 1;
+        else if (field === 'rest_seconds') val = parseInt(val) || null;
+        data[field] = val;
+    });
+    fetch(`/api/plan/exercise/${exId}`, {
+        method: 'PATCH',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(data),
+    }).then(r => {
+        if (!r.ok) { alert('Save failed'); return; }
+        // Update view-val spans
+        row.querySelectorAll('.inline-edit').forEach(inp => {
+            const span = inp.previousElementSibling;
+            if (span && span.classList.contains('view-val')) {
+                const field = inp.dataset.field;
+                if (field === 'rest_seconds') {
+                    span.textContent = inp.value ? inp.value + 's' : '-';
+                } else {
+                    span.textContent = inp.value;
+                }
+            }
+        });
+        flashBtn(btn, 'Saved ✓');
+    });
+}
+
+function flashBtn(btn, msg) {
+    const orig = btn.textContent;
+    btn.textContent = msg;
+    btn.disabled = true;
+    setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 1200);
+}
+
+// ── Superset default toggle ──────────────────────────────────────────────────
+function patchSuperset(exId, val) {
+    fetch(`/api/plan/exercise/${exId}`, {
+        method: 'PATCH',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({is_superset_default: val}),
+    }).then(r => { if (!r.ok) alert('Save failed'); });
+}
+
+// ── Delete ───────────────────────────────────────────────────────────────────
+function confirmDelete(btn, exId, name) {
+    const cell = btn.closest('td');
+    cell.querySelector('.delete-confirm').style.display = 'block';
+    btn.parentElement.style.display = 'none';
+}
+function cancelDelete(evt, link) {
+    evt.preventDefault();
+    const cell = link.closest('td');
+    cell.querySelector('.delete-confirm').style.display = 'none';
+    cell.querySelector('div').style.display = 'flex';
+}
+function doDelete(evt, exId, link) {
+    evt.preventDefault();
+    fetch(`/api/plan/exercise/${exId}`, { method: 'DELETE' })
+        .then(r => {
+            if (!r.ok) { alert('Delete failed'); return; }
+            link.closest('tr').remove();
+        });
+}
+
+// ── Drag-and-drop reorder (within same type group) ──────────────────────────
+function initDragDrop() {
+    document.querySelectorAll('.sortable-group').forEach(tbody => {
+        let dragging = null;
+        tbody.querySelectorAll('tr').forEach(row => {
+            const handle = row.querySelector('.drag-col');
+            if (!handle) return;
+            row.draggable = true;
+            row.addEventListener('dragstart', e => { dragging = row; row.style.opacity = '.4'; });
+            row.addEventListener('dragend', e => {
+                row.style.opacity = '';
+                tbody.querySelectorAll('tr').forEach(r => r.classList.remove('drag-over'));
+                saveOrder(tbody);
+            });
+            row.addEventListener('dragover', e => {
+                e.preventDefault();
+                if (row !== dragging) {
+                    tbody.querySelectorAll('tr').forEach(r => r.classList.remove('drag-over'));
+                    row.classList.add('drag-over');
+                    const rows = [...tbody.querySelectorAll('tr')];
+                    const di = rows.indexOf(dragging), ri = rows.indexOf(row);
+                    if (di < ri) row.after(dragging); else row.before(dragging);
+                }
+            });
+        });
+    });
+}
+
+function saveOrder(tbody) {
+    const workoutId = tbody.dataset.workoutId;
+    const exercises = [...tbody.querySelectorAll('tr')].map((row, idx) => ({
+        id: parseInt(row.dataset.exId),
+        order_index: idx,
+    }));
+    fetch(`/api/plan/workout/${workoutId}/reorder`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({exercises}),
+    }).then(r => { if (!r.ok) console.warn('Reorder failed'); });
+}
+
+// ── Add exercise ─────────────────────────────────────────────────────────────
+function toggleAddPanel(btn, workoutId, groupType) {
+    const form = btn.nextElementSibling;
+    const open = form.style.display !== 'none';
+    form.style.display = open ? 'none' : 'block';
+    if (!open) loadLibrary(form);
+}
+
+function closeAddPanel(btn) {
+    btn.closest('.add-ex-form').style.display = 'none';
+}
+
+function switchTab(btn, tab) {
+    const panel = btn.closest('.add-ex-form');
+    panel.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    panel.querySelector('.tab-search').style.display = tab === 'search' ? '' : 'none';
+    panel.querySelector('.tab-new').style.display = tab === 'new' ? '' : 'none';
+}
+
+function loadLibrary(form) {
+    if (libraryCache) { renderLib(form, libraryCache); return; }
+    fetch('/api/plan/exercise-library')
+        .then(r => r.json())
+        .then(data => { libraryCache = data; renderLib(form, data); });
+}
+
+function renderLib(form, data) {
+    const container = form.querySelector('.lib-results');
+    container.innerHTML = data.slice(0, 80).map(e =>
+        `<div class="lib-result-item" data-id="${e.id ?? ''}" data-name="${e.name}"
+              onclick="selectLib(this)">${e.name}${e.muscle_group ? ' <span style="color:#aaa;font-size:.8rem;">'+e.muscle_group+'</span>' : ''}</div>`
+    ).join('');
+}
+
+function filterLib(input) {
+    const form = input.closest('.add-ex-form');
+    const q = input.value.toLowerCase();
+    const filtered = (libraryCache || []).filter(e => e.name.toLowerCase().includes(q));
+    renderLibItems(form.querySelector('.lib-results'), filtered);
+}
+
+function renderLibItems(container, data) {
+    container.innerHTML = data.slice(0, 80).map(e =>
+        `<div class="lib-result-item" data-id="${e.id ?? ''}" data-name="${e.name}"
+              onclick="selectLib(this)">${e.name}</div>`
+    ).join('');
+}
+
+function selectLib(el) {
+    const form = el.closest('.add-ex-form');
+    el.closest('.lib-results').querySelectorAll('.lib-result-item')
+      .forEach(i => i.classList.remove('selected'));
+    el.classList.add('selected');
+    form.querySelector('.lib-selected').textContent = '✓ ' + el.dataset.name;
+    form.querySelector('.lib-selected-id').value = el.dataset.id;
+    form.querySelector('.lib-selected-name').value = el.dataset.name;
+}
+
+function doAddExercise(btn, workoutId, groupType) {
+    const form = btn.closest('.add-ex-form');
+    const isLibTab = form.querySelector('.tab-search').style.display !== 'none';
+    const libraryId = isLibTab ? (form.querySelector('.lib-selected-id').value || null) : null;
+    const exerciseName = isLibTab
+        ? form.querySelector('.lib-selected-name').value
+        : form.querySelector('.new-ex-name').value.trim();
+
+    if (!exerciseName && !libraryId) { alert('Select or enter an exercise name.'); return; }
+
+    const payload = {
+        exercise_type: groupType,
+        sets: parseInt(form.querySelector('.add-sets').value) || 3,
+        reps: form.querySelector('.add-reps').value || '10',
+        rest_seconds: parseInt(form.querySelector('.add-rest').value) || null,
+        notes: form.querySelector('.add-notes').value,
+        is_superset_default: form.querySelector('.add-superset').checked,
+    };
+    if (libraryId) payload.library_id = parseInt(libraryId);
+    else payload.exercise_name = exerciseName;
+
+    fetch(`/api/plan/workout/${workoutId}/exercise`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload),
+    }).then(r => {
+        if (!r.ok) { alert('Add failed'); return; }
+        // Reload page to show new exercise in correct position
+        location.reload();
+    });
+}
+</script>
 {% endblock %}
