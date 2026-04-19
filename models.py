@@ -88,6 +88,8 @@ class PlannedExercise(db.Model):
     notes = db.Column(db.Text)
     exercise_type = db.Column(db.String(20), default="main")  # warmup, main, cooldown
     form_cues = db.Column(db.Text)
+    order_index = db.Column(db.Integer, default=0)
+    is_superset_default = db.Column(db.Boolean, default=False)
 
     exercise_library = db.relationship("ExerciseLibrary")
 

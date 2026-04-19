@@ -15,7 +15,7 @@ from app import app
 app.config["WTF_CSRF_ENABLED"] = False   # disable CSRF tokens in tests
 app.config["TESTING"] = True
 
-from models import db, Account, UserProfile, WorkoutPlan, PlannedWorkout, PlannedExercise, TrainingPhase, FitnessTest
+from models import db, Account, UserProfile, WorkoutPlan, PlannedWorkout, PlannedExercise, TrainingPhase, FitnessTest, ExerciseLibrary, LoggedSet, WorkoutSession
 from extensions import bcrypt
 
 passed = 0
@@ -1016,6 +1016,378 @@ check("GET /settings returns 200", r.status_code == 200)
 print("\n--- Export ---")
 r = client.get("/export")
 check("GET /export returns 200", r.status_code == 200)
+
+# ── Plan Edit API ──────────────────────────────────────────────────────────────
+print("\n--- Plan Edit: Schema ---")
+
+# PlannedExercise must have order_index and is_superset_default columns
+with app.app_context():
+    cols = [c.name for c in PlannedExercise.__table__.columns]
+    check("PlannedExercise has order_index column", "order_index" in cols)
+    check("PlannedExercise has is_superset_default column", "is_superset_default" in cols)
+
+print("\n--- Plan Edit: PATCH exercise sets/reps/rest ---")
+
+# Grab an exercise to edit
+with app.app_context():
+    from app import get_active_plan as _gap_edit
+    profile = UserProfile.query.first()
+    active = _gap_edit(profile.id)
+    pw_edit = PlannedWorkout.query.filter_by(plan_id=active.id).first()
+    ex_edit = PlannedExercise.query.filter_by(planned_workout_id=pw_edit.id, exercise_type="main").first()
+    ex_edit_id = ex_edit.id
+    original_sets = ex_edit.sets_prescribed
+
+r = client.patch(f"/api/plan/exercise/{ex_edit_id}",
+                 json={"sets": 5, "reps": "6-8", "rest_seconds": 120, "notes": "heavy day"},
+                 content_type="application/json")
+check("PATCH /api/plan/exercise/<id> returns 200", r.status_code == 200)
+
+with app.app_context():
+    updated = PlannedExercise.query.get(ex_edit_id)
+    check("PATCH updates sets_prescribed", updated.sets_prescribed == 5)
+    check("PATCH updates reps_prescribed", updated.reps_prescribed == "6-8")
+    check("PATCH updates rest_seconds", updated.rest_seconds == 120)
+    check("PATCH updates notes", updated.notes == "heavy day")
+
+# Restore original for later tests
+with app.app_context():
+    ex_restore = PlannedExercise.query.get(ex_edit_id)
+    ex_restore.sets_prescribed = original_sets
+    db.session.commit()
+
+print("\n--- Plan Edit: PATCH is_superset_default ---")
+
+r = client.patch(f"/api/plan/exercise/{ex_edit_id}",
+                 json={"is_superset_default": True},
+                 content_type="application/json")
+check("PATCH is_superset_default=True returns 200", r.status_code == 200)
+
+with app.app_context():
+    ex_ss = PlannedExercise.query.get(ex_edit_id)
+    check("is_superset_default saved as True", ex_ss.is_superset_default == True)
+
+r = client.patch(f"/api/plan/exercise/{ex_edit_id}",
+                 json={"is_superset_default": False},
+                 content_type="application/json")
+check("PATCH is_superset_default=False returns 200", r.status_code == 200)
+with app.app_context():
+    ex_ss2 = PlannedExercise.query.get(ex_edit_id)
+    check("is_superset_default saved as False", ex_ss2.is_superset_default == False)
+
+# PATCH must reject edits to another user's plan
+print("\n--- Plan Edit: ownership enforcement ---")
+
+with app.app_context():
+    other_account = Account(email="other@fitlocal.test", email_claimed=True)
+    from extensions import bcrypt as _bcrypt
+    other_account.password_hash = _bcrypt.generate_password_hash("x").decode()
+    db.session.add(other_account)
+    db.session.commit()
+    other_account_id = other_account.id
+
+other_client = app.test_client()
+with other_client.session_transaction() as sess:
+    sess['_user_id'] = str(other_account_id)
+    sess['_fresh'] = True
+
+r_other = other_client.patch(f"/api/plan/exercise/{ex_edit_id}",
+                              json={"sets": 99},
+                              content_type="application/json")
+check("PATCH by wrong user returns 403 or 404", r_other.status_code in (403, 404))
+
+print("\n--- Plan Edit: reorder exercises ---")
+
+# Collect main exercises in first workout to reorder
+with app.app_context():
+    from app import get_active_plan as _gap_reorder
+    profile = UserProfile.query.first()
+    active_r = _gap_reorder(profile.id)
+    pw_reorder = PlannedWorkout.query.filter_by(plan_id=active_r.id).first()
+    mains = (PlannedExercise.query
+             .filter_by(planned_workout_id=pw_reorder.id, exercise_type="main")
+             .order_by(PlannedExercise.order_index)
+             .all())
+    # Build reversed order
+    reorder_payload = [{"id": ex.id, "order_index": i} for i, ex in enumerate(reversed(mains))]
+    first_id_before = mains[0].id if mains else None
+    last_id_before = mains[-1].id if mains else None
+
+if reorder_payload:
+    r = client.post(f"/api/plan/workout/{pw_reorder.id}/reorder",
+                    json={"exercises": reorder_payload},
+                    content_type="application/json")
+    check("POST /api/plan/workout/<id>/reorder returns 200", r.status_code == 200)
+
+    with app.app_context():
+        ex_first_after = PlannedExercise.query.get(first_id_before)
+        ex_last_after = PlannedExercise.query.get(last_id_before)
+        # After reversal, original first should have highest order_index among mains
+        check("Reorder: first exercise now has higher order_index than last",
+              ex_first_after.order_index > ex_last_after.order_index)
+
+# Reorder must reject cross-type moves (warmup exercise id mixed into main reorder list)
+with app.app_context():
+    from app import get_active_plan as _gap_cross
+    profile = UserProfile.query.first()
+    active_cross = _gap_cross(profile.id)
+    pw_cross = PlannedWorkout.query.filter_by(plan_id=active_cross.id).first()
+    warmup_ex = PlannedExercise.query.filter_by(planned_workout_id=pw_cross.id, exercise_type="warmup").first()
+    main_exes = PlannedExercise.query.filter_by(planned_workout_id=pw_cross.id, exercise_type="main").all()
+    cross_payload = [{"id": warmup_ex.id, "order_index": 0}] + \
+                    [{"id": ex.id, "order_index": i+1} for i, ex in enumerate(main_exes)]
+
+if warmup_ex and main_exes:
+    r = client.post(f"/api/plan/workout/{pw_cross.id}/reorder",
+                    json={"exercises": cross_payload},
+                    content_type="application/json")
+    check("Reorder with mixed types returns 400", r.status_code == 400)
+
+print("\n--- Plan Edit: DELETE exercise ---")
+
+# Add a throwaway exercise then delete it
+with app.app_context():
+    from app import get_active_plan as _gap_del
+    profile = UserProfile.query.first()
+    active_d = _gap_del(profile.id)
+    pw_del = PlannedWorkout.query.filter_by(plan_id=active_d.id).first()
+    throwaway = PlannedExercise(
+        planned_workout_id=pw_del.id,
+        exercise_name="Throwaway Exercise",
+        exercise_type="main",
+        sets_prescribed=1,
+        reps_prescribed="10",
+        rest_seconds=60,
+        order_index=999,
+    )
+    db.session.add(throwaway)
+    db.session.commit()
+    throwaway_id = throwaway.id
+
+r = client.delete(f"/api/plan/exercise/{throwaway_id}")
+check("DELETE /api/plan/exercise/<id> returns 200", r.status_code == 200)
+
+with app.app_context():
+    gone = PlannedExercise.query.get(throwaway_id)
+    check("Exercise deleted from DB", gone is None)
+
+# Delete by wrong user returns 403/404
+with app.app_context():
+    from app import get_active_plan as _gap_del2
+    profile = UserProfile.query.first()
+    active_d2 = _gap_del2(profile.id)
+    pw_del2 = PlannedWorkout.query.filter_by(plan_id=active_d2.id).first()
+    throwaway2 = PlannedExercise(
+        planned_workout_id=pw_del2.id,
+        exercise_name="Throwaway2",
+        exercise_type="main",
+        sets_prescribed=1,
+        reps_prescribed="10",
+        rest_seconds=60,
+        order_index=998,
+    )
+    db.session.add(throwaway2)
+    db.session.commit()
+    throwaway2_id = throwaway2.id
+
+r_del_other = other_client.delete(f"/api/plan/exercise/{throwaway2_id}")
+check("DELETE by wrong user returns 403 or 404", r_del_other.status_code in (403, 404))
+
+# Clean up
+with app.app_context():
+    t2 = PlannedExercise.query.get(throwaway2_id)
+    if t2:
+        db.session.delete(t2)
+        db.session.commit()
+
+print("\n--- Plan Edit: POST add exercise ---")
+
+with app.app_context():
+    from app import get_active_plan as _gap_add
+    profile = UserProfile.query.first()
+    active_a = _gap_add(profile.id)
+    pw_add = PlannedWorkout.query.filter_by(plan_id=active_a.id).first()
+    pw_add_id = pw_add.id
+    ex_count_before = PlannedExercise.query.filter_by(planned_workout_id=pw_add_id).count()
+
+# Add from scratch
+r = client.post(f"/api/plan/workout/{pw_add_id}/exercise",
+                json={
+                    "exercise_name": "Cable Row",
+                    "exercise_type": "main",
+                    "sets": 3,
+                    "reps": "10-12",
+                    "rest_seconds": 90,
+                    "notes": "squeeze at top",
+                    "is_superset_default": False,
+                },
+                content_type="application/json")
+check("POST /api/plan/workout/<id>/exercise returns 201", r.status_code == 201)
+
+with app.app_context():
+    ex_count_after = PlannedExercise.query.filter_by(planned_workout_id=pw_add_id).count()
+    check("New exercise added to DB", ex_count_after == ex_count_before + 1)
+    new_ex = PlannedExercise.query.filter_by(
+        planned_workout_id=pw_add_id, exercise_name="Cable Row").first()
+    check("New exercise name saved", new_ex is not None and new_ex.exercise_name == "Cable Row")
+    check("New exercise type saved", new_ex is not None and new_ex.exercise_type == "main")
+    check("New exercise sets saved", new_ex is not None and new_ex.sets_prescribed == 3)
+    new_ex_id = new_ex.id if new_ex else None
+
+# Response body contains the new exercise id
+if r.status_code == 201:
+    resp_data = r.get_json()
+    check("POST response includes id", resp_data is not None and "id" in resp_data)
+
+# Add from library (by library_id)
+with app.app_context():
+    lib_ex = ExerciseLibrary.query.first()
+    if not lib_ex:
+        lib_ex = ExerciseLibrary(name="Lat Pulldown", muscle_group="Back", equipment="Cable")
+        db.session.add(lib_ex)
+        db.session.commit()
+    lib_ex_id = lib_ex.id
+    lib_ex_name = lib_ex.name
+
+r = client.post(f"/api/plan/workout/{pw_add_id}/exercise",
+                json={
+                    "library_id": lib_ex_id,
+                    "exercise_type": "main",
+                    "sets": 3,
+                    "reps": "8-10",
+                    "rest_seconds": 75,
+                    "notes": "",
+                    "is_superset_default": False,
+                },
+                content_type="application/json")
+check("POST with library_id returns 201", r.status_code == 201)
+
+with app.app_context():
+    lib_added = PlannedExercise.query.filter_by(
+        planned_workout_id=pw_add_id, exercise_name=lib_ex_name).first()
+    check("Library exercise name copied to planned exercise", lib_added is not None)
+    check("Library exercise linked via exercise_library_id",
+          lib_added is not None and lib_added.exercise_library_id == lib_ex_id)
+
+print("\n--- Plan Edit: GET exercise library endpoint ---")
+
+r = client.get("/api/plan/exercise-library")
+check("GET /api/plan/exercise-library returns 200", r.status_code == 200)
+lib_data = r.get_json()
+check("Response is a list", isinstance(lib_data, list))
+check("Library entries have 'name' key", len(lib_data) > 0 and "name" in lib_data[0])
+check("Library entries have 'id' key", len(lib_data) > 0 and "id" in lib_data[0])
+
+# Endpoint also returns names from user's own LoggedSet history not in library
+with app.app_context():
+    profile = UserProfile.query.first()
+    unique_names = {ls.exercise_name for ls in
+                    db.session.query(LoggedSet).join(WorkoutSession)
+                    .filter(WorkoutSession.user_id == profile.id).all()}
+    lib_names = {e["name"] for e in lib_data}
+    history_only = unique_names - {e.name for e in ExerciseLibrary.query.all()}
+
+if history_only:
+    sample = next(iter(history_only))
+    check(f"Library endpoint includes history-only exercise '{sample}'", sample in lib_names)
+else:
+    check("Library endpoint includes history-only exercises (skipped — all in library)", True)
+
+print("\n--- Plan Edit: reordered exercises appear in new order on plan and workout pages ---")
+
+# Get main exercises for the first workout and record their current order
+with app.app_context():
+    from app import get_active_plan as _gap_ord
+    profile = UserProfile.query.first()
+    active_ord = _gap_ord(profile.id)
+    pw_ord = PlannedWorkout.query.filter_by(plan_id=active_ord.id).first()
+    mains_ord = (PlannedExercise.query
+                 .filter_by(planned_workout_id=pw_ord.id, exercise_type="main")
+                 .order_by(PlannedExercise.order_index)
+                 .all())
+    pw_ord_id = pw_ord.id
+
+check("Reorder test: at least 2 main exercises exist", len(mains_ord) >= 2)
+
+if len(mains_ord) >= 2:
+    # Record original first and last names
+    orig_first_name = mains_ord[0].exercise_name
+    orig_last_name  = mains_ord[-1].exercise_name
+
+    # Reverse the order via API
+    reversed_payload = [{"id": ex.id, "order_index": i}
+                        for i, ex in enumerate(reversed(mains_ord))]
+    r = client.post(f"/api/plan/workout/{pw_ord_id}/reorder",
+                    json={"exercises": reversed_payload},
+                    content_type="application/json")
+    check("Reorder API returns 200", r.status_code == 200)
+
+    # Verify DB order_index updated correctly
+    with app.app_context():
+        new_first = (PlannedExercise.query
+                     .filter_by(planned_workout_id=pw_ord_id, exercise_type="main")
+                     .order_by(PlannedExercise.order_index)
+                     .first())
+        check(f"DB: original last exercise ('{orig_last_name}') is now first by order_index",
+              new_first.exercise_name == orig_last_name)
+
+    # Verify /plan page renders exercises in updated order
+    r = client.get("/plan")
+    html_plan = r.data.decode()
+    pos_first_in_plan = html_plan.find(orig_first_name)
+    pos_last_in_plan  = html_plan.find(orig_last_name)
+    check(f"Plan page: '{orig_last_name}' now appears before '{orig_first_name}'",
+          0 <= pos_last_in_plan < pos_first_in_plan)
+
+    # Verify /workout/today renders exercises in updated order
+    r = client.get("/workout/today", follow_redirects=False)
+    if r.status_code == 200:
+        html_today_ord = r.data.decode()
+        pos_first_today = html_today_ord.find(orig_first_name)
+        pos_last_today  = html_today_ord.find(orig_last_name)
+        check(f"Workout today: '{orig_last_name}' now appears before '{orig_first_name}'",
+              0 <= pos_last_today < pos_first_today)
+    else:
+        check("Workout today order (rest day — skipped)", True)
+
+    # Restore original order
+    restore_payload = [{"id": ex.id, "order_index": i} for i, ex in enumerate(mains_ord)]
+    client.post(f"/api/plan/workout/{pw_ord_id}/reorder",
+                json={"exercises": restore_payload},
+                content_type="application/json")
+
+print("\n--- Plan Edit: workout_today respects is_superset_default ---")
+
+# Mark an exercise as superset default, then verify workout_today pre-activates it
+with app.app_context():
+    from app import get_active_plan as _gap_ss
+    profile = UserProfile.query.first()
+    active_ss = _gap_ss(profile.id)
+    pw_ss_today = PlannedWorkout.query.filter_by(plan_id=active_ss.id).first()
+    main_ss = PlannedExercise.query.filter_by(
+        planned_workout_id=pw_ss_today.id, exercise_type="main").first()
+    main_ss.is_superset_default = True
+    db.session.commit()
+    main_ss_name = main_ss.exercise_name
+
+r = client.get("/workout/today", follow_redirects=False)
+if r.status_code == 200:
+    html_today2 = r.data.decode()
+    check("workout_today pre-activates superset for is_superset_default exercise",
+          main_ss_name in html_today2 and "superset-default" in html_today2)
+else:
+    check("workout_today pre-activates superset for is_superset_default exercise (rest day, skipped)", True)
+
+# Restore
+with app.app_context():
+    from app import get_active_plan as _gap_ss2
+    profile = UserProfile.query.first()
+    active_ss2 = _gap_ss2(profile.id)
+    pw_ss2 = PlannedWorkout.query.filter_by(plan_id=active_ss2.id).first()
+    m = PlannedExercise.query.filter_by(
+        planned_workout_id=pw_ss2.id, exercise_type="main").first()
+    m.is_superset_default = False
+    db.session.commit()
 
 # Summary
 print(f"\n{'='*50}")
