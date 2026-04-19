@@ -47,7 +47,7 @@
     {% if group_exercises %}
     <div class="plan-group" data-type="{{ group_type }}" data-workout-id="{{ workout.id }}">
         <div class="plan-group-label">{{ group_label }}</div>
-        <table>
+        <table class="sortable-table" data-workout-id="{{ workout.id }}" data-type="{{ group_type }}">
             <thead>
                 <tr>
                     <th class="edit-only drag-col" style="display:none;width:24px;"></th>
@@ -60,9 +60,9 @@
                     <th class="edit-only action-col" style="display:none;"></th>
                 </tr>
             </thead>
-            <tbody class="sortable-group" data-workout-id="{{ workout.id }}" data-type="{{ group_type }}">
                 {% for ex in group_exercises %}
-                <tr class="exercise-row exercise-row-{{ ex.exercise_type }}" data-ex-id="{{ ex.id }}" data-order="{{ ex.order_index }}">
+                <tbody class="exercise-pair" data-ex-id="{{ ex.id }}" data-order="{{ ex.order_index }}">
+                <tr class="exercise-row exercise-row-{{ ex.exercise_type }}">
                     <td class="edit-only drag-col" style="display:none;cursor:grab;user-select:none;" title="Drag to reorder">⠿</td>
                     <td>{{ ex.exercise_name }}</td>
                     <td>
@@ -88,27 +88,18 @@
                     <td class="edit-only superset-col" style="display:none;">
                         <label style="cursor:pointer;font-size:.85rem;">
                             <input type="checkbox" class="superset-default-cb"
-                                   {% if ex.is_superset_default %}checked{% endif %}
-                                   onchange="patchSuperset({{ ex.id }}, this.checked)">
+                                   {% if ex.is_superset_default %}checked{% endif %}>
                             Yes
                         </label>
                     </td>
                     <td class="edit-only action-col" style="display:none;">
                         <div style="display:flex;gap:.25rem;">
-                            <button class="btn-save-row btn btn-sm btn-primary" style="font-size:.75rem;padding:.2rem .5rem;"
-                                    onclick="saveRow(this, {{ ex.id }})">Save</button>
                             <button class="btn btn-sm" style="font-size:.75rem;padding:.2rem .5rem;background:#e74c3c;color:#fff;border:none;border-radius:4px;"
-                                    onclick="confirmDelete(this, {{ ex.id }}, '{{ ex.exercise_name|e }}')">✕</button>
-                        </div>
-                        <div class="delete-confirm" style="display:none;margin-top:.25rem;font-size:.8rem;">
-                            Remove <strong>{{ ex.exercise_name|e }}</strong>?
-                            <a href="#" style="color:#e74c3c;" onclick="doDelete(event,{{ ex.id }},this)">Yes</a> /
-                            <a href="#" onclick="cancelDelete(event,this)">No</a>
+                                    onclick="markDelete(this,'{{ ex.id }}','{{ ex.exercise_name|e }}')">✕</button>
                         </div>
                     </td>
                 </tr>
-                <tr class="form-cues-row exercise-row-{{ ex.exercise_type }}"
-                    data-ex-id="{{ ex.id }}">
+                <tr class="form-cues-row">
                     <td class="edit-only drag-col" style="display:none;"></td>
                     <td colspan="5" style="padding-top:0;padding-bottom:.5rem;">
                         {% if ex.form_cues %}
@@ -122,14 +113,14 @@
                     <td class="edit-only superset-col" style="display:none;"></td>
                     <td class="edit-only action-col" style="display:none;"></td>
                 </tr>
+                </tbody>
                 {% endfor %}
-            </tbody>
         </table>
 
         <!-- Add exercise panel (edit mode only) -->
         <div class="add-ex-panel edit-only" style="display:none;margin-top:.5rem;">
             <button class="btn btn-sm btn-secondary" style="font-size:.8rem;"
-                    onclick="toggleAddPanel(this, {{ workout.id }}, '{{ group_type }}')">+ Add Exercise</button>
+                    onclick="toggleAddPanel(this)">+ Add Exercise</button>
             <div class="add-ex-form" style="display:none;margin-top:.5rem;padding:.75rem;background:#f8f9fa;border-radius:6px;">
                 <div style="display:flex;gap:.5rem;margin-bottom:.5rem;">
                     <button class="tab-btn active" onclick="switchTab(this,'search')">From Library</button>
@@ -166,9 +157,15 @@
                         <input type="checkbox" class="add-superset">
                     </label>
                 </div>
+                <div style="margin-top:.4rem;">
+                    <label style="font-size:.85rem;">Form cues<br>
+                        <textarea class="add-form-cues" style="width:100%;font-size:.85rem;min-height:2.5rem;resize:vertical;"
+                                  placeholder="Optional coaching notes…"></textarea>
+                    </label>
+                </div>
                 <div style="margin-top:.5rem;display:flex;gap:.5rem;">
                     <button class="btn btn-primary btn-sm" style="font-size:.8rem;"
-                            onclick="doAddExercise(this, {{ workout.id }}, '{{ group_type }}')">Add</button>
+                            onclick="doAddExercise(this, '{{ group_type }}')">Add</button>
                     <button class="btn btn-secondary btn-sm" style="font-size:.8rem;"
                             onclick="closeAddPanel(this)">Cancel</button>
                 </div>
@@ -198,229 +195,344 @@
 .lib-result-item { padding: .3rem .5rem; cursor: pointer; font-size: .85rem; }
 .lib-result-item:hover, .lib-result-item.selected { background: #e8f4fc; }
 .drag-col { color: #aaa; font-size: 1.1rem; }
-tr.drag-over { outline: 2px dashed #3498db; }
+tbody.drag-over { outline: 2px dashed #3498db; }
 .btn-sm { padding: .25rem .6rem; font-size: .85rem; }
 </style>
 
 <script>
 let editMode = false;
 let libraryCache = null;
+let _tempIdCounter = 0;
 
+// ── HTML escape helpers ───────────────────────────────────────────────────────
+function esc(str) { return String(str||'').replace(/'/g,"\\'"); }
+function esc2(str) {
+    return String(str||'').replace(/&/g,'&amp;').replace(/</g,'&lt;')
+                          .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── Edit mode toggle ──────────────────────────────────────────────────────────
 function toggleEditMode() {
-    editMode = !editMode;
-    document.getElementById('editToggle').textContent = editMode ? 'Done Editing' : 'Edit Plan';
-    document.querySelectorAll('.edit-only').forEach(el => {
-        el.style.display = editMode ? '' : 'none';
-    });
-    document.querySelectorAll('.view-val').forEach(el => {
-        el.style.display = editMode ? 'none' : '';
-    });
-    if (editMode) initDragDrop();
+    if (editMode) { saveAll(); return; }
+    editMode = true;
+    document.getElementById('editToggle').textContent = 'Done Editing';
+    document.querySelectorAll('.edit-only').forEach(el => { el.style.display = ''; });
+    document.querySelectorAll('.view-val').forEach(el => { el.style.display = 'none'; });
+    initDragDrop();
 }
 
-// ── Inline save ──────────────────────────────────────────────────────────────
-function saveRow(btn, exId) {
-    const row = btn.closest('tr');
-    const cuesRow = row.nextElementSibling;
+function exitEditMode() {
+    editMode = false;
+    const btn = document.getElementById('editToggle');
+    btn.textContent = 'Edit Plan';
+    btn.style.pointerEvents = '';
+    document.querySelectorAll('.edit-only').forEach(el => { el.style.display = 'none'; });
+    document.querySelectorAll('.view-val').forEach(el => { el.style.display = ''; });
+}
+
+// ── Collect all editable data from an exercise-pair tbody ─────────────────────
+function collectPairData(pair) {
     const data = {};
-    const allFields = [...row.querySelectorAll('.inline-edit'),
-                       ...(cuesRow ? cuesRow.querySelectorAll('.inline-edit') : [])];
-    allFields.forEach(inp => {
-        const field = inp.dataset.field;
-        let val = inp.value;
-        if (field === 'sets') val = parseInt(val) || 1;
-        else if (field === 'rest_seconds') val = parseInt(val) || null;
-        data[field] = val;
+    pair.querySelectorAll('[data-field]').forEach(el => {
+        const f = el.dataset.field;
+        if (f === 'sets') data[f] = parseInt(el.value) || 1;
+        else if (f === 'rest_seconds') data[f] = el.value ? parseInt(el.value) : null;
+        else data[f] = el.value;
     });
-    fetch(`/api/plan/exercise/${exId}`, {
-        method: 'PATCH',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(data),
-    }).then(r => {
-        if (!r.ok) { alert('Save failed'); return; }
-        // Update view-val spans
-        row.querySelectorAll('.inline-edit').forEach(inp => {
-            const span = inp.previousElementSibling;
-            if (span && span.classList.contains('view-val')) {
-                const field = inp.dataset.field;
-                if (field === 'rest_seconds') {
-                    span.textContent = inp.value ? inp.value + 's' : '-';
-                } else {
-                    span.textContent = inp.value;
-                }
+    const cb = pair.querySelector('.superset-default-cb');
+    if (cb) data.is_superset_default = cb.checked;
+    return data;
+}
+
+// ── Update view-val spans from current input values ───────────────────────────
+function updateViewVals(pair) {
+    pair.querySelectorAll('[data-field]').forEach(inp => {
+        const f = inp.dataset.field;
+        if (f === 'form_cues') {
+            let div = inp.previousElementSibling;
+            if (!div || !div.classList.contains('view-val')) {
+                div = document.createElement('div');
+                div.className = 'view-val';
+                div.style.cssText = 'font-size:.82rem;color:#666;font-style:italic;';
+                inp.before(div);
             }
-        });
-        flashBtn(btn, 'Saved ✓');
+            div.textContent = inp.value ? 'Form cues: ' + inp.value : '';
+            return;
+        }
+        const span = inp.previousElementSibling;
+        if (span && span.classList.contains('view-val')) {
+            span.textContent = f === 'rest_seconds'
+                ? (inp.value ? inp.value + 's' : '-')
+                : inp.value;
+        }
     });
 }
 
-function flashBtn(btn, msg) {
-    const orig = btn.textContent;
-    btn.textContent = msg;
-    btn.disabled = true;
-    setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 1200);
+// ── Batch save on Done Editing ────────────────────────────────────────────────
+async function saveAll() {
+    const btn = document.getElementById('editToggle');
+    btn.textContent = 'Saving…';
+    btn.style.pointerEvents = 'none';
+
+    try {
+        // 1. Delete pending-delete existing exercises; remove new pending-deletes from DOM only
+        const pendingDeletes = [...document.querySelectorAll('tbody.exercise-pair.pending-delete')];
+        const existingDeletes = pendingDeletes.filter(p => !p.dataset.exId.startsWith('new_'));
+        await Promise.all(existingDeletes.map(p =>
+            fetch(`/api/plan/exercise/${p.dataset.exId}`, { method: 'DELETE' })
+        ));
+        pendingDeletes.forEach(p => p.remove());
+
+        // 2. POST new exercises (those with data-new attribute)
+        const newPairs = [...document.querySelectorAll('tbody.exercise-pair[data-new]')];
+        await Promise.all(newPairs.map(async pair => {
+            const table = pair.closest('.sortable-table');
+            const data = collectPairData(pair);
+            data.exercise_type = table.dataset.type;
+            if (pair.dataset.libraryId) data.library_id = parseInt(pair.dataset.libraryId);
+            else data.exercise_name = pair.dataset.exName;
+            const r = await fetch(`/api/plan/workout/${table.dataset.workoutId}/exercise`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(data),
+            });
+            if (!r.ok) throw new Error('Add exercise failed');
+            const json = await r.json();
+            pair.dataset.exId = json.id;
+            delete pair.dataset.new;
+        }));
+
+        // 3. PATCH existing exercises
+        const existingPairs = [...document.querySelectorAll('tbody.exercise-pair:not([data-new])')];
+        await Promise.all(existingPairs.map(pair =>
+            fetch(`/api/plan/exercise/${pair.dataset.exId}`, {
+                method: 'PATCH',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(collectPairData(pair)),
+            })
+        ));
+
+        // 4. Reorder each group table
+        await Promise.all([...document.querySelectorAll('.sortable-table')].map(table => {
+            const pairs = [...table.querySelectorAll('tbody.exercise-pair')];
+            if (pairs.length < 2) return Promise.resolve();
+            return fetch(`/api/plan/workout/${table.dataset.workoutId}/reorder`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ exercises: pairs.map((p, i) => ({ id: parseInt(p.dataset.exId), order_index: i })) }),
+            });
+        }));
+
+        // Update view-val spans then exit edit mode
+        document.querySelectorAll('tbody.exercise-pair').forEach(updateViewVals);
+        exitEditMode();
+
+    } catch(e) {
+        alert('Save failed: ' + e.message);
+        btn.textContent = 'Done Editing';
+        btn.style.pointerEvents = '';
+    }
 }
 
-// ── Superset default toggle ──────────────────────────────────────────────────
-function patchSuperset(exId, val) {
-    fetch(`/api/plan/exercise/${exId}`, {
-        method: 'PATCH',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({is_superset_default: val}),
-    }).then(r => { if (!r.ok) alert('Save failed'); });
+// ── Delete — deferred: mark as pending, show Undo ────────────────────────────
+function markDelete(btn, exId, name) {
+    const pair = btn.closest('tbody.exercise-pair');
+    pair.classList.add('pending-delete');
+    pair.style.opacity = '.4';
+    btn.closest('td').innerHTML =
+        `<button class="btn btn-sm btn-secondary" style="font-size:.75rem;padding:.2rem .5rem;"
+                 onclick="undoDelete(this)">Undo</button>`;
 }
 
-// ── Delete ───────────────────────────────────────────────────────────────────
-function confirmDelete(btn, exId, name) {
-    const cell = btn.closest('td');
-    cell.querySelector('.delete-confirm').style.display = 'block';
-    btn.parentElement.style.display = 'none';
-}
-function cancelDelete(evt, link) {
-    evt.preventDefault();
-    const cell = link.closest('td');
-    cell.querySelector('.delete-confirm').style.display = 'none';
-    cell.querySelector('div').style.display = 'flex';
-}
-function doDelete(evt, exId, link) {
-    evt.preventDefault();
-    fetch(`/api/plan/exercise/${exId}`, { method: 'DELETE' })
-        .then(r => {
-            if (!r.ok) { alert('Delete failed'); return; }
-            link.closest('tr').remove();
-        });
+function undoDelete(btn) {
+    const pair = btn.closest('tbody.exercise-pair');
+    pair.classList.remove('pending-delete');
+    pair.style.opacity = '';
+    const exId = pair.dataset.exId;
+    const name = pair.dataset.exName || pair.querySelector('tr:first-child td:nth-child(2)').textContent.trim();
+    btn.closest('td').innerHTML =
+        `<div style="display:flex;gap:.25rem;">
+            <button class="btn btn-sm" style="font-size:.75rem;padding:.2rem .5rem;background:#e74c3c;color:#fff;border:none;border-radius:4px;"
+                    onclick="markDelete(this,'${esc(exId)}','${esc(name)}')">✕</button>
+         </div>`;
 }
 
-// ── Drag-and-drop reorder (within same type group) ──────────────────────────
+// ── Drag — deferred: no API call on drop ─────────────────────────────────────
+function initPairDrag(pair, table) {
+    if (pair._dragInited) return;
+    pair._dragInited = true;
+    const handle = pair.querySelector('.drag-col');
+    if (handle) {
+        handle.addEventListener('mousedown', () => { pair.draggable = true; });
+        handle.addEventListener('mouseup',   () => { pair.draggable = false; });
+    }
+    pair.addEventListener('dragstart', e => {
+        window._draggingPair = pair;
+        pair.style.opacity = '.4';
+        e.stopPropagation();
+    });
+    pair.addEventListener('dragend', e => {
+        pair.draggable = false;
+        pair.style.opacity = '';
+        table.querySelectorAll('tbody.exercise-pair').forEach(p => p.classList.remove('drag-over'));
+    });
+    pair.addEventListener('dragover', e => {
+        e.preventDefault();
+        e.stopPropagation();
+        const dragging = window._draggingPair;
+        if (!dragging || pair === dragging) return;
+        table.querySelectorAll('tbody.exercise-pair').forEach(p => p.classList.remove('drag-over'));
+        pair.classList.add('drag-over');
+        const all = [...table.querySelectorAll('tbody.exercise-pair')];
+        if (all.indexOf(dragging) < all.indexOf(pair)) pair.after(dragging);
+        else pair.before(dragging);
+    });
+}
+
 function initDragDrop() {
-    document.querySelectorAll('.sortable-group').forEach(tbody => {
-        let dragging = null;
-        tbody.querySelectorAll('tr').forEach(row => {
-            const handle = row.querySelector('.drag-col');
-            if (!handle) return;
-            row.draggable = true;
-            row.addEventListener('dragstart', e => { dragging = row; row.style.opacity = '.4'; });
-            row.addEventListener('dragend', e => {
-                row.style.opacity = '';
-                tbody.querySelectorAll('tr').forEach(r => r.classList.remove('drag-over'));
-                saveOrder(tbody);
-            });
-            row.addEventListener('dragover', e => {
-                e.preventDefault();
-                if (row !== dragging) {
-                    tbody.querySelectorAll('tr').forEach(r => r.classList.remove('drag-over'));
-                    row.classList.add('drag-over');
-                    const rows = [...tbody.querySelectorAll('tr')];
-                    const di = rows.indexOf(dragging), ri = rows.indexOf(row);
-                    if (di < ri) row.after(dragging); else row.before(dragging);
-                }
-            });
-        });
-    });
+    document.querySelectorAll('.sortable-table').forEach(table =>
+        table.querySelectorAll('tbody.exercise-pair').forEach(p => initPairDrag(p, table))
+    );
 }
 
-function saveOrder(tbody) {
-    const workoutId = tbody.dataset.workoutId;
-    const exercises = [...tbody.querySelectorAll('tr')].map((row, idx) => ({
-        id: parseInt(row.dataset.exId),
-        order_index: idx,
-    }));
-    fetch(`/api/plan/workout/${workoutId}/reorder`, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({exercises}),
-    }).then(r => { if (!r.ok) console.warn('Reorder failed'); });
+// ── Build a new exercise-pair in the DOM (no API call until Done Editing) ─────
+function buildNewPair(name, groupType, sets, reps, rest, notes, formCues, ssDefault, libraryId) {
+    const tempId = 'new_' + (++_tempIdCounter);
+    const tbody = document.createElement('tbody');
+    tbody.className = 'exercise-pair';
+    tbody.dataset.exId = tempId;
+    tbody.dataset.new = '1';
+    tbody.dataset.exName = name;
+    if (libraryId) tbody.dataset.libraryId = libraryId;
+    tbody.innerHTML = `
+        <tr class="exercise-row exercise-row-${groupType}">
+            <td class="edit-only drag-col" style="cursor:grab;user-select:none;" title="Drag to reorder">⠿</td>
+            <td>${esc2(name)}</td>
+            <td>
+                <span class="view-val" style="display:none;">${sets}</span>
+                <input class="edit-only inline-edit" style="width:3.5rem;" type="number" min="1" max="20" value="${sets}" data-field="sets">
+            </td>
+            <td>
+                <span class="view-val" style="display:none;">${esc2(reps)}</span>
+                <input class="edit-only inline-edit" style="width:7rem;" type="text" placeholder="e.g. 8-12" value="${esc2(reps)}" data-field="reps">
+            </td>
+            <td>
+                <span class="view-val" style="display:none;">${rest ? rest+'s' : '-'}</span>
+                <input class="edit-only inline-edit" style="width:4rem;" type="number" min="0" value="${rest||''}" placeholder="sec" data-field="rest_seconds">
+            </td>
+            <td>
+                <span class="view-val" style="display:none;">${esc2(notes)}</span>
+                <input class="edit-only inline-edit" style="width:100%;min-width:10rem;" type="text" value="${esc2(notes)}" data-field="notes">
+            </td>
+            <td class="edit-only superset-col">
+                <label style="cursor:pointer;font-size:.85rem;">
+                    <input type="checkbox" class="superset-default-cb" ${ssDefault?'checked':''}> Yes
+                </label>
+            </td>
+            <td class="edit-only action-col">
+                <div style="display:flex;gap:.25rem;">
+                    <button class="btn btn-sm" style="font-size:.75rem;padding:.2rem .5rem;background:#e74c3c;color:#fff;border:none;border-radius:4px;"
+                            onclick="markDelete(this,'${esc(tempId)}','${esc(name)}')">✕</button>
+                </div>
+            </td>
+        </tr>
+        <tr class="form-cues-row">
+            <td class="edit-only drag-col"></td>
+            <td colspan="5" style="padding-top:0;padding-bottom:.5rem;">
+                <div class="view-val" style="display:none;font-size:.82rem;color:#666;font-style:italic;">${formCues ? 'Form cues: '+esc2(formCues) : ''}</div>
+                <textarea class="edit-only inline-edit" style="width:100%;font-size:.85rem;min-height:3rem;resize:vertical;"
+                          placeholder="Form cues (optional)" data-field="form_cues">${esc2(formCues)}</textarea>
+            </td>
+            <td class="edit-only superset-col"></td>
+            <td class="edit-only action-col"></td>
+        </tr>`;
+    return tbody;
 }
 
-// ── Add exercise ─────────────────────────────────────────────────────────────
-function toggleAddPanel(btn, workoutId, groupType) {
+// ── Add exercise panel ────────────────────────────────────────────────────────
+function toggleAddPanel(btn) {
     const form = btn.nextElementSibling;
     const open = form.style.display !== 'none';
     form.style.display = open ? 'none' : 'block';
     if (!open) loadLibrary(form);
 }
 
-function closeAddPanel(btn) {
-    btn.closest('.add-ex-form').style.display = 'none';
-}
+function closeAddPanel(btn) { btn.closest('.add-ex-form').style.display = 'none'; }
 
 function switchTab(btn, tab) {
     const panel = btn.closest('.add-ex-form');
     panel.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     panel.querySelector('.tab-search').style.display = tab === 'search' ? '' : 'none';
-    panel.querySelector('.tab-new').style.display = tab === 'new' ? '' : 'none';
+    panel.querySelector('.tab-new').style.display    = tab === 'new'    ? '' : 'none';
 }
 
 function loadLibrary(form) {
-    if (libraryCache) { renderLib(form, libraryCache); return; }
-    fetch('/api/plan/exercise-library')
-        .then(r => r.json())
-        .then(data => { libraryCache = data; renderLib(form, data); });
-}
-
-function renderLib(form, data) {
-    const container = form.querySelector('.lib-results');
-    container.innerHTML = data.slice(0, 80).map(e =>
-        `<div class="lib-result-item" data-id="${e.id ?? ''}" data-name="${e.name}"
-              onclick="selectLib(this)">${e.name}${e.muscle_group ? ' <span style="color:#aaa;font-size:.8rem;">'+e.muscle_group+'</span>' : ''}</div>`
-    ).join('');
+    if (libraryCache) { renderLibItems(form.querySelector('.lib-results'), libraryCache); return; }
+    fetch('/api/plan/exercise-library').then(r => r.json()).then(data => {
+        libraryCache = data;
+        renderLibItems(form.querySelector('.lib-results'), data);
+    });
 }
 
 function filterLib(input) {
-    const form = input.closest('.add-ex-form');
     const q = input.value.toLowerCase();
-    const filtered = (libraryCache || []).filter(e => e.name.toLowerCase().includes(q));
-    renderLibItems(form.querySelector('.lib-results'), filtered);
+    renderLibItems(input.closest('.add-ex-form').querySelector('.lib-results'),
+        (libraryCache||[]).filter(e => e.name.toLowerCase().includes(q)));
 }
 
 function renderLibItems(container, data) {
-    container.innerHTML = data.slice(0, 80).map(e =>
-        `<div class="lib-result-item" data-id="${e.id ?? ''}" data-name="${e.name}"
-              onclick="selectLib(this)">${e.name}</div>`
+    container.innerHTML = data.slice(0,80).map(e =>
+        `<div class="lib-result-item" data-id="${e.id??''}" data-name="${esc2(e.name)}" onclick="selectLib(this)">
+            ${esc2(e.name)}${e.muscle_group ? ' <span style="color:#aaa;font-size:.8rem;">'+esc2(e.muscle_group)+'</span>' : ''}
+         </div>`
     ).join('');
 }
 
 function selectLib(el) {
-    const form = el.closest('.add-ex-form');
-    el.closest('.lib-results').querySelectorAll('.lib-result-item')
-      .forEach(i => i.classList.remove('selected'));
+    el.closest('.lib-results').querySelectorAll('.lib-result-item').forEach(i => i.classList.remove('selected'));
     el.classList.add('selected');
+    const form = el.closest('.add-ex-form');
     form.querySelector('.lib-selected').textContent = '✓ ' + el.dataset.name;
-    form.querySelector('.lib-selected-id').value = el.dataset.id;
+    form.querySelector('.lib-selected-id').value   = el.dataset.id;
     form.querySelector('.lib-selected-name').value = el.dataset.name;
 }
 
-function doAddExercise(btn, workoutId, groupType) {
+function doAddExercise(btn, groupType) {
     const form = btn.closest('.add-ex-form');
     const isLibTab = form.querySelector('.tab-search').style.display !== 'none';
-    const libraryId = isLibTab ? (form.querySelector('.lib-selected-id').value || null) : null;
+    const libraryId  = isLibTab ? (form.querySelector('.lib-selected-id').value || null) : null;
     const exerciseName = isLibTab
         ? form.querySelector('.lib-selected-name').value
         : form.querySelector('.new-ex-name').value.trim();
 
-    if (!exerciseName && !libraryId) { alert('Select or enter an exercise name.'); return; }
+    if (!exerciseName) { alert('Select or enter an exercise name.'); return; }
 
-    const payload = {
-        exercise_type: groupType,
-        sets: parseInt(form.querySelector('.add-sets').value) || 3,
-        reps: form.querySelector('.add-reps').value || '10',
-        rest_seconds: parseInt(form.querySelector('.add-rest').value) || null,
-        notes: form.querySelector('.add-notes').value,
-        is_superset_default: form.querySelector('.add-superset').checked,
-    };
-    if (libraryId) payload.library_id = parseInt(libraryId);
-    else payload.exercise_name = exerciseName;
+    const sets     = parseInt(form.querySelector('.add-sets').value) || 3;
+    const reps     = form.querySelector('.add-reps').value || '10';
+    const rest     = parseInt(form.querySelector('.add-rest').value) || null;
+    const notes    = form.querySelector('.add-notes').value;
+    const formCues = form.querySelector('.add-form-cues').value;
+    const ssDefault = form.querySelector('.add-superset').checked;
 
-    fetch(`/api/plan/workout/${workoutId}/exercise`, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(payload),
-    }).then(r => {
-        if (!r.ok) { alert('Add failed'); return; }
-        // Reload page to show new exercise in correct position
-        location.reload();
-    });
+    const pair = buildNewPair(exerciseName, groupType, sets, reps, rest, notes, formCues, ssDefault, libraryId);
+    const table = form.closest('.plan-group').querySelector('.sortable-table');
+    table.appendChild(pair);
+    initPairDrag(pair, table);
+
+    // Reset form
+    form.style.display = 'none';
+    ['lib-selected','lib-selected-id','lib-selected-name','new-ex-name','add-notes','add-form-cues']
+        .forEach(c => { const el = form.querySelector('.'+c); if (el) el.value = ''; });
+    const libSearch = form.querySelector('.lib-search');
+    if (libSearch) libSearch.value = '';
+    form.querySelector('.add-sets').value = '3';
+    form.querySelector('.add-reps').value = '10';
+    form.querySelector('.add-rest').value = '60';
+    form.querySelector('.add-superset').checked = false;
+    const libResults = form.querySelector('.lib-results');
+    if (libResults) libResults.innerHTML = '';
+    form.querySelector('.lib-results') && renderLibItems(form.querySelector('.lib-results'), libraryCache||[]);
 }
 </script>
 {% endblock %}

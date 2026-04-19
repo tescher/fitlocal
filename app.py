@@ -1000,7 +1000,7 @@ def _build_workout_context(profile, planned_workout, active_plan, *, resume_sess
     """Build the template context dict for rendering workout_today.html."""
     all_exercises = PlannedExercise.query.filter_by(
         planned_workout_id=planned_workout.id
-    ).all()
+    ).order_by(PlannedExercise.order_index).all()
 
     warmup = [e for e in all_exercises if e.exercise_type == "warmup"]
     main = [e for e in all_exercises if e.exercise_type == "main"]
@@ -1565,6 +1565,7 @@ def api_add_exercise(workout_id):
         reps_prescribed=str(data.get("reps", "10")),
         rest_seconds=int(data["rest_seconds"]) if data.get("rest_seconds") is not None else None,
         notes=data.get("notes", ""),
+        form_cues=data.get("form_cues", ""),
         is_superset_default=bool(data.get("is_superset_default", False)),
         order_index=max_order + 1,
     )

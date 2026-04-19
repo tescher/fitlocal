@@ -1293,6 +1293,69 @@ if history_only:
 else:
     check("Library endpoint includes history-only exercises (skipped — all in library)", True)
 
+print("\n--- Plan Edit: reordered exercises appear in new order on plan and workout pages ---")
+
+# Get main exercises for the first workout and record their current order
+with app.app_context():
+    from app import get_active_plan as _gap_ord
+    profile = UserProfile.query.first()
+    active_ord = _gap_ord(profile.id)
+    pw_ord = PlannedWorkout.query.filter_by(plan_id=active_ord.id).first()
+    mains_ord = (PlannedExercise.query
+                 .filter_by(planned_workout_id=pw_ord.id, exercise_type="main")
+                 .order_by(PlannedExercise.order_index)
+                 .all())
+    pw_ord_id = pw_ord.id
+
+check("Reorder test: at least 2 main exercises exist", len(mains_ord) >= 2)
+
+if len(mains_ord) >= 2:
+    # Record original first and last names
+    orig_first_name = mains_ord[0].exercise_name
+    orig_last_name  = mains_ord[-1].exercise_name
+
+    # Reverse the order via API
+    reversed_payload = [{"id": ex.id, "order_index": i}
+                        for i, ex in enumerate(reversed(mains_ord))]
+    r = client.post(f"/api/plan/workout/{pw_ord_id}/reorder",
+                    json={"exercises": reversed_payload},
+                    content_type="application/json")
+    check("Reorder API returns 200", r.status_code == 200)
+
+    # Verify DB order_index updated correctly
+    with app.app_context():
+        new_first = (PlannedExercise.query
+                     .filter_by(planned_workout_id=pw_ord_id, exercise_type="main")
+                     .order_by(PlannedExercise.order_index)
+                     .first())
+        check(f"DB: original last exercise ('{orig_last_name}') is now first by order_index",
+              new_first.exercise_name == orig_last_name)
+
+    # Verify /plan page renders exercises in updated order
+    r = client.get("/plan")
+    html_plan = r.data.decode()
+    pos_first_in_plan = html_plan.find(orig_first_name)
+    pos_last_in_plan  = html_plan.find(orig_last_name)
+    check(f"Plan page: '{orig_last_name}' now appears before '{orig_first_name}'",
+          0 <= pos_last_in_plan < pos_first_in_plan)
+
+    # Verify /workout/today renders exercises in updated order
+    r = client.get("/workout/today", follow_redirects=False)
+    if r.status_code == 200:
+        html_today_ord = r.data.decode()
+        pos_first_today = html_today_ord.find(orig_first_name)
+        pos_last_today  = html_today_ord.find(orig_last_name)
+        check(f"Workout today: '{orig_last_name}' now appears before '{orig_first_name}'",
+              0 <= pos_last_today < pos_first_today)
+    else:
+        check("Workout today order (rest day — skipped)", True)
+
+    # Restore original order
+    restore_payload = [{"id": ex.id, "order_index": i} for i, ex in enumerate(mains_ord)]
+    client.post(f"/api/plan/workout/{pw_ord_id}/reorder",
+                json={"exercises": restore_payload},
+                content_type="application/json")
+
 print("\n--- Plan Edit: workout_today respects is_superset_default ---")
 
 # Mark an exercise as superset default, then verify workout_today pre-activates it
