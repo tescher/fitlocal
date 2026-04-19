@@ -1464,6 +1464,8 @@ def api_patch_exercise(exercise_id):
         ex.notes = str(data["notes"])
     if "is_superset_default" in data:
         ex.is_superset_default = bool(data["is_superset_default"])
+    if "form_cues" in data:
+        ex.form_cues = str(data["form_cues"])
 
     db.session.commit()
     return jsonify({"id": ex.id, "ok": True})

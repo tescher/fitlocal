@@ -5,7 +5,7 @@
     <h1>Current Plan</h1>
     <div style="display:flex;gap:.5rem;align-items:stretch;">
         {% if plan %}
-        <button id="editToggle" class="btn btn-secondary" style="margin:0;" onclick="toggleEditMode()">Edit Plan</button>
+        <a id="editToggle" class="btn btn-secondary" href="#" onclick="toggleEditMode();return false;">Edit Plan</a>
         {% endif %}
         <a href="{{ url_for('plan_history') }}" class="btn btn-secondary">Past Plans</a>
     </div>
@@ -53,7 +53,7 @@
                     <th class="edit-only drag-col" style="display:none;width:24px;"></th>
                     <th>Exercise</th>
                     <th>Sets</th>
-                    <th>Reps</th>
+                    <th>Reps <span style="font-weight:400;font-size:.75rem;color:#aaa;">(e.g. 8-12, 30s)</span></th>
                     <th>Rest</th>
                     <th>Notes</th>
                     <th class="edit-only superset-col" style="display:none;">Superset</th>
@@ -72,8 +72,8 @@
                     </td>
                     <td>
                         <span class="view-val">{{ ex.reps_prescribed }}</span>
-                        <input class="edit-only inline-edit" style="display:none;width:5rem;" type="text"
-                               value="{{ ex.reps_prescribed }}" data-field="reps">
+                        <input class="edit-only inline-edit" style="display:none;width:7rem;" type="text"
+                               placeholder="e.g. 8-12" value="{{ ex.reps_prescribed }}" data-field="reps">
                     </td>
                     <td>
                         <span class="view-val">{{ ex.rest_seconds or '-' }}{% if ex.rest_seconds %}s{% endif %}</span>
@@ -82,7 +82,7 @@
                     </td>
                     <td>
                         <span class="view-val">{{ ex.notes or '' }}</span>
-                        <input class="edit-only inline-edit" style="display:none;width:8rem;" type="text"
+                        <input class="edit-only inline-edit" style="display:none;width:100%;min-width:10rem;" type="text"
                                value="{{ ex.notes or '' }}" data-field="notes">
                     </td>
                     <td class="edit-only superset-col" style="display:none;">
@@ -106,6 +106,21 @@
                             <a href="#" onclick="cancelDelete(event,this)">No</a>
                         </div>
                     </td>
+                </tr>
+                <tr class="form-cues-row exercise-row-{{ ex.exercise_type }}"
+                    data-ex-id="{{ ex.id }}">
+                    <td class="edit-only drag-col" style="display:none;"></td>
+                    <td colspan="5" style="padding-top:0;padding-bottom:.5rem;">
+                        {% if ex.form_cues %}
+                        <div class="view-val" style="font-size:.82rem;color:#666;font-style:italic;">
+                            Form cues: {{ ex.form_cues }}
+                        </div>
+                        {% endif %}
+                        <textarea class="edit-only inline-edit" style="display:none;width:100%;font-size:.85rem;min-height:3rem;resize:vertical;"
+                                  placeholder="Form cues (optional)" data-field="form_cues">{{ ex.form_cues or '' }}</textarea>
+                    </td>
+                    <td class="edit-only superset-col" style="display:none;"></td>
+                    <td class="edit-only action-col" style="display:none;"></td>
                 </tr>
                 {% endfor %}
             </tbody>
@@ -206,8 +221,11 @@ function toggleEditMode() {
 // ── Inline save ──────────────────────────────────────────────────────────────
 function saveRow(btn, exId) {
     const row = btn.closest('tr');
+    const cuesRow = row.nextElementSibling;
     const data = {};
-    row.querySelectorAll('.inline-edit').forEach(inp => {
+    const allFields = [...row.querySelectorAll('.inline-edit'),
+                       ...(cuesRow ? cuesRow.querySelectorAll('.inline-edit') : [])];
+    allFields.forEach(inp => {
         const field = inp.dataset.field;
         let val = inp.value;
         if (field === 'sets') val = parseInt(val) || 1;
