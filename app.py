@@ -131,6 +131,11 @@ with app.app_context():
                     "ALTER TABLE workout_session ADD COLUMN superset_exercises TEXT"
                 ))
                 conn.commit()
+            if "phase_name" not in ws_cols:
+                conn.execute(text(
+                    "ALTER TABLE workout_session ADD COLUMN phase_name VARCHAR(100)"
+                ))
+                conn.commit()
 
         # Add order_index and is_superset_default to planned_exercise if missing
         if insp.has_table("planned_exercise"):
