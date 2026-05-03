@@ -107,6 +107,7 @@ class WorkoutSession(db.Model):
     status = db.Column(db.String(20), default='completed')
     elapsed_seconds = db.Column(db.Integer, default=0)
     superset_exercises = db.Column(db.Text, nullable=True)  # JSON list of exercise names
+    phase_name = db.Column(db.String(100), nullable=True)
 
     logged_sets = db.relationship("LoggedSet", backref="session", cascade="all, delete-orphan")
     planned_workout = db.relationship("PlannedWorkout")

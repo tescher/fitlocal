@@ -71,6 +71,10 @@ def migrate():
         cursor.execute("ALTER TABLE workout_session ADD COLUMN superset_exercises TEXT")
         print("  Added workout_session.superset_exercises")
 
+    if not column_exists("workout_session", "phase_name"):
+        cursor.execute("ALTER TABLE workout_session ADD COLUMN phase_name VARCHAR(100)")
+        print("  Added workout_session.phase_name")
+
     if not column_exists("logged_set", "weight_b"):
         cursor.execute("ALTER TABLE logged_set ADD COLUMN weight_b FLOAT")
         print("  Added logged_set.weight_b")

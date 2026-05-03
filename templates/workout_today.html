@@ -16,6 +16,16 @@
     <noscript><button type="submit" class="btn btn-secondary">Switch</button></noscript>
 </form>
 
+{% if plan_phases %}
+<div class="workout-switcher">
+    <select name="phase_name" form="workoutForm">
+        {% for phase in plan_phases %}
+        <option value="{{ phase }}" {{ 'selected' if phase == selected_phase_name else '' }}>{{ phase }}</option>
+        {% endfor %}
+    </select>
+</div>
+{% endif %}
+
 <!-- Timer Card (sticky) -->
 <div class="timer-card" id="timerCard">
     <div class="timer-row">

@@ -836,6 +836,107 @@ tr:hover {
 .legend-dot.today { border: 2px solid var(--primary); background: white; }
 .legend-dot.planned { background: #eff6ff; border: 1px solid #bfdbfe; }
 
+/* ===== Month Calendar (Dashboard) ===== */
+.month-calendar {
+    margin-bottom: 1.5rem;
+}
+
+.month-cal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.75rem;
+    font-size: 1rem;
+}
+
+.month-cal-nav {
+    font-size: 1.5rem;
+    line-height: 1;
+    color: var(--primary);
+    text-decoration: none;
+    padding: 0 0.5rem;
+    font-weight: 700;
+}
+
+.month-cal-nav:hover { opacity: 0.7; }
+
+.month-cal-grid {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 2px;
+}
+
+.month-cal-dow {
+    text-align: center;
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    padding: 0.25rem 0;
+}
+
+.month-cal-day {
+    min-height: 52px;
+    padding: 0.2rem 0.25rem;
+    border-radius: 6px;
+    background: #f8fafc;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+.month-cal-day.empty { background: transparent; }
+
+.month-cal-day.today {
+    background: #eff6ff;
+    outline: 2px solid var(--primary);
+    outline-offset: -2px;
+}
+
+.month-cal-num {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    line-height: 1.2;
+}
+
+.month-cal-dots {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    gap: 2px;
+}
+
+.phase-dot {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    text-decoration: none;
+    transition: transform 0.1s;
+}
+
+.phase-dot:hover { transform: scale(1.4); }
+
+.phase-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem 1.25rem;
+    margin-top: 0.75rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--border);
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+
+.phase-legend .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+}
+
 /* ===== Mini Calendar (Dashboard) ===== */
 .mini-calendar {
     display: flex;

@@ -537,6 +537,71 @@ def get_mini_calendar(user_id):
     return days
 
 
+PHASE_COLORS = [
+    "#4CAF50", "#2196F3", "#FF9800", "#9C27B0",
+    "#F44336", "#00BCD4", "#FF5722", "#607D8B",
+]
+NO_PHASE_COLOR = "#555555"
+
+
+def build_phase_color_map(active_plan):
+    """Return {phase_name: color} from the plan's phases list."""
+    if not active_plan:
+        return {}
+    try:
+        plan_data = json.loads(active_plan.plan_json or "{}")
+        phases = [p.get("phase_name", "") for p in plan_data.get("phases", []) if p.get("phase_name")]
+    except Exception:
+        phases = []
+    return {name: PHASE_COLORS[i % len(PHASE_COLORS)] for i, name in enumerate(phases)}
+
+
+def build_month_calendar(profile_id, year, month, phase_color_map):
+    """Build a Sun-Sat calendar grid for the given month.
+
+    Each day is None (padding) or a dict with keys:
+        day, date, is_today, sessions=[{id, phase_name, color}]
+    """
+    today = date.today()
+    first_day = date(year, month, 1)
+    last_day = date(year, month + 1, 1) - timedelta(days=1) if month < 12 else date(year + 1, 1, 1) - timedelta(days=1)
+
+    sessions = WorkoutSession.query.filter(
+        WorkoutSession.user_id == profile_id,
+        WorkoutSession.date >= first_day,
+        WorkoutSession.date <= last_day,
+        WorkoutSession.status == SESSION_STATUS_COMPLETED,
+    ).order_by(WorkoutSession.date, WorkoutSession.id).all()
+
+    # Group sessions by date
+    sessions_by_date = {}
+    for s in sessions:
+        sessions_by_date.setdefault(s.date, []).append({
+            "id": s.id,
+            "phase_name": s.phase_name,
+            "color": phase_color_map.get(s.phase_name, NO_PHASE_COLOR) if s.phase_name else NO_PHASE_COLOR,
+        })
+
+    # Build Sun-Sat grid (firstweekday=6 means Sunday)
+    cal = cal_module.Calendar(firstweekday=6)
+    weeks = []
+    for week in cal.monthdayscalendar(year, month):
+        week_data = []
+        for day_num in week:
+            if day_num == 0:
+                week_data.append(None)
+            else:
+                d = date(year, month, day_num)
+                week_data.append({
+                    "day": day_num,
+                    "date": d,
+                    "is_today": d == today,
+                    "sessions": sessions_by_date.get(d, []),
+                })
+        weeks.append(week_data)
+    return weeks
+
+
 @app.route("/")
 @login_required
 def index():
@@ -577,6 +642,21 @@ def index():
     paused_session = get_paused_session(profile.id)
     plan_position = get_plan_position(profile.id, active_plan) if active_plan else None
 
+    # Monthly calendar
+    cal_year = request.args.get("cal_year", today.year, type=int)
+    cal_month = request.args.get("cal_month", today.month, type=int)
+    phase_color_map = build_phase_color_map(active_plan)
+    cal_weeks = build_month_calendar(profile.id, cal_year, cal_month, phase_color_map)
+    cal_month_name = cal_module.month_name[cal_month]
+    if cal_month == 1:
+        cal_prev_year, cal_prev_month = cal_year - 1, 12
+    else:
+        cal_prev_year, cal_prev_month = cal_year, cal_month - 1
+    if cal_month == 12:
+        cal_next_year, cal_next_month = cal_year + 1, 1
+    else:
+        cal_next_year, cal_next_month = cal_year, cal_month + 1
+
     return render_template(
         "index.html",
         profile=profile,
@@ -588,6 +668,15 @@ def index():
         mini_cal=mini_cal,
         paused_session=paused_session,
         plan_position=plan_position,
+        cal_weeks=cal_weeks,
+        cal_year=cal_year,
+        cal_month=cal_month,
+        cal_month_name=cal_month_name,
+        cal_prev_year=cal_prev_year,
+        cal_prev_month=cal_prev_month,
+        cal_next_year=cal_next_year,
+        cal_next_month=cal_next_month,
+        phase_color_map=phase_color_map,
     )
 
 
@@ -956,6 +1045,7 @@ def _upsert_workout_session(profile, status):
     elapsed_seconds = request.form.get("session_elapsed_seconds", 0, type=int)
     resume_session_id = request.form.get("resume_session_id", type=int)
     superset_exercises = json.dumps(request.form.getlist("superset_exercise"))
+    phase_name = request.form.get("phase_name") or None
 
     end_time = datetime.now(timezone.utc)
     start_time = end_time - timedelta(seconds=elapsed_seconds)
@@ -972,6 +1062,7 @@ def _upsert_workout_session(profile, status):
         workout_session.session_notes = session_notes
         workout_session.elapsed_seconds = elapsed_seconds
         workout_session.superset_exercises = superset_exercises
+        workout_session.phase_name = phase_name
         if planned_workout_id:
             workout_session.planned_workout_id = int(planned_workout_id)
     else:
@@ -990,6 +1081,7 @@ def _upsert_workout_session(profile, status):
             status=status,
             elapsed_seconds=elapsed_seconds,
             superset_exercises=superset_exercises,
+            phase_name=phase_name,
         )
         db.session.add(workout_session)
     db.session.flush()
@@ -1046,11 +1138,25 @@ def _build_workout_context(profile, planned_workout, active_plan, *, resume_sess
         for name, sessions in recent_perf.items()
     })
 
+    # Phase list from plan_json; current phase as default selection
+    plan_phases = []
+    current_phase_name = None
+    if active_plan:
+        try:
+            plan_data = json.loads(active_plan.plan_json or "{}")
+            plan_phases = [p.get("phase_name", "") for p in plan_data.get("phases", []) if p.get("phase_name")]
+        except Exception:
+            plan_phases = []
+        phase_info = get_plan_position(profile.id, active_plan)
+        if phase_info:
+            current_phase_name = phase_info.get("phase_name")
+
     resume_data = None
     resume_session_id = None
     resume_elapsed = 0
     overall_feeling = None
     session_notes = ''
+    selected_phase_name = current_phase_name
     # Seed superset defaults from the plan; resume will override if applicable
     superset_exercises = [
         ex.exercise_name for ex in all_exercises if ex.is_superset_default
@@ -1062,6 +1168,8 @@ def _build_workout_context(profile, planned_workout, active_plan, *, resume_sess
         overall_feeling = resume_session.overall_feeling
         session_notes = resume_session.session_notes or ''
         superset_exercises = json.loads(resume_session.superset_exercises or "[]")
+        if resume_session.phase_name:
+            selected_phase_name = resume_session.phase_name
         resume_data = {}
         for ls in resume_session.logged_sets:
             if ls.exercise_name not in resume_data:
@@ -1098,6 +1206,8 @@ def _build_workout_context(profile, planned_workout, active_plan, *, resume_sess
         overall_feeling=overall_feeling,
         session_notes=session_notes,
         superset_exercises=superset_exercises,
+        plan_phases=plan_phases,
+        selected_phase_name=selected_phase_name,
     )
 
 

@@ -7,6 +7,9 @@
 {% endif %}
 
 <div class="card mb-2">
+    {% if session_obj.phase_name %}
+        <p><strong>Phase:</strong> {{ session_obj.phase_name }}</p>
+    {% endif %}
     {% if session_obj.overall_feeling %}
         <p><strong>Feeling:</strong> {{ session_obj.overall_feeling }} / 5</p>
     {% endif %}

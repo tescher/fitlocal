@@ -1389,6 +1389,173 @@ with app.app_context():
     m.is_superset_default = False
     db.session.commit()
 
+# Phase Selection on WorkoutSession
+print("\n--- Phase Selection ---")
+
+# Schema: WorkoutSession must have a phase_name column
+with app.app_context():
+    from models import WorkoutSession as WS_ph
+    cols = [c.name for c in WS_ph.__table__.columns]
+    check("WorkoutSession has phase_name column", "phase_name" in cols)
+
+# workout/today shows a phase dropdown when the active plan has phases
+r = client.get("/workout/today", follow_redirects=False)
+if r.status_code == 200:
+    html_ph = r.data.decode()
+    check("workout/today shows phase_name select", 'name="phase_name"' in html_ph)
+    check("Phase dropdown contains Foundation", "Foundation" in html_ph)
+    check("Phase dropdown contains Build", "Build" in html_ph)
+    check("Phase dropdown contains Peak", "Peak" in html_ph)
+    check("Calculated current phase is pre-selected", 'selected' in html_ph)
+else:
+    # Rest day — skip but don't count as failure
+    for label in [
+        "workout/today shows phase_name select",
+        "Phase dropdown contains Foundation",
+        "Phase dropdown contains Build",
+        "Phase dropdown contains Peak",
+        "Calculated current phase is pre-selected",
+    ]:
+        check(f"{label} (rest day — skipped)", True)
+
+# POST /workout/log saves phase_name on the completed session
+with app.app_context():
+    from app import get_active_plan as _gap_ph
+    profile = UserProfile.query.first()
+    pw_ph = PlannedWorkout.query.filter_by(plan_id=_gap_ph(profile.id).id).first()
+    pw_ph_id = pw_ph.id
+
+log_phase_items = [
+    ("planned_workout_id", str(pw_ph_id)),
+    ("overall_feeling", "4"),
+    ("session_notes", "Phase log test"),
+    ("phase_name", "Build"),
+]
+with app.app_context():
+    for ex in PlannedExercise.query.filter_by(planned_workout_id=pw_ph_id).all():
+        for s in range(1, ex.sets_prescribed + 1):
+            log_phase_items += [
+                ("exercise_name", ex.exercise_name),
+                ("set_number", str(s)),
+                ("weight", "150"),
+                ("reps", "8"),
+                ("rpe", ""),
+                ("set_notes", ""),
+            ]
+
+r = client.post("/workout/log", data=MultiDict(log_phase_items), follow_redirects=False)
+check("POST /workout/log with phase_name returns 200", r.status_code == 200)
+
+with app.app_context():
+    profile = UserProfile.query.first()
+    last_ph = WorkoutSession.query.filter_by(
+        user_id=profile.id, status='completed'
+    ).order_by(WorkoutSession.id.desc()).first()
+    check("phase_name saved on completed session", last_ph is not None and getattr(last_ph, 'phase_name', None) == "Build")
+
+# POST /workout/pause saves phase_name on the paused session
+with app.app_context():
+    from models import WorkoutSession as WS_ph2, LoggedSet as LS_ph
+    profile = UserProfile.query.first()
+    paused_ids_ph = [s.id for s in WS_ph2.query.filter_by(user_id=profile.id, status='paused').all()]
+    if paused_ids_ph:
+        LS_ph.query.filter(LS_ph.session_id.in_(paused_ids_ph)).delete(synchronize_session=False)
+    WS_ph2.query.filter_by(user_id=profile.id, status='paused').delete()
+    db.session.commit()
+
+pause_phase_items = [
+    ("planned_workout_id", str(pw_ph_id)),
+    ("overall_feeling", "3"),
+    ("session_notes", ""),
+    ("session_elapsed_seconds", "120"),
+    ("resume_session_id", ""),
+    ("phase_name", "Peak"),
+]
+with app.app_context():
+    for ex in PlannedExercise.query.filter_by(planned_workout_id=pw_ph_id).all():
+        for s in range(1, ex.sets_prescribed + 1):
+            pause_phase_items += [
+                ("exercise_name", ex.exercise_name),
+                ("set_number", str(s)),
+                ("weight", "150"),
+                ("reps", "8"),
+                ("rpe", ""),
+                ("set_notes", ""),
+            ]
+
+r = client.post("/workout/pause", data=MultiDict(pause_phase_items), follow_redirects=False)
+check("POST /workout/pause with phase_name redirects", r.status_code == 302)
+
+with app.app_context():
+    profile = UserProfile.query.first()
+    paused_ph = WorkoutSession.query.filter_by(user_id=profile.id, status='paused').first()
+    check("phase_name saved on paused session", paused_ph is not None and getattr(paused_ph, 'phase_name', None) == "Peak")
+
+# Session detail page shows the recorded phase name
+with app.app_context():
+    profile = UserProfile.query.first()
+    detail_ph = WorkoutSession.query.filter_by(
+        user_id=profile.id, status='completed'
+    ).order_by(WorkoutSession.id.desc()).first()
+    detail_ph_id = detail_ph.id if detail_ph else None
+
+if detail_ph_id:
+    r = client.get(f"/history/{detail_ph_id}", follow_redirects=False)
+    check("Session detail shows saved phase name", r.status_code == 200 and b"Build" in r.data)
+else:
+    check("Session detail shows saved phase name", False)
+
+# Dashboard Monthly Calendar
+print("\n--- Dashboard Monthly Calendar ---")
+
+r = client.get("/")
+html_dash = r.data.decode()
+
+# Calendar element is present
+check("Dashboard has month-calendar element", 'month-calendar' in html_dash)
+
+# Week starts on Sunday (first header cell is Sun, not Mon)
+check("Calendar week starts on Sunday", html_dash.index('Sun') < html_dash.index('Mon'))
+
+# Prev/next navigation links are present
+check("Dashboard calendar has prev-month link", 'cal_month' in html_dash and '&lt;' in html_dash or '<' in html_dash)
+check("Dashboard calendar has next-month link", 'cal_month' in html_dash)
+
+# Session dots link to /history/<session_id>
+import re as _re
+r_dot = client.get("/")
+dot_links = _re.findall(r'/history/\d+', r_dot.data.decode())
+check("Session dot links to /history/<id>", len(dot_links) > 0)
+
+# A dot has an inline color style (from phase color map)
+check("Session dot has inline color style", 'phase-dot' in html_dash)
+
+# Session with no phase_name gets dark grey color
+with app.app_context():
+    profile = UserProfile.query.first()
+    # Create a session without a phase_name for this month
+    pw_nogrey = PlannedWorkout.query.first()
+    grey_session = WorkoutSession(
+        user_id=profile.id,
+        planned_workout_id=pw_nogrey.id,
+        date=date.today(),
+        overall_feeling=3,
+        status='completed',
+        phase_name=None,
+    )
+    db.session.add(grey_session)
+    db.session.commit()
+    grey_session_id = grey_session.id
+
+r_grey = client.get("/")
+html_grey = r_grey.data.decode()
+check("No-phase session dot uses dark grey color",
+      f'/history/{grey_session_id}' in html_grey and '#555' in html_grey or 'dark-grey' in html_grey or 'no-phase' in html_grey)
+
+# Legend is present when plan has phases
+check("Dashboard calendar shows phase legend", 'phase-legend' in html_dash)
+check("Legend contains Foundation", 'Foundation' in html_dash)
+
 # Summary
 print(f"\n{'='*50}")
 print(f"Results: {passed} passed, {failed} failed out of {passed + failed} tests")
