@@ -14,6 +14,9 @@
                     {% if s.planned_workout %}
                         &mdash; {{ s.planned_workout.workout_name }}
                     {% endif %}
+                    {% if s.phase_name %}
+                        <span class="text-muted">&middot; {{ s.phase_name }}</span>
+                    {% endif %}
                     {% if s.status == 'paused' %}
                         <span class="badge badge-warning">Paused</span>
                     {% endif %}
