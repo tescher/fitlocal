@@ -164,6 +164,20 @@ with app.app_context():
 
     db.create_all()
 
+    # next_workout_note table (added: next-workout notes feature)
+    with db.engine.connect() as _conn:
+        from sqlalchemy import inspect as _insp2, text as _text2
+        if not _insp2(db.engine).has_table("next_workout_note"):
+            _conn.execute(_text2("""
+                CREATE TABLE next_workout_note (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL REFERENCES user_profile(id),
+                    workout_name VARCHAR(200),
+                    note TEXT NOT NULL
+                )
+            """))
+            _conn.commit()
+
     # One-time migration: link an existing UserProfile to a new Account
     # so legacy data is not lost when auth is first enabled.
     if Account.query.count() == 0:

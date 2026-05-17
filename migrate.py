@@ -151,6 +151,17 @@ def migrate():
         """)
         print("  Created exercise_library table")
 
+    if not table_exists("next_workout_note"):
+        cursor.execute("""
+            CREATE TABLE next_workout_note (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL REFERENCES user_profile(id),
+                workout_name VARCHAR(200),
+                note TEXT NOT NULL
+            )
+        """)
+        print("  Created next_workout_note table")
+
     # --- Exercise library FK columns ---
     if not column_exists("planned_exercise", "exercise_library_id"):
         cursor.execute(
