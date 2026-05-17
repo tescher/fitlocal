@@ -58,7 +58,7 @@
                 <a href="{{ url_for('session_detail', session_id=s.id) }}"
                    class="phase-dot"
                    style="background:{{ s.color }};"
-                   title="{{ s.phase_name or 'No phase' }}"></a>
+                   title="{% if s.workout_name and s.phase_name %}{{ s.workout_name }} &middot; {{ s.phase_name }}{% elif s.workout_name %}{{ s.workout_name }}{% elif s.phase_name %}{{ s.phase_name }}{% else %}No phase{% endif %}"></a>
                 {% endfor %}
             </div>
         </div>
