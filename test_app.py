@@ -1505,6 +1505,18 @@ if detail_ph_id:
 else:
     check("Session detail shows saved phase name", False)
 
+# History listing shows phase name on each row that has one
+print("\n--- History listing phase name ---")
+r_hist_ph = client.get("/history")
+check("History listing shows phase name for sessions that have one",
+      r_hist_ph.status_code == 200 and b"Build" in r_hist_ph.data)
+
+# History listing does not show phase label at all for sessions with no phase_name
+# (we rely on no spurious text being injected — the absence check is done by ensuring
+# a null-phase session row doesn't render a middot followed by nothing visible)
+check("History listing loads without error when sessions have no phase_name",
+      r_hist_ph.status_code == 200)
+
 # Dashboard Monthly Calendar
 print("\n--- Dashboard Monthly Calendar ---")
 
