@@ -37,7 +37,8 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 
 from models import (  # noqa: E402
     db, Account, UserProfile, WorkoutPlan, PlannedWorkout, PlannedExercise,
-    WorkoutSession, LoggedSet, AIReview, FitnessTest, TrainingPhase, ExerciseLibrary
+    WorkoutSession, LoggedSet, AIReview, FitnessTest, TrainingPhase, ExerciseLibrary,
+    NextWorkoutNote,
 )
 from extensions import login_manager, bcrypt, csrf, limiter, oauth_client  # noqa: E402
 
@@ -162,6 +163,9 @@ with app.app_context():
                 conn.commit()
 
     db.create_all()
+
+    from migrate import migrate as _run_migrations
+    _run_migrations()
 
     # One-time migration: link an existing UserProfile to a new Account
     # so legacy data is not lost when auth is first enabled.
@@ -663,6 +667,12 @@ def index():
     else:
         cal_next_year, cal_next_month = cal_year, cal_month + 1
 
+    next_workout_name = next_workout.workout_name if next_workout else None
+    next_general_note, next_specific_note = (
+        _get_next_workout_notes(profile.id, next_workout_name)
+        if next_workout_name else (None, None)
+    )
+
     return render_template(
         "index.html",
         profile=profile,
@@ -683,6 +693,8 @@ def index():
         cal_next_year=cal_next_year,
         cal_next_month=cal_next_month,
         phase_color_map=phase_color_map,
+        next_general_note=next_general_note,
+        next_specific_note=next_specific_note,
     )
 
 
@@ -1094,6 +1106,34 @@ def _upsert_workout_session(profile, status):
     return workout_session
 
 
+def _get_next_workout_notes(profile_id, workout_name):
+    """Return (general_note_text, specific_note_text) for the given workout, or None each."""
+    general = NextWorkoutNote.query.filter_by(user_id=profile_id, workout_name=None).first()
+    specific = NextWorkoutNote.query.filter_by(user_id=profile_id, workout_name=workout_name).first()
+    return (general.note if general else None), (specific.note if specific else None)
+
+
+def _save_next_workout_notes(profile_id, workout_name, general_text, specific_text):
+    """Upsert next-workout notes for the just-logged workout.
+
+    Deletes the current general note and current workout-specific note (both were
+    shown in this session), then creates new rows for any non-empty replacement text.
+    Notes for other workout names are left untouched.
+    """
+    gen = NextWorkoutNote.query.filter_by(user_id=profile_id, workout_name=None).first()
+    if gen:
+        db.session.delete(gen)
+    if general_text:
+        db.session.add(NextWorkoutNote(user_id=profile_id, workout_name=None, note=general_text))
+
+    if workout_name:
+        spec = NextWorkoutNote.query.filter_by(user_id=profile_id, workout_name=workout_name).first()
+        if spec:
+            db.session.delete(spec)
+        if specific_text:
+            db.session.add(NextWorkoutNote(user_id=profile_id, workout_name=workout_name, note=specific_text))
+
+
 def _build_workout_context(profile, planned_workout, active_plan, *, resume_session=None):
     """Build the template context dict for rendering workout_today.html."""
     all_exercises = PlannedExercise.query.filter_by(
@@ -1194,6 +1234,10 @@ def _build_workout_context(profile, planned_workout, active_plan, *, resume_sess
         cooldown = [e for e in cooldown if e.exercise_name in resume_data]
         all_exercises = warmup + main + cooldown
 
+    incoming_general_note, incoming_specific_note = _get_next_workout_notes(
+        profile.id, planned_workout.workout_name
+    )
+
     return dict(
         workout=planned_workout,
         warmup_exercises=warmup,
@@ -1214,6 +1258,8 @@ def _build_workout_context(profile, planned_workout, active_plan, *, resume_sess
         superset_exercises=superset_exercises,
         plan_phases=plan_phases,
         selected_phase_name=selected_phase_name,
+        incoming_general_note=incoming_general_note,
+        incoming_specific_note=incoming_specific_note,
     )
 
 
@@ -1233,6 +1279,17 @@ def workout_log():
             workout_session.id, exercise_names, set_numbers,
             weights, reps, rpes, set_notes, weights_b, reps_b):
         db.session.add(ls)
+
+    workout_name = (
+        workout_session.planned_workout.workout_name
+        if workout_session.planned_workout else None
+    )
+    _save_next_workout_notes(
+        profile.id,
+        workout_name,
+        request.form.get("notes_for_next_general", "").strip(),
+        request.form.get("notes_for_next_workout", "").strip(),
+    )
 
     update_streak(profile)
     db.session.commit()

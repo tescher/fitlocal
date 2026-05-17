@@ -167,6 +167,14 @@ class TrainingPhase(db.Model):
     order_index = db.Column(db.Integer, default=0)
 
 
+class NextWorkoutNote(db.Model):
+    __tablename__ = "next_workout_note"
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user_profile.id"), nullable=False)
+    workout_name = db.Column(db.String(200), nullable=True)  # NULL = general note
+    note = db.Column(db.Text, nullable=False)
+
+
 class ExerciseLibrary(db.Model):
     __tablename__ = "exercise_library"
     id = db.Column(db.Integer, primary_key=True)
