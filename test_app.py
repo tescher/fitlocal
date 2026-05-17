@@ -269,18 +269,14 @@ check("Shows phase info", b"Foundation" in r.data or b"phase-card" in r.data)
 print("\n--- Workout Today ---")
 r = client.get("/workout/today")
 today_name = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"][date.today().weekday()]
-if today_name in ("Monday", "Wednesday", "Friday"):
-    check(f"GET /workout/today ({today_name}) returns 200", r.status_code == 200)
-    check("Has timer", b"timer-card" in r.data)
-    check("Has warmup section", b"warmup-header" in r.data or b"Warm-Up" in r.data)
-    check("Has cooldown section", b"cooldown-header" in r.data or b"Cool-Down" in r.data)
-    check("Has form cues", b"form-cues" in r.data)
-    check("Has session timer JS", b"sessionTimer" in r.data)
-    check("Has rest timer JS", b"startRest" in r.data)
-    check("Has audio beep", b"playBeep" in r.data)
-else:
-    check(f"GET /workout/today ({today_name}) redirects (rest day)", r.status_code == 302)
-    print(f"  (Today is {today_name} - rest day, can't test workout page)")
+check(f"GET /workout/today ({today_name}) returns 200", r.status_code == 200)
+check("Has timer", b"timer-card" in r.data)
+check("Has warmup section", b"warmup-header" in r.data or b"Warm-Up" in r.data)
+check("Has cooldown section", b"cooldown-header" in r.data or b"Cool-Down" in r.data)
+check("Has form cues", b"form-cues" in r.data)
+check("Has session timer JS", b"sessionTimer" in r.data)
+check("Has rest timer JS", b"startRest" in r.data)
+check("Has audio beep", b"playBeep" in r.data)
 
 # 9. Log a workout (simulate for a workout day)
 print("\n--- Workout Logging ---")
@@ -1532,7 +1528,9 @@ html_dash = r.data.decode()
 check("Dashboard has month-calendar element", 'month-calendar' in html_dash)
 
 # Week starts on Sunday (first header cell is Sun, not Mon)
-check("Calendar week starts on Sunday", html_dash.index('Sun') < html_dash.index('Mon'))
+import re as _re_cal
+_first_dow = _re_cal.search(r'class="month-cal-dow">(\w+)<', html_dash)
+check("Calendar week starts on Sunday", _first_dow is not None and _first_dow.group(1) == 'Sun')
 
 # Prev/next navigation links are present
 check("Dashboard calendar has prev-month link", 'cal_month' in html_dash and '&lt;' in html_dash or '<' in html_dash)

@@ -1,6 +1,9 @@
 {% extends "base.html" %}
 {% block title %}FitLocal - Today's Workout{% endblock %}
 {% block content %}
+<h1>{{ workout.workout_name }}</h1>
+<p class="text-muted mb-2">{{ workout.day_of_week }}</p>
+
 {% if incoming_general_note or incoming_specific_note %}
 <div class="card" style="border-left: 4px solid #FF9800; background: #fff8f0;">
     {% if incoming_general_note %}
@@ -11,9 +14,6 @@
     {% endif %}
 </div>
 {% endif %}
-
-<h1>{{ workout.workout_name }}</h1>
-<p class="text-muted mb-2">{{ workout.day_of_week }}</p>
 
 <!-- Workout switcher -->
 <form method="POST" action="{{ url_for('choose_workout') }}" class="workout-switcher">
