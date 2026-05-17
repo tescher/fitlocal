@@ -584,6 +584,7 @@ def build_month_calendar(profile_id, year, month, phase_color_map):
         sessions_by_date.setdefault(s.date, []).append({
             "id": s.id,
             "phase_name": s.phase_name,
+            "workout_name": s.planned_workout.workout_name if s.planned_workout else None,
             "color": phase_color_map.get(s.phase_name, NO_PHASE_COLOR) if s.phase_name else NO_PHASE_COLOR,
         })
 

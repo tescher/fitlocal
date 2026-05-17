@@ -1573,6 +1573,75 @@ check("No-phase session dot uses dark grey color",
 check("Dashboard calendar shows phase legend", 'phase-legend' in html_dash)
 check("Legend contains Foundation", 'Foundation' in html_dash)
 
+# Calendar dot tooltips
+# Sessions accumulate on date.today() throughout the test run, and the calendar
+# only shows [:3] dots per day. To guarantee our test sessions are visible we
+# create them on the 15th of the previous month — a date no other test uses —
+# and query the calendar for that specific month.
+print("\n--- Calendar dot tooltips ---")
+
+from datetime import date as _date
+_today = _date.today()
+_tip_year  = (_today.year if _today.month > 1 else _today.year - 1)
+_tip_month = (_today.month - 1 if _today.month > 1 else 12)
+_tip_date  = _date(_tip_year, _tip_month, 15)
+
+with app.app_context():
+    profile = UserProfile.query.first()
+    pw_tip = PlannedWorkout.query.first()
+    assert pw_tip, "Test setup broken: need at least one PlannedWorkout for tooltip test"
+
+    # Session with both workout name and phase
+    tip_both = WorkoutSession(
+        user_id=profile.id,
+        planned_workout_id=pw_tip.id,
+        date=_tip_date,
+        status='completed',
+        phase_name='Build',
+    )
+    # Session with workout name but no phase
+    tip_no_phase = WorkoutSession(
+        user_id=profile.id,
+        planned_workout_id=pw_tip.id,
+        date=_tip_date,
+        status='completed',
+        phase_name=None,
+    )
+    # Session with phase but no planned_workout (simulates a deleted plan)
+    tip_orphan = WorkoutSession(
+        user_id=profile.id,
+        planned_workout_id=None,
+        date=_tip_date,
+        status='completed',
+        phase_name='Foundation',
+    )
+    db.session.add_all([tip_both, tip_no_phase, tip_orphan])
+    db.session.commit()
+    tip_both_id   = tip_both.id
+    tip_no_phase_id = tip_no_phase.id
+    tip_orphan_id = tip_orphan.id
+    tip_workout_name = pw_tip.workout_name
+
+r_tip = client.get(f"/?cal_year={_tip_year}&cal_month={_tip_month}")
+html_tip = r_tip.data.decode()
+
+check(
+    "Dot tooltip includes workout name when session has both",
+    f'title="{tip_workout_name}' in html_tip,
+)
+check(
+    "Dot tooltip includes phase after middot when session has both",
+    f'{tip_workout_name} &middot; Build' in html_tip,
+)
+check(
+    "Dot tooltip shows workout name only when session has no phase",
+    f'title="{tip_workout_name}"' in html_tip,
+)
+check(
+    "Dot tooltip shows 'Unknown workout' fallback when session has no planned_workout",
+    f'/history/{tip_orphan_id}' in html_tip and 'title="Unknown workout &middot; Foundation"' in html_tip,
+)
+
 # Summary
 print(f"\n{'='*50}")
 print(f"Results: {passed} passed, {failed} failed out of {passed + failed} tests")
