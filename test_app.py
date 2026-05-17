@@ -1621,12 +1621,8 @@ check(
     f'title="{tip_workout_name}"' in html_tip,
 )
 check(
-    "Dot tooltip shows just phase name when session has phase but no workout",
-    f'/history/{tip_orphan_id}' in html_tip and 'title="Foundation"' in html_tip,
-)
-check(
-    "Dot tooltip does not inject placeholder text for orphan session",
-    'title="Workout' not in html_tip,
+    "Dot tooltip shows 'Unknown workout' fallback when session has no planned_workout",
+    f'/history/{tip_orphan_id}' in html_tip and 'title="Unknown workout &middot; Foundation"' in html_tip,
 )
 
 # Summary
