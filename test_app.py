@@ -1654,7 +1654,25 @@ check("NextWorkoutNote has user_id column",     "user_id"      in cols)
 check("NextWorkoutNote has workout_name column","workout_name" in cols)
 check("NextWorkoutNote has note column",        "note"         in cols)
 
-# workout/today form has both new text boxes
+# Clear any paused sessions so GET /workout/today reaches the form
+with app.app_context():
+    from datetime import datetime, timezone as _tz
+    WorkoutSession.query.filter_by(status='paused').update({
+        'status': 'completed', 'end_time': datetime.now(_tz.utc)
+    })
+    db.session.commit()
+
+# Determine the current workout name and the next-up workout name up front
+# so all note seeds use the right names.
+with app.app_context():
+    profile = UserProfile.query.first()
+    active_plan_n = WorkoutPlan.query.filter_by(user_id=profile.id, status='active').first()
+    from app import get_next_workout as _get_next_workout
+    next_w = _get_next_workout(profile.id, active_plan_n)
+    assert next_w, "Test setup broken: need a next workout"
+    current_workout_name = next_w.workout_name
+
+# workout/today form has both new text boxes (no notes seeded yet)
 r_wt = client.get("/workout/today")
 html_wt = r_wt.data.decode()
 check("workout/today has 'notes_for_next_general' field",
@@ -1672,19 +1690,15 @@ html_home_empty = r_home_empty.data.decode()
 check("Home page Next Up shows no note section when no notes exist",
       "Notes from last" not in html_home_empty)
 
-# Seed a general note and a workout-specific note directly into the DB
+# Seed a general note and a workout-specific note for the current workout
 with app.app_context():
     profile = UserProfile.query.first()
-    pw_notes = PlannedWorkout.query.first()
-    assert pw_notes, "Test setup broken: need a PlannedWorkout"
-    workout_name_for_notes = pw_notes.workout_name
-
     db.session.add(NextWorkoutNote(
         user_id=profile.id, workout_name=None, note="General: eat more protein"
     ))
     db.session.add(NextWorkoutNote(
-        user_id=profile.id, workout_name=workout_name_for_notes,
-        note=f"Specific to {workout_name_for_notes}: increase weight"
+        user_id=profile.id, workout_name=current_workout_name,
+        note=f"Specific to {current_workout_name}: increase weight"
     ))
     db.session.commit()
 
@@ -1696,10 +1710,9 @@ check("workout/today shows incoming general note",
 
 # GET /workout/today shows incoming workout-specific note when names match
 check("workout/today shows incoming workout-specific note when names match",
-      f"Specific to {workout_name_for_notes}: increase weight" in html_wt2)
+      f"Specific to {current_workout_name}: increase weight" in html_wt2)
 
 # A different workout name must NOT show the workout-specific note
-# Seed a note for a different workout name and verify it doesn't appear
 with app.app_context():
     profile = UserProfile.query.first()
     db.session.add(NextWorkoutNote(
@@ -1714,11 +1727,6 @@ check("workout/today does NOT show workout-specific note for a different workout
       "Note for other workout only" not in html_wt3)
 
 # POST /workout/log with new next-workout notes saves them to DB
-# Use a MultiDict that includes the two new fields alongside a normal log
-with app.app_context():
-    profile = UserProfile.query.first()
-    pw_log = PlannedWorkout.query.first()
-
 form_with_notes = MultiDict(list(form_items) + [
     ("notes_for_next_general",  "Drink more water"),
     ("notes_for_next_workout",  "Try heavier dumbbells"),
@@ -1733,7 +1741,7 @@ with app.app_context():
         user_id=profile.id, workout_name=None
     ).first()
     spec_note = NextWorkoutNote.query.filter_by(
-        user_id=profile.id, workout_name=workout_name_for_notes
+        user_id=profile.id, workout_name=current_workout_name
     ).first()
 check("POST /workout/log saves general next-workout note",
       gen_note is not None and gen_note.note == "Drink more water")
@@ -1741,6 +1749,13 @@ check("POST /workout/log saves workout-specific next-workout note",
       spec_note is not None and spec_note.note == "Try heavier dumbbells")
 
 # GET /workout/today shows the freshly-saved notes
+# (clear paused sessions again in case the log created one)
+with app.app_context():
+    WorkoutSession.query.filter_by(status='paused').update({
+        'status': 'completed', 'end_time': datetime.now(_tz.utc)
+    })
+    db.session.commit()
+
 r_wt4 = client.get("/workout/today")
 html_wt4 = r_wt4.data.decode()
 check("workout/today shows freshly-saved general note on next visit",
@@ -1761,7 +1776,7 @@ with app.app_context():
     profile = UserProfile.query.first()
     gen_after  = NextWorkoutNote.query.filter_by(user_id=profile.id, workout_name=None).first()
     spec_after = NextWorkoutNote.query.filter_by(
-        user_id=profile.id, workout_name=workout_name_for_notes
+        user_id=profile.id, workout_name=current_workout_name
     ).first()
 check("Displayed general note is deleted after logging with blank notes_for_next_general",
       gen_after is None)
@@ -1777,14 +1792,15 @@ with app.app_context():
 check("Workout-specific note for non-current workout is NOT deleted when different workout logged",
       other_note is not None and other_note.note == "Note for other workout only")
 
-# Home page Next Up section shows notes when they exist
+# Home page Next Up section shows notes when they exist.
+# Seed the specific note against current_workout_name, which the home page will query.
 with app.app_context():
     profile = UserProfile.query.first()
     db.session.add(NextWorkoutNote(
         user_id=profile.id, workout_name=None, note="Home page general note"
     ))
     db.session.add(NextWorkoutNote(
-        user_id=profile.id, workout_name=workout_name_for_notes,
+        user_id=profile.id, workout_name=current_workout_name,
         note="Home page specific note"
     ))
     db.session.commit()

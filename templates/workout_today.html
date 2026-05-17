@@ -1,6 +1,17 @@
 {% extends "base.html" %}
 {% block title %}FitLocal - Today's Workout{% endblock %}
 {% block content %}
+{% if incoming_general_note or incoming_specific_note %}
+<div class="card" style="border-left: 4px solid #FF9800; background: #fff8f0;">
+    {% if incoming_general_note %}
+    <p class="mb-1"><strong>Notes from last workout:</strong> {{ incoming_general_note }}</p>
+    {% endif %}
+    {% if incoming_specific_note %}
+    <p class="mb-0"><strong>Notes from last {{ workout.workout_name }}:</strong> {{ incoming_specific_note }}</p>
+    {% endif %}
+</div>
+{% endif %}
+
 <h1>{{ workout.workout_name }}</h1>
 <p class="text-muted mb-2">{{ workout.day_of_week }}</p>
 
@@ -396,6 +407,16 @@
         <div class="form-group">
             <label for="session_notes">Session Notes</label>
             <textarea id="session_notes" name="session_notes" placeholder="How was the workout? Anything to note?">{{ session_notes or '' }}</textarea>
+        </div>
+
+        <div class="form-group">
+            <label for="notes_for_next_general">Notes for next workout</label>
+            <textarea id="notes_for_next_general" name="notes_for_next_general" placeholder="Anything to remember for your next session?"></textarea>
+        </div>
+
+        <div class="form-group">
+            <label for="notes_for_next_workout">Notes for next {{ workout.workout_name }}</label>
+            <textarea id="notes_for_next_workout" name="notes_for_next_workout" placeholder="Anything specific to remember for next {{ workout.workout_name }}?"></textarea>
         </div>
 
         <button type="button" class="btn btn-success" onclick="confirmLogWorkout()">Log Workout</button>

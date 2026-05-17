@@ -125,6 +125,12 @@
                 · Day {{ plan_position.day_in_week }} of {{ plan_position.days_per_week }}
             </p>
             {% endif %}
+            {% if next_general_note %}
+            <p class="mb-1" style="font-size:0.9rem;"><strong>Notes from last workout:</strong> {{ next_general_note }}</p>
+            {% endif %}
+            {% if next_specific_note %}
+            <p class="mb-2" style="font-size:0.9rem;"><strong>Notes from last {{ next_workout.workout_name }}:</strong> {{ next_specific_note }}</p>
+            {% endif %}
             <a href="{{ url_for('workout_today') }}" class="btn btn-primary">Start Workout</a>
         {% else %}
             <p class="text-muted">No workouts found in your plan.</p>
