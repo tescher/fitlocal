@@ -1662,6 +1662,16 @@ check("workout/today has 'notes_for_next_general' field",
 check("workout/today has 'notes_for_next_workout' field",
       'name="notes_for_next_workout"' in html_wt)
 
+# When no notes exist, no label/heading should appear for either note type.
+# Both labels start with "Notes from last", so one check covers both.
+check("workout/today shows no note labels when no notes exist",
+      "Notes from last" not in html_wt)
+
+r_home_empty = client.get("/")
+html_home_empty = r_home_empty.data.decode()
+check("Home page Next Up shows no note section when no notes exist",
+      "Notes from last" not in html_home_empty)
+
 # Seed a general note and a workout-specific note directly into the DB
 with app.app_context():
     profile = UserProfile.query.first()
