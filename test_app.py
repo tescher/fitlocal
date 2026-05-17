@@ -1569,40 +1569,37 @@ with app.app_context():
         WorkoutSession.planned_workout_id.isnot(None),
         WorkoutSession.status == 'completed',
     ).first()
-    both_phase = session_with_both.phase_name if session_with_both else None
-    both_workout = session_with_both.planned_workout.workout_name if session_with_both and session_with_both.planned_workout else None
-    both_id = session_with_both.id if session_with_both else None
+    assert session_with_both and session_with_both.planned_workout, \
+        "Test setup broken: expected a completed session with both phase_name and planned_workout"
+    both_phase = session_with_both.phase_name
+    both_workout = session_with_both.planned_workout.workout_name
+    both_id = session_with_both.id
 
 r_tooltip = client.get("/")
 html_tooltip = r_tooltip.data.decode()
 
-if both_id and both_workout and both_phase:
-    check(
-        "Dot tooltip includes workout name when session has both",
-        f'title="{both_workout}' in html_tooltip,
-    )
-    check(
-        "Dot tooltip includes phase after middot when session has both",
-        f'{both_workout} · {both_phase}' in html_tooltip or
-        f'{both_workout} &middot; {both_phase}' in html_tooltip,
-    )
-else:
-    check("Dot tooltip includes workout name when session has both", False)
-    check("Dot tooltip includes phase after middot when session has both", False)
+check(
+    "Dot tooltip includes workout name when session has both",
+    f'title="{both_workout}' in html_tooltip,
+)
+check(
+    "Dot tooltip includes phase after middot when session has both",
+    f'{both_workout} · {both_phase}' in html_tooltip or
+    f'{both_workout} &middot; {both_phase}' in html_tooltip,
+)
 
 # The grey_session created above has a planned_workout but phase_name=None.
 # Its title should be the workout name alone — not "No phase".
 with app.app_context():
     grey_s = WorkoutSession.query.get(grey_session_id)
-    grey_workout_name = grey_s.planned_workout.workout_name if grey_s and grey_s.planned_workout else None
+    assert grey_s and grey_s.planned_workout, \
+        "Test setup broken: expected grey_session to have a planned_workout"
+    grey_workout_name = grey_s.planned_workout.workout_name
 
-if grey_workout_name:
-    check(
-        "Dot tooltip shows workout name only when session has no phase",
-        f'title="{grey_workout_name}"' in html_tooltip,
-    )
-else:
-    check("Dot tooltip shows workout name only when session has no phase", False)
+check(
+    "Dot tooltip shows workout name only when session has no phase",
+    f'title="{grey_workout_name}"' in html_tooltip,
+)
 
 # A session with a phase but no linked planned_workout (e.g. plan was deleted).
 # Its title should show just the phase name — no fake "Workout" placeholder.
