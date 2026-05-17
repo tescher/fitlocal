@@ -15,7 +15,7 @@ from app import app
 app.config["WTF_CSRF_ENABLED"] = False   # disable CSRF tokens in tests
 app.config["TESTING"] = True
 
-from models import db, Account, UserProfile, WorkoutPlan, PlannedWorkout, PlannedExercise, TrainingPhase, FitnessTest, ExerciseLibrary, LoggedSet, WorkoutSession
+from models import db, Account, UserProfile, WorkoutPlan, PlannedWorkout, PlannedExercise, TrainingPhase, FitnessTest, ExerciseLibrary, LoggedSet, WorkoutSession, NextWorkoutNote
 from extensions import bcrypt
 
 passed = 0
@@ -1641,6 +1641,150 @@ check(
     "Dot tooltip shows 'Unknown workout' fallback when session has no planned_workout",
     f'/history/{tip_orphan_id}' in html_tip and 'title="Unknown workout &middot; Foundation"' in html_tip,
 )
+
+# Next-workout notes
+print("\n--- Next-workout notes ---")
+
+# Schema: NextWorkoutNote table exists with required columns
+with app.app_context():
+    from sqlalchemy import inspect as _inspect
+    cols = {c['name'] for c in _inspect(db.engine).get_columns('next_workout_note')}
+check("NextWorkoutNote has id column",          "id"           in cols)
+check("NextWorkoutNote has user_id column",     "user_id"      in cols)
+check("NextWorkoutNote has workout_name column","workout_name" in cols)
+check("NextWorkoutNote has note column",        "note"         in cols)
+
+# workout/today form has both new text boxes
+r_wt = client.get("/workout/today")
+html_wt = r_wt.data.decode()
+check("workout/today has 'notes_for_next_general' field",
+      'name="notes_for_next_general"' in html_wt)
+check("workout/today has 'notes_for_next_workout' field",
+      'name="notes_for_next_workout"' in html_wt)
+
+# Seed a general note and a workout-specific note directly into the DB
+with app.app_context():
+    profile = UserProfile.query.first()
+    pw_notes = PlannedWorkout.query.first()
+    assert pw_notes, "Test setup broken: need a PlannedWorkout"
+    workout_name_for_notes = pw_notes.workout_name
+
+    db.session.add(NextWorkoutNote(
+        user_id=profile.id, workout_name=None, note="General: eat more protein"
+    ))
+    db.session.add(NextWorkoutNote(
+        user_id=profile.id, workout_name=workout_name_for_notes,
+        note=f"Specific to {workout_name_for_notes}: increase weight"
+    ))
+    db.session.commit()
+
+# GET /workout/today shows incoming general note
+r_wt2 = client.get("/workout/today")
+html_wt2 = r_wt2.data.decode()
+check("workout/today shows incoming general note",
+      "General: eat more protein" in html_wt2)
+
+# GET /workout/today shows incoming workout-specific note when names match
+check("workout/today shows incoming workout-specific note when names match",
+      f"Specific to {workout_name_for_notes}: increase weight" in html_wt2)
+
+# A different workout name must NOT show the workout-specific note
+# Seed a note for a different workout name and verify it doesn't appear
+with app.app_context():
+    profile = UserProfile.query.first()
+    db.session.add(NextWorkoutNote(
+        user_id=profile.id, workout_name="Some Other Workout",
+        note="Note for other workout only"
+    ))
+    db.session.commit()
+
+r_wt3 = client.get("/workout/today")
+html_wt3 = r_wt3.data.decode()
+check("workout/today does NOT show workout-specific note for a different workout name",
+      "Note for other workout only" not in html_wt3)
+
+# POST /workout/log with new next-workout notes saves them to DB
+# Use a MultiDict that includes the two new fields alongside a normal log
+with app.app_context():
+    profile = UserProfile.query.first()
+    pw_log = PlannedWorkout.query.first()
+
+form_with_notes = MultiDict(list(form_items) + [
+    ("notes_for_next_general",  "Drink more water"),
+    ("notes_for_next_workout",  "Try heavier dumbbells"),
+])
+r_log_notes = client.post("/workout/log", data=form_with_notes, follow_redirects=False)
+check("POST /workout/log with next-notes returns 200 or redirect",
+      r_log_notes.status_code in (200, 302))
+
+with app.app_context():
+    profile = UserProfile.query.first()
+    gen_note = NextWorkoutNote.query.filter_by(
+        user_id=profile.id, workout_name=None
+    ).first()
+    spec_note = NextWorkoutNote.query.filter_by(
+        user_id=profile.id, workout_name=workout_name_for_notes
+    ).first()
+check("POST /workout/log saves general next-workout note",
+      gen_note is not None and gen_note.note == "Drink more water")
+check("POST /workout/log saves workout-specific next-workout note",
+      spec_note is not None and spec_note.note == "Try heavier dumbbells")
+
+# GET /workout/today shows the freshly-saved notes
+r_wt4 = client.get("/workout/today")
+html_wt4 = r_wt4.data.decode()
+check("workout/today shows freshly-saved general note on next visit",
+      "Drink more water" in html_wt4)
+check("workout/today shows freshly-saved workout-specific note on next visit",
+      "Try heavier dumbbells" in html_wt4)
+
+# POST /workout/log with blank next-notes deletes the displayed notes
+form_blank_notes = MultiDict(list(form_items) + [
+    ("notes_for_next_general",  ""),
+    ("notes_for_next_workout",  ""),
+])
+r_log_blank = client.post("/workout/log", data=form_blank_notes, follow_redirects=False)
+check("POST /workout/log with blank next-notes returns 200 or redirect",
+      r_log_blank.status_code in (200, 302))
+
+with app.app_context():
+    profile = UserProfile.query.first()
+    gen_after  = NextWorkoutNote.query.filter_by(user_id=profile.id, workout_name=None).first()
+    spec_after = NextWorkoutNote.query.filter_by(
+        user_id=profile.id, workout_name=workout_name_for_notes
+    ).first()
+check("Displayed general note is deleted after logging with blank notes_for_next_general",
+      gen_after is None)
+check("Displayed workout-specific note is deleted after logging with blank notes_for_next_workout",
+      spec_after is None)
+
+# Workout-specific note for a DIFFERENT workout is NOT deleted when a different workout is logged
+with app.app_context():
+    profile = UserProfile.query.first()
+    other_note = NextWorkoutNote.query.filter_by(
+        user_id=profile.id, workout_name="Some Other Workout"
+    ).first()
+check("Workout-specific note for non-current workout is NOT deleted when different workout logged",
+      other_note is not None and other_note.note == "Note for other workout only")
+
+# Home page Next Up section shows notes when they exist
+with app.app_context():
+    profile = UserProfile.query.first()
+    db.session.add(NextWorkoutNote(
+        user_id=profile.id, workout_name=None, note="Home page general note"
+    ))
+    db.session.add(NextWorkoutNote(
+        user_id=profile.id, workout_name=workout_name_for_notes,
+        note="Home page specific note"
+    ))
+    db.session.commit()
+
+r_home = client.get("/")
+html_home = r_home.data.decode()
+check("Home page Next Up shows general next-workout note",
+      "Home page general note" in html_home)
+check("Home page Next Up shows workout-specific next-workout note",
+      "Home page specific note" in html_home)
 
 # Summary
 print(f"\n{'='*50}")
