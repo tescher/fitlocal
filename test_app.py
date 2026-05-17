@@ -1511,11 +1511,16 @@ r_hist_ph = client.get("/history")
 check("History listing shows phase name for sessions that have one",
       r_hist_ph.status_code == 200 and b"Build" in r_hist_ph.data)
 
-# History listing does not show phase label at all for sessions with no phase_name
-# (we rely on no spurious text being injected — the absence check is done by ensuring
-# a null-phase session row doesn't render a middot followed by nothing visible)
-check("History listing loads without error when sessions have no phase_name",
-      r_hist_ph.status_code == 200)
+# Middot separator appears exactly as many times as there are sessions with a phase_name
+with app.app_context():
+    profile = UserProfile.query.first()
+    expected_middots = WorkoutSession.query.filter(
+        WorkoutSession.user_id == profile.id,
+        WorkoutSession.phase_name.isnot(None),
+    ).count()
+actual_middots = r_hist_ph.data.decode().count("&middot;")
+check("History listing middot count matches sessions with a phase_name",
+      actual_middots == expected_middots)
 
 # Dashboard Monthly Calendar
 print("\n--- Dashboard Monthly Calendar ---")
