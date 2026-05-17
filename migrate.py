@@ -18,8 +18,7 @@ DB_PATH = os.path.join(os.path.dirname(__file__), "instance", "fitlocal.db")
 
 def migrate():
     if not os.path.exists(DB_PATH):
-        print("No database found. Just run the app and tables will be created automatically.")
-        sys.exit(0)
+        return  # Fresh install: db.create_all() in app.py handles table creation
 
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
