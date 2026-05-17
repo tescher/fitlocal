@@ -1556,6 +1556,81 @@ check("No-phase session dot uses dark grey color",
 check("Dashboard calendar shows phase legend", 'phase-legend' in html_dash)
 check("Legend contains Foundation", 'Foundation' in html_dash)
 
+# Calendar dot tooltips
+print("\n--- Calendar dot tooltips ---")
+
+# By this point there is a completed session with phase_name="Build" and a
+# linked PlannedWorkout. Its dot title should combine the workout name and phase.
+with app.app_context():
+    profile = UserProfile.query.first()
+    session_with_both = WorkoutSession.query.filter(
+        WorkoutSession.user_id == profile.id,
+        WorkoutSession.phase_name.isnot(None),
+        WorkoutSession.planned_workout_id.isnot(None),
+        WorkoutSession.status == 'completed',
+    ).first()
+    both_phase = session_with_both.phase_name if session_with_both else None
+    both_workout = session_with_both.planned_workout.workout_name if session_with_both and session_with_both.planned_workout else None
+    both_id = session_with_both.id if session_with_both else None
+
+r_tooltip = client.get("/")
+html_tooltip = r_tooltip.data.decode()
+
+if both_id and both_workout and both_phase:
+    check(
+        "Dot tooltip includes workout name when session has both",
+        f'title="{both_workout}' in html_tooltip,
+    )
+    check(
+        "Dot tooltip includes phase after middot when session has both",
+        f'{both_workout} · {both_phase}' in html_tooltip or
+        f'{both_workout} &middot; {both_phase}' in html_tooltip,
+    )
+else:
+    check("Dot tooltip includes workout name when session has both", False)
+    check("Dot tooltip includes phase after middot when session has both", False)
+
+# The grey_session created above has a planned_workout but phase_name=None.
+# Its title should be the workout name alone — not "No phase".
+with app.app_context():
+    grey_s = WorkoutSession.query.get(grey_session_id)
+    grey_workout_name = grey_s.planned_workout.workout_name if grey_s and grey_s.planned_workout else None
+
+if grey_workout_name:
+    check(
+        "Dot tooltip shows workout name only when session has no phase",
+        f'title="{grey_workout_name}"' in html_tooltip,
+    )
+else:
+    check("Dot tooltip shows workout name only when session has no phase", False)
+
+# A session with a phase but no linked planned_workout (e.g. plan was deleted).
+# Its title should show just the phase name — no fake "Workout" placeholder.
+with app.app_context():
+    profile = UserProfile.query.first()
+    orphan_session = WorkoutSession(
+        user_id=profile.id,
+        planned_workout_id=None,
+        date=date.today(),
+        overall_feeling=4,
+        status='completed',
+        phase_name='Foundation',
+    )
+    db.session.add(orphan_session)
+    db.session.commit()
+    orphan_id = orphan_session.id
+
+r_orphan = client.get("/")
+html_orphan = r_orphan.data.decode()
+check(
+    "Dot tooltip shows just phase name when session has phase but no workout",
+    f'/history/{orphan_id}' in html_orphan and 'title="Foundation"' in html_orphan,
+)
+check(
+    "Dot tooltip does not inject placeholder text for orphan session",
+    'title="Workout' not in html_orphan,
+)
+
 # Summary
 print(f"\n{'='*50}")
 print(f"Results: {passed} passed, {failed} failed out of {passed + failed} tests")
