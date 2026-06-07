@@ -211,23 +211,153 @@ def get_active_plan(user_id):
     return WorkoutPlan.query.filter_by(status="active", user_id=user_id).first()
 
 
-def get_current_phase(plan):
-    """Get the current training phase based on plan's current_week."""
-    if not plan or not plan.phases:
+def _phase_workout_count(phase_data, days_per_week):
+    """Number of workouts in a phase. Read from plan_json: a phase spanning
+    `num_weeks` weeks contains num_weeks * days_per_week workouts. This is a
+    plain count of workouts — no calendar/date math is used for positioning."""
+    week_start = phase_data.get("week_start", 1)
+    week_end = phase_data.get("week_end", week_start)
+    num_weeks = (week_end - week_start) + 1
+    return max(num_weeks, 1) * days_per_week
+
+
+def resolve_plan_position(profile_id, active_plan):
+    """Resolve where the user is in the plan, purely from completed-session
+    phase tags — never from weeks, dates, or session_offset.
+
+    The current phase is the phase of the most recently completed session. The
+    number of completed sessions tagged with that phase says how far through it
+    the user is; once that count reaches the phase's workout total, the next
+    workout becomes the first workout of the next phase. Within a phase, the
+    next workout is the one AFTER the last logged workout in plan order (so the
+    workout switcher / out-of-order logging behaves correctly).
+
+    Returns a dict (or None if there's no usable plan) with keys:
+      phase_data, phase_index (0-based), workouts_done_in_phase,
+      phase_total_workouts, next_workout (PlannedWorkout), workouts.
+    """
+    if not active_plan:
         return None
-    for phase in plan.phases:
-        if phase.week_start <= plan.current_week <= phase.week_end:
+
+    workouts = PlannedWorkout.query.filter_by(
+        plan_id=active_plan.id
+    ).order_by(PlannedWorkout.order_index).all()
+    if not workouts:
+        return None
+
+    days_per_week = active_plan.days_per_week or 3
+    workout_ids = [w.id for w in workouts]
+    pos_by_id = {w.id: i for i, w in enumerate(workouts)}
+
+    try:
+        plan_data = json.loads(active_plan.plan_json or "{}")
+        phases_data = plan_data.get("phases", [])
+    except Exception:
+        phases_data = []
+
+    base_filter = (
+        WorkoutSession.user_id == profile_id,
+        WorkoutSession.planned_workout_id.in_(workout_ids),
+        WorkoutSession.status == SESSION_STATUS_COMPLETED,
+    )
+
+    def _last_session(*extra):
+        return (
+            WorkoutSession.query
+            .filter(*base_filter, *extra)
+            .order_by(WorkoutSession.date.desc(), WorkoutSession.id.desc())
+            .first()
+        )
+
+    def _next_after(session):
+        """The workout after `session`'s workout in plan order, or workouts[0]."""
+        if session is not None and session.planned_workout_id in pos_by_id:
+            return workouts[(pos_by_id[session.planned_workout_id] + 1) % len(workouts)]
+        return workouts[0]
+
+    # No phases at all — simple sequential cycling after the last logged workout.
+    if not phases_data:
+        total = WorkoutSession.query.filter(*base_filter).count()
+        return {
+            "phase_data": None,
+            "phase_index": 0,
+            "workouts_done_in_phase": total,
+            "phase_total_workouts": None,
+            "next_workout": _next_after(_last_session()) if total else workouts[0],
+            "workouts": workouts,
+        }
+
+    name_to_index = {p.get("phase_name"): i for i, p in enumerate(phases_data)}
+
+    def _count_in_phase(phase_name):
+        return WorkoutSession.query.filter(
+            *base_filter, WorkoutSession.phase_name == phase_name
+        ).count()
+
+    # Current phase = the phase of the most recently completed, tagged session.
+    last_tagged = _last_session(WorkoutSession.phase_name.isnot(None))
+    if last_tagged and last_tagged.phase_name in name_to_index:
+        idx = name_to_index[last_tagged.phase_name]
+    else:
+        idx = 0  # legacy / untagged history: start at the first phase
+
+    done = _count_in_phase(phases_data[idx].get("phase_name"))
+
+    # Advance past any phase whose workout total is already complete.
+    guard = 0
+    while done >= _phase_workout_count(phases_data[idx], days_per_week) and guard <= len(phases_data):
+        if idx + 1 < len(phases_data):
+            idx += 1
+            done = _count_in_phase(phases_data[idx].get("phase_name"))
+        else:
+            idx = 0   # plan complete — wrap to the first phase
+            done = 0
+            break
+        guard += 1
+
+    # Within-phase: next workout follows the last one logged in THIS phase.
+    # Freshly entered phase (done == 0) starts at the first workout.
+    if done == 0:
+        next_workout = workouts[0]
+    else:
+        next_workout = _next_after(
+            _last_session(WorkoutSession.phase_name == phases_data[idx].get("phase_name"))
+        )
+
+    return {
+        "phase_data": phases_data[idx],
+        "phase_index": idx,
+        "workouts_done_in_phase": done,
+        "phase_total_workouts": _phase_workout_count(phases_data[idx], days_per_week),
+        "next_workout": next_workout,
+        "workouts": workouts,
+    }
+
+
+def get_current_phase(profile_id, active_plan):
+    """Return the TrainingPhase ORM row for the user's current phase, resolved
+    from completed-session phase tags (not the calendar). Matched by name so
+    templates keep working; returns None if no match."""
+    pos = resolve_plan_position(profile_id, active_plan)
+    if not pos or not pos.get("phase_data"):
+        return None
+    phase_name = pos["phase_data"].get("phase_name")
+    for phase in active_plan.phases:
+        if phase.phase_name == phase_name:
             return phase
     return None
 
 
 def update_plan_week(plan):
-    """Update the plan's current_week based on start_date."""
+    """Maintain the calendar-derived current_week column for the descriptive
+    "Week N" label shown on the plan/nutrition pages. NOTE: this is purely
+    cosmetic — plan position and the next workout are determined from logged
+    workouts, never from current_week."""
     if not plan or not plan.start_date:
         return
     days_elapsed = (date.today() - plan.start_date).days
     week = (days_elapsed // 7) + 1
-    plan.current_week = min(week, plan.total_weeks)
+    plan.current_week = min(week, plan.total_weeks or week)
 
 
 def _plan_total_sessions(plan_json_data):
@@ -301,146 +431,47 @@ def get_paused_session(profile_id):
 
 
 def get_plan_position(profile_id, active_plan):
-    """Return a dict describing where the user is in their plan, or None."""
-    if not active_plan:
+    """Where the user is in their plan, as a display dict, or None.
+
+    Workout-based and date-free. Keys: phase_name, is_recovery, phase_index
+    (1-based), workout_in_phase (1-based position of the upcoming workout),
+    phase_total_workouts (or None when the plan has no phases).
+    """
+    pos = resolve_plan_position(profile_id, active_plan)
+    if not pos:
         return None
 
-    workouts = PlannedWorkout.query.filter_by(
-        plan_id=active_plan.id
-    ).order_by(PlannedWorkout.order_index).all()
-    if not workouts:
-        return None
+    phase_data = pos["phase_data"]
+    done = pos["workouts_done_in_phase"]
 
-    days_per_week = active_plan.days_per_week or 3
-
-    workout_ids = [w.id for w in workouts]
-    session_count = WorkoutSession.query.filter(
-        WorkoutSession.user_id == profile_id,
-        WorkoutSession.planned_workout_id.in_(workout_ids),
-        WorkoutSession.status == SESSION_STATUS_COMPLETED
-    ).count()
-    effective_count = session_count + (getattr(active_plan, "session_offset", 0) or 0)
-
-    try:
-        plan_data = json.loads(active_plan.plan_json or "{}")
-        phases_data = plan_data.get("phases", [])
-    except Exception:
-        phases_data = []
-
-    phases = active_plan.phases  # TrainingPhase ORM objects
-
-    if phases and phases_data:
-        sessions_accounted = 0
-        for i, phase_data in enumerate(phases_data):
-            week_start = phase_data.get("week_start", 1)
-            week_end = phase_data.get("week_end", week_start)
-            num_weeks = week_end - week_start + 1
-            phase_total_sessions = num_weeks * days_per_week
-
-            if effective_count < sessions_accounted + phase_total_sessions:
-                session_in_phase = effective_count - sessions_accounted
-                week_in_phase = (session_in_phase // days_per_week) + 1
-                day_in_week = (session_in_phase % days_per_week) + 1
-                phase_obj = phases[i] if i < len(phases) else None
-                phase_name = phase_obj.phase_name if phase_obj else phase_data.get("phase_name", f"Phase {i+1}")
-                is_recovery = (
-                    (phase_obj.phase_type == 'recovery') if phase_obj
-                    else (phase_data.get("phase_type") == 'recovery')
-                )
-                return {
-                    'phase_index': i + 1,
-                    'phase_name': phase_name,
-                    'week_in_phase': week_in_phase,
-                    'total_weeks_in_phase': num_weeks,
-                    'day_in_week': day_in_week,
-                    'days_per_week': days_per_week,
-                    'is_recovery': is_recovery,
-                }
-
-            sessions_accounted += phase_total_sessions
-
-        # All phases done — back to start
-        week_in_phase = (effective_count // days_per_week) + 1
-        day_in_week = (effective_count % days_per_week) + 1
+    if phase_data is None:
         return {
-            'phase_index': len(phases),
-            'phase_name': phases[-1].phase_name if phases else 'Phase 1',
-            'week_in_phase': week_in_phase,
-            'total_weeks_in_phase': None,
-            'day_in_week': day_in_week,
-            'days_per_week': days_per_week,
+            'phase_index': 1,
+            'phase_name': 'Training',
             'is_recovery': False,
+            'workout_in_phase': done + 1,
+            'phase_total_workouts': None,
         }
 
-    # Fallback: no phases — simple week/day cycling
-    week_in_phase = (effective_count // days_per_week) + 1
-    day_in_week = (effective_count % days_per_week) + 1
+    total = pos["phase_total_workouts"]
     return {
-        'phase_index': 1,
-        'phase_name': 'Training',
-        'week_in_phase': week_in_phase,
-        'total_weeks_in_phase': None,
-        'day_in_week': day_in_week,
-        'days_per_week': days_per_week,
-        'is_recovery': False,
+        'phase_index': pos["phase_index"] + 1,
+        'phase_name': phase_data.get("phase_name", f"Phase {pos['phase_index'] + 1}"),
+        'is_recovery': phase_data.get("phase_type") == 'recovery',
+        'workout_in_phase': min(done + 1, total) if total else done + 1,
+        'phase_total_workouts': total,
     }
 
 
 def get_next_workout(profile_id, active_plan):
-    """Return the next PlannedWorkout, cycling within each phase for its full duration.
-
-    Each phase has a week range (e.g. weeks 1-3). The plan's days_per_week workouts
-    in that phase repeat every week within the phase before advancing to the next phase.
-    """
-    workouts = PlannedWorkout.query.filter_by(
-        plan_id=active_plan.id
-    ).order_by(PlannedWorkout.order_index).all()
-    if not workouts:
+    """Return the next PlannedWorkout: the workout after the last one logged in
+    the current phase, or the first workout of the next phase once the current
+    phase's workout total is complete. Purely workout-count based — no weeks,
+    dates, or session_offset."""
+    pos = resolve_plan_position(profile_id, active_plan)
+    if not pos:
         return None
-
-    days_per_week = active_plan.days_per_week or 3
-
-    # Count sessions completed within this plan, then add the starting offset
-    workout_ids = [w.id for w in workouts]
-    session_count = WorkoutSession.query.filter(
-        WorkoutSession.user_id == profile_id,
-        WorkoutSession.planned_workout_id.in_(workout_ids),
-        WorkoutSession.status == SESSION_STATUS_COMPLETED
-    ).count()
-    effective_count = session_count + (getattr(active_plan, "session_offset", 0) or 0)
-
-    # Try to use phase week-range data from plan_json
-    try:
-        plan_data = json.loads(active_plan.plan_json or "{}")
-        phases = plan_data.get("phases", [])
-    except Exception:
-        phases = []
-
-    if phases:
-        workout_offset = 0
-        sessions_accounted = 0
-        for phase in phases:
-            week_start = phase.get("week_start", 1)
-            week_end = phase.get("week_end", week_start)
-            num_weeks = week_end - week_start + 1
-            phase_total_sessions = num_weeks * days_per_week
-            phase_workouts = workouts[workout_offset:workout_offset + days_per_week]
-
-            if not phase_workouts:
-                break
-
-            if effective_count < sessions_accounted + phase_total_sessions:
-                session_in_phase = effective_count - sessions_accounted
-                return phase_workouts[session_in_phase % len(phase_workouts)]
-
-            sessions_accounted += phase_total_sessions
-            workout_offset += days_per_week
-
-        # All phases done — cycle back to first workout
-        return workouts[0]
-
-    # Fallback: simple sequential cycling (no phase data)
-    return workouts[effective_count % len(workouts)]
+    return pos["next_workout"]
 
 
 def get_last_performance(user_id, exercise_name):
@@ -628,7 +659,7 @@ def index():
     next_workout = get_next_workout(profile.id, active_plan) if active_plan else None
 
     # Current phase and nutrition
-    current_phase = get_current_phase(active_plan) if active_plan else None
+    current_phase = get_current_phase(profile.id, active_plan) if active_plan else None
 
     # Stats
     today = date.today()
@@ -929,7 +960,20 @@ def workout_today():
         flash("No active plan. Generate one first!", "error")
         return redirect(url_for("generate_plan"))
 
-    next_workout = get_next_workout(profile.id, active_plan)
+    # The switcher passes ?show=<index> to display a chosen workout for today.
+    # This is a display-only override — it does NOT change the plan position,
+    # which is driven entirely by what gets logged.
+    show_idx = request.args.get("show", type=int)
+    next_workout = None
+    if show_idx is not None:
+        plan_workouts = (
+            PlannedWorkout.query.filter_by(plan_id=active_plan.id)
+            .order_by(PlannedWorkout.order_index).all()
+        )
+        if 0 <= show_idx < len(plan_workouts):
+            next_workout = plan_workouts[show_idx]
+    if next_workout is None:
+        next_workout = get_next_workout(profile.id, active_plan)
     if not next_workout:
         flash("No workouts found in your plan. Try regenerating it.", "error")
         return redirect(url_for("index"))
@@ -941,6 +985,8 @@ def workout_today():
 @app.route("/workout/choose", methods=["POST"])
 @login_required
 def choose_workout():
+    """Switcher: show a different workout for today. Display-only — it does not
+    persist any position change (the plan position follows what you log)."""
     profile = get_profile()
     if not profile:
         return redirect(url_for("setup"))
@@ -949,24 +995,7 @@ def choose_workout():
         return redirect(url_for("generate_plan"))
 
     workout_index = request.form.get("workout_index", 0, type=int)
-
-    workout_ids = [w.id for w in active_plan.planned_workouts]
-    current_session_count = WorkoutSession.query.filter(
-        WorkoutSession.user_id == profile.id,
-        WorkoutSession.planned_workout_id.in_(workout_ids),
-        WorkoutSession.status == SESSION_STATUS_COMPLETED
-    ).count()
-
-    try:
-        plan_data = json.loads(active_plan.plan_json or "{}")
-        phases = plan_data.get("phases", [])
-    except Exception:
-        phases = []
-
-    target = _session_offset_for_workout(workout_index, phases, active_plan.days_per_week or 3)
-    active_plan.session_offset = target - current_session_count
-    db.session.commit()
-    return redirect(url_for("workout_today"))
+    return redirect(url_for("workout_today", show=workout_index))
 
 
 def _parse_logged_sets_from_form():
@@ -1543,7 +1572,7 @@ def plan_view():
             .all()
         )
         phases = active_plan.phases
-        current_phase = get_current_phase(active_plan)
+        current_phase = get_current_phase(profile.id, active_plan)
 
     return render_template(
         "plan.html",
@@ -1924,18 +1953,19 @@ def nutrition():
     active_plan = get_active_plan(profile.id)
     phases = []
     current_phase = None
+    plan_position = None
 
     if active_plan:
-        update_plan_week(active_plan)
-        db.session.commit()
         phases = active_plan.phases
-        current_phase = get_current_phase(active_plan)
+        current_phase = get_current_phase(profile.id, active_plan)
+        plan_position = get_plan_position(profile.id, active_plan)
 
     return render_template(
         "nutrition.html",
         plan=active_plan,
         phases=phases,
         current_phase=current_phase,
+        plan_position=plan_position,
     )
 
 

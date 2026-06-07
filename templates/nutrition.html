@@ -7,7 +7,9 @@
 <div class="card mb-2">
     <h2>Current Phase: {{ current_phase.phase_name }}</h2>
     <span class="phase-badge {{ current_phase.phase_type }}">{{ current_phase.phase_type|upper }}</span>
-    <span class="text-muted">Week {{ plan.current_week }} of {{ plan.total_weeks }}</span>
+    {% if plan_position and plan_position.phase_total_workouts %}
+    <span class="text-muted">Workout {{ plan_position.workout_in_phase }} of {{ plan_position.phase_total_workouts }}</span>
+    {% endif %}
     {% if current_phase.nutrition_guide %}
     <div class="nutrition-tip mt-2">
         <p>{{ current_phase.nutrition_guide }}</p>

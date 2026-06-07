@@ -1652,12 +1652,15 @@ check("NextWorkoutNote has user_id column",     "user_id"      in cols)
 check("NextWorkoutNote has workout_name column","workout_name" in cols)
 check("NextWorkoutNote has note column",        "note"         in cols)
 
-# Clear any paused sessions so GET /workout/today reaches the form
+# Clear any paused sessions so GET /workout/today reaches the form.
+# Also null out phase tags so the next workout resolves deterministically to the
+# first workout (these note tests log against the first workout, untagged).
 with app.app_context():
     from datetime import datetime, timezone as _tz
     WorkoutSession.query.filter_by(status='paused').update({
         'status': 'completed', 'end_time': datetime.now(_tz.utc)
     })
+    WorkoutSession.query.update({'phase_name': None})
     db.session.commit()
 
 # Determine the current workout name and the next-up workout name up front
@@ -1984,6 +1987,60 @@ with app.app_context():
     check("e2e: logging the 9th Peak workout advances Next Up to Recovery 3's first workout",
           nxt is not None and nxt.workout_name == wc_names[0]
           and pos is not None and pos.get("phase_name") == "Recovery 3")
+
+# Case 8: out-of-order logging — the next workout follows the one just logged,
+# not a positional count. Do the 3rd workout out of turn; next is the one after it.
+with app.app_context():
+    profile = UserProfile.query.first()
+    active = _gap_wc(profile.id)
+    _wc_clear_sessions(profile.id)
+    ws_ordered = sorted(active.planned_workouts, key=lambda w: w.order_index)
+    _wc_seed(profile.id, active, 1, "Peak")  # 1 Peak workout on ws[0]; suggested next = ws[1]
+    db.session.commit()
+    third = ws_ordered[2]
+    third_id = third.id
+    ooo_ex = PlannedExercise.query.filter_by(planned_workout_id=third_id).all()
+    wc_names = [w.workout_name for w in ws_ordered]
+
+ooo_items = [
+    ("planned_workout_id", str(third_id)),
+    ("overall_feeling", "4"), ("session_notes", ""), ("phase_name", "Peak"),
+]
+for ex in ooo_ex:
+    for s in range(1, ex.sets_prescribed + 1):
+        ooo_items += [
+            ("exercise_name", ex.exercise_name), ("set_number", str(s)),
+            ("weight", "100"), ("reps", "8"), ("rpe", ""), ("set_notes", ""),
+        ]
+r = client.post("/workout/log", data=MultiDict(ooo_items), follow_redirects=False)
+check("out-of-order: POST /workout/log returns 200", r.status_code == 200)
+with app.app_context():
+    profile = UserProfile.query.first()
+    active = _gap_wc(profile.id)
+    nxt = get_next_workout(profile.id, active)
+    # Did ws[2]; the next is the one AFTER it in plan order -> ws[0], not ws[2] again.
+    check("out-of-order: next workout follows the workout just logged (sequence, not count)",
+          nxt is not None and nxt.workout_name == wc_names[0])
+
+# Case 9: the workout switcher is a display-only override (no position change).
+with app.app_context():
+    profile = UserProfile.query.first()
+    active = _gap_wc(profile.id)
+    computed_before = get_next_workout(profile.id, active).workout_name
+r = client.post("/workout/choose", data={"workout_index": "2"}, follow_redirects=False)
+check("switcher: POST /workout/choose redirects to workout/today?show",
+      r.status_code == 302 and "show=2" in r.headers.get("Location", ""))
+r2 = client.get("/workout/today?show=2", follow_redirects=False)
+if r2.status_code == 200:
+    check("switcher: ?show displays the chosen workout",
+          "Full Body Conditioning" in r2.data.decode())
+else:
+    check("switcher: ?show displays the chosen workout (skipped — non-200)", False)
+with app.app_context():
+    profile = UserProfile.query.first()
+    active = _gap_wc(profile.id)
+    check("switcher: viewing a workout does not change plan position",
+          get_next_workout(profile.id, active).workout_name == computed_before)
 
 # Summary
 print(f"\n{'='*50}")

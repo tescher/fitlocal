@@ -88,7 +88,9 @@
     <div class="phase-header">
         <span class="phase-badge {{ current_phase.phase_type }}">{{ current_phase.phase_type|upper }}</span>
         <strong>{{ current_phase.phase_name }}</strong>
-        <span class="text-muted">Week {{ active_plan.current_week }} of {{ active_plan.total_weeks }}</span>
+        {% if plan_position and plan_position.phase_total_workouts %}
+        <span class="text-muted">Workout {{ plan_position.workout_in_phase }} of {{ plan_position.phase_total_workouts }}</span>
+        {% endif %}
     </div>
     <p class="text-muted">{{ current_phase.description }}</p>
     {% if current_phase.nutrition_guide %}
@@ -121,8 +123,7 @@
             {% if plan_position %}
             <p class="text-muted" style="font-size:0.85rem; margin-bottom:0.75rem;">
                 {{ plan_position.phase_name }}{% if plan_position.is_recovery %} (Recovery){% endif %}
-                · Week {{ plan_position.week_in_phase }}{% if plan_position.total_weeks_in_phase %} of {{ plan_position.total_weeks_in_phase }}{% endif %}
-                · Day {{ plan_position.day_in_week }} of {{ plan_position.days_per_week }}
+                {% if plan_position.phase_total_workouts %} · Workout {{ plan_position.workout_in_phase }} of {{ plan_position.phase_total_workouts }}{% endif %}
             </p>
             {% endif %}
             {% if next_general_note %}
