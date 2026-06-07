@@ -1810,6 +1810,181 @@ check("Home page Next Up shows general next-workout note",
 check("Home page Next Up shows workout-specific next-workout note",
       "Home page specific note" in html_home)
 
+# Workout-Count Phase Progression
+# The next workout is determined SOLELY by which workout is next in the plan:
+# the next workout in the current phase, or the first workout of the next phase
+# once the current phase's workout quota is complete. No weeks, no dates, no
+# session_offset. The current phase is the phase of the most recently logged
+# session (the user's selection is the source of truth).
+#
+# Active plan ("Plan Two") workouts in order:
+#   [0] Upper Body Strength, [1] Lower Body Power, [2] Full Body Conditioning
+# Phases (workouts each = num_weeks * days_per_week, days_per_week=3):
+#   Foundation 9, Recovery 1 3, Build 9, Recovery 2 3, Peak 9, Recovery 3 3
+print("\n--- Workout-Count Phase Progression ---")
+
+from app import get_next_workout, get_plan_position, get_active_plan as _gap_wc
+
+
+def _wc_clear_sessions(pid):
+    from models import WorkoutSession as _WS, LoggedSet as _LS
+    sids = [s.id for s in _WS.query.filter_by(user_id=pid).all()]
+    if sids:
+        _LS.query.filter(_LS.session_id.in_(sids)).delete(synchronize_session=False)
+    _WS.query.filter_by(user_id=pid).delete()
+    db.session.commit()
+
+
+def _wc_seed(pid, plan, n, phase):
+    """Insert n completed sessions tagged `phase`, cycling through the workouts."""
+    from models import WorkoutSession as _WS
+    ws = sorted(plan.planned_workouts, key=lambda w: w.order_index)
+    for i in range(n):
+        db.session.add(_WS(user_id=pid, planned_workout_id=ws[i % len(ws)].id,
+                           date=date.today(), status='completed', phase_name=phase))
+    db.session.commit()
+
+
+with app.app_context():
+    profile = UserProfile.query.first()
+    active = _gap_wc(profile.id)
+    wc_names = [w.workout_name for w in sorted(active.planned_workouts, key=lambda w: w.order_index)]
+
+# Case 1: mid-phase — 4 Peak workouts done -> next is workouts[4 % 3] = workouts[1].
+# current_week and session_offset are sabotaged to prove they are ignored.
+with app.app_context():
+    profile = UserProfile.query.first()
+    active = _gap_wc(profile.id)
+    _wc_clear_sessions(profile.id)
+    _wc_seed(profile.id, active, 4, "Peak")
+    active.current_week = 1
+    active.session_offset = 999
+    db.session.commit()
+    nxt = get_next_workout(profile.id, active)
+    pos = get_plan_position(profile.id, active)
+    check("mid-phase: next workout is next in rotation (ignores weeks & offset)",
+          nxt is not None and nxt.workout_name == wc_names[1])
+    check("mid-phase: position phase is Peak", pos is not None and pos.get("phase_name") == "Peak")
+    check("mid-phase: upcoming workout is 5 of 9",
+          pos is not None and pos.get("workout_in_phase") == 5 and pos.get("phase_total_workouts") == 9)
+    check("position carries no week/day keys",
+          pos is not None and "week_in_phase" not in pos and "day_in_week" not in pos)
+
+# Case 2: rollover — completing Peak's 9 workouts advances to Recovery 3's first.
+with app.app_context():
+    profile = UserProfile.query.first()
+    active = _gap_wc(profile.id)
+    _wc_clear_sessions(profile.id)
+    _wc_seed(profile.id, active, 9, "Peak")
+    db.session.commit()
+    nxt = get_next_workout(profile.id, active)
+    pos = get_plan_position(profile.id, active)
+    check("rollover: phase complete advances to next phase's first workout",
+          nxt is not None and nxt.workout_name == wc_names[0])
+    check("rollover: position phase is Recovery 3", pos is not None and pos.get("phase_name") == "Recovery 3")
+    check("rollover: upcoming workout is 1 of 3",
+          pos is not None and pos.get("workout_in_phase") == 1 and pos.get("phase_total_workouts") == 3)
+    check("rollover: is_recovery is True", pos is not None and pos.get("is_recovery") is True)
+
+# Case 3: the real scenario — most recent session tagged Recovery 3 (1 done).
+with app.app_context():
+    profile = UserProfile.query.first()
+    active = _gap_wc(profile.id)
+    _wc_clear_sessions(profile.id)
+    _wc_seed(profile.id, active, 9, "Peak")
+    _wc_seed(profile.id, active, 1, "Recovery 3")
+    db.session.commit()
+    nxt = get_next_workout(profile.id, active)
+    pos = get_plan_position(profile.id, active)
+    check("real scenario: after 1st Recovery 3 workout, next is 2nd in rotation",
+          nxt is not None and nxt.workout_name == wc_names[1])
+    check("real scenario: position phase is Recovery 3", pos is not None and pos.get("phase_name") == "Recovery 3")
+
+# Case 4: legacy fallback — untagged sessions default to the first phase.
+with app.app_context():
+    from models import WorkoutSession as _WS
+    profile = UserProfile.query.first()
+    active = _gap_wc(profile.id)
+    _wc_clear_sessions(profile.id)
+    ws = sorted(active.planned_workouts, key=lambda w: w.order_index)
+    for i in range(5):
+        db.session.add(_WS(user_id=profile.id, planned_workout_id=ws[i % 3].id,
+                           date=date.today(), status='completed', phase_name=None))
+    db.session.commit()
+    nxt = get_next_workout(profile.id, active)
+    pos = get_plan_position(profile.id, active)
+    check("legacy: untagged sessions fall back to the first phase",
+          pos is not None and pos.get("phase_name") == "Foundation")
+    check("legacy: next workout is the first in rotation",
+          nxt is not None and nxt.workout_name == wc_names[0])
+
+# Case 5: phase name comes from plan_json, robust to stale TrainingPhase rows.
+with app.app_context():
+    from models import TrainingPhase as _TP
+    profile = UserProfile.query.first()
+    active = _gap_wc(profile.id)
+    _wc_clear_sessions(profile.id)
+    _wc_seed(profile.id, active, 4, "Peak")
+    db.session.add(_TP(plan_id=active.id, phase_name="ZZZ Stale", phase_type="progressive",
+                       week_start=1, week_end=1, order_index=-1))
+    db.session.commit()
+    pos = get_plan_position(profile.id, active)
+    check("position robust to stale/duplicate TrainingPhase rows",
+          pos is not None and pos.get("phase_name") == "Peak")
+    stale_row = _TP.query.filter_by(plan_id=active.id, phase_name="ZZZ Stale").first()
+    if stale_row:
+        db.session.delete(stale_row)
+        db.session.commit()
+
+# Case 6: get_current_phase is workout-based, not calendar-based.
+from app import get_current_phase as _gcp_wc
+with app.app_context():
+    profile = UserProfile.query.first()
+    active = _gap_wc(profile.id)
+    _wc_clear_sessions(profile.id)
+    _wc_seed(profile.id, active, 4, "Peak")
+    active.current_week = 1  # old calendar logic would say Foundation
+    db.session.commit()
+    try:
+        cp = _gcp_wc(profile.id, active)
+        cp_ok = cp is not None and cp.phase_name == "Peak"
+    except TypeError:
+        cp_ok = False
+    check("get_current_phase is workout-based (Peak, not calendar Foundation)", cp_ok)
+
+# Case 7: end-to-end — logging the final Peak workout advances Next Up.
+with app.app_context():
+    profile = UserProfile.query.first()
+    active = _gap_wc(profile.id)
+    _wc_clear_sessions(profile.id)
+    _wc_seed(profile.id, active, 8, "Peak")  # 8 done; the log makes 9 = phase complete
+    db.session.commit()
+    pw_first = sorted(active.planned_workouts, key=lambda w: w.order_index)[0]
+    pw_first_id = pw_first.id
+    e2e_ex = PlannedExercise.query.filter_by(planned_workout_id=pw_first_id).all()
+    wc_names = [w.workout_name for w in sorted(active.planned_workouts, key=lambda w: w.order_index)]
+
+e2e_items = [
+    ("planned_workout_id", str(pw_first_id)),
+    ("overall_feeling", "4"), ("session_notes", ""), ("phase_name", "Peak"),
+]
+for ex in e2e_ex:
+    for s in range(1, ex.sets_prescribed + 1):
+        e2e_items += [
+            ("exercise_name", ex.exercise_name), ("set_number", str(s)),
+            ("weight", "100"), ("reps", "8"), ("rpe", ""), ("set_notes", ""),
+        ]
+r = client.post("/workout/log", data=MultiDict(e2e_items), follow_redirects=False)
+check("e2e: POST /workout/log with phase returns 200", r.status_code == 200)
+with app.app_context():
+    profile = UserProfile.query.first()
+    active = _gap_wc(profile.id)
+    nxt = get_next_workout(profile.id, active)
+    pos = get_plan_position(profile.id, active)
+    check("e2e: logging the 9th Peak workout advances Next Up to Recovery 3's first workout",
+          nxt is not None and nxt.workout_name == wc_names[0]
+          and pos is not None and pos.get("phase_name") == "Recovery 3")
+
 # Summary
 print(f"\n{'='*50}")
 print(f"Results: {passed} passed, {failed} failed out of {passed + failed} tests")
