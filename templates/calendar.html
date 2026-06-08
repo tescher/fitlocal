@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_calendar_macros.html" as cal %}
 {% block title %}FitLocal - Calendar{% endblock %}
 {% block content %}
 <h1>Workout Calendar</h1>
@@ -31,32 +32,12 @@
             {% else %}
                 <div class="cal-day {{ 'today' if day.is_today else '' }}">
                     <span class="cal-day-num">{{ day.day }}</span>
-                    <div class="month-cal-dots">
-                        {% for s in day.sessions[:3] %}
-                        <a href="{{ url_for('session_detail', session_id=s.id) }}"
-                           class="phase-dot"
-                           style="background:{{ s.color }};"
-                           title="{{ s.workout_name or 'Unknown workout' }}{% if s.phase_name %} &middot; {{ s.phase_name }}{% endif %}"></a>
-                        {% endfor %}
-                    </div>
+                    {{ cal.phase_dots(day) }}
                 </div>
             {% endif %}
         {% endfor %}
     {% endfor %}
 </div>
 
-{% if phase_color_map %}
-<div class="phase-legend mt-2">
-    {% for phase, color in phase_color_map.items() %}
-    <span class="legend-item">
-        <span class="phase-dot" style="background:{{ color }};"></span>
-        {{ phase }}
-    </span>
-    {% endfor %}
-    <span class="legend-item">
-        <span class="phase-dot no-phase" style="background:#555;"></span>
-        No phase
-    </span>
-</div>
-{% endif %}
+{{ cal.phase_legend(phase_color_map) }}
 {% endblock %}

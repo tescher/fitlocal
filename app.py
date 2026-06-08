@@ -643,6 +643,13 @@ def build_month_calendar(profile_id, year, month, phase_color_map):
     return weeks
 
 
+def _prev_next_month(year, month):
+    """Return (prev_year, prev_month, next_year, next_month) for calendar nav."""
+    prev_year, prev_month = (year - 1, 12) if month == 1 else (year, month - 1)
+    next_year, next_month = (year + 1, 1) if month == 12 else (year, month + 1)
+    return prev_year, prev_month, next_year, next_month
+
+
 @app.route("/")
 @login_required
 def index():
@@ -689,14 +696,7 @@ def index():
     phase_color_map = build_phase_color_map(active_plan)
     cal_weeks = build_month_calendar(profile.id, cal_year, cal_month, phase_color_map)
     cal_month_name = cal_module.month_name[cal_month]
-    if cal_month == 1:
-        cal_prev_year, cal_prev_month = cal_year - 1, 12
-    else:
-        cal_prev_year, cal_prev_month = cal_year, cal_month - 1
-    if cal_month == 12:
-        cal_next_year, cal_next_month = cal_year + 1, 1
-    else:
-        cal_next_year, cal_next_month = cal_year, cal_month + 1
+    cal_prev_year, cal_prev_month, cal_next_year, cal_next_month = _prev_next_month(cal_year, cal_month)
 
     next_workout_name = next_workout.workout_name if next_workout else None
     next_general_note, next_specific_note = (
@@ -1886,16 +1886,7 @@ def calendar_view():
     phase_color_map = build_phase_color_map(active_plan)
     weeks = build_month_calendar(profile.id, year, month, phase_color_map)
 
-    # Prev/next month
-    if month == 1:
-        prev_year, prev_month = year - 1, 12
-    else:
-        prev_year, prev_month = year, month - 1
-    if month == 12:
-        next_year, next_month = year + 1, 1
-    else:
-        next_year, next_month = year, month + 1
-
+    prev_year, prev_month, next_year, next_month = _prev_next_month(year, month)
     month_name = cal_module.month_name[month]
 
     return render_template(
