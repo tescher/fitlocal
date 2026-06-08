@@ -3,3 +3,7 @@ run_fitlocal.bat
 __pycache__/
 *.pyc
 instance/
+
+# Runtime artifacts
+*.log
+session_*.json
