@@ -1881,38 +1881,10 @@ def calendar_view():
     year = request.args.get("year", today.year, type=int)
     month = request.args.get("month", today.month, type=int)
 
-    # Get all sessions for this month
-    first_day = date(year, month, 1)
-    if month == 12:
-        last_day = date(year + 1, 1, 1) - timedelta(days=1)
-    else:
-        last_day = date(year, month + 1, 1) - timedelta(days=1)
-
-    sessions = WorkoutSession.query.filter(
-        WorkoutSession.user_id == profile.id,
-        WorkoutSession.date >= first_day,
-        WorkoutSession.date <= last_day,
-    ).all()
-    completed_dates = {s.date for s in sessions}
-
-    # Build calendar grid
-    cal = cal_module.Calendar(firstweekday=0)  # Monday first
-    weeks = []
-    for week in cal.monthdayscalendar(year, month):
-        week_data = []
-        for day_num in week:
-            if day_num == 0:
-                week_data.append(None)
-            else:
-                d = date(year, month, day_num)
-                week_data.append({
-                    "day": day_num,
-                    "date": d,
-                    "completed": d in completed_dates,
-                    "is_today": d == today,
-                    "is_past": d < today,
-                })
-        weeks.append(week_data)
+    # Reuse the dashboard's phase-colored calendar builder so both views match.
+    active_plan = get_active_plan(profile.id)
+    phase_color_map = build_phase_color_map(active_plan)
+    weeks = build_month_calendar(profile.id, year, month, phase_color_map)
 
     # Prev/next month
     if month == 1:
@@ -1938,6 +1910,7 @@ def calendar_view():
         next_month=next_month,
         today=today,
         profile=profile,
+        phase_color_map=phase_color_map,
     )
 
 

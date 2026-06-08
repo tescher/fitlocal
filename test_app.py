@@ -325,8 +325,14 @@ print("\n--- Calendar ---")
 r = client.get("/calendar")
 check("GET /calendar returns 200", r.status_code == 200)
 check("Calendar has grid", b"calendar-grid" in r.data)
-check("Calendar shows completed day", b"completed" in r.data)
-check("Calendar has legend", b"calendar-legend" in r.data)
+# Calendar page uses the same color-coded phase dots, tooltips and legend as the dashboard
+check("Calendar shows phase dots", b"phase-dot" in r.data)
+check("Calendar dots link to history", b"/history/" in r.data)
+check("Calendar has phase legend", b"phase-legend" in r.data)
+_cal_html = r.data.decode()
+check("Calendar week starts on Sunday (Sun before Mon)",
+      "<div class=\"cal-header\">Sun</div>" in _cal_html
+      and _cal_html.find(">Sun<") < _cal_html.find(">Mon<"))
 
 # Test prev/next month
 r = client.get("/calendar?year=2026&month=1")
@@ -1639,6 +1645,18 @@ check(
     "Dot tooltip shows 'Unknown workout' fallback when session has no planned_workout",
     f'/history/{tip_orphan_id}' in html_tip and 'title="Unknown workout &middot; Foundation"' in html_tip,
 )
+
+# The full Calendar page (top menu) uses the same dots and tooltips.
+r_cal_tip = client.get(f"/calendar?year={_tip_year}&month={_tip_month}")
+html_cal_tip = r_cal_tip.data.decode()
+check("Calendar page dot links to the session history",
+      f'/history/{tip_both_id}' in html_cal_tip)
+check("Calendar page dot tooltip includes workout name and phase",
+      f'{tip_workout_name} &middot; Build' in html_cal_tip)
+check("Calendar page dot uses phase color (Build) from the shared color map",
+      'class="phase-dot"' in html_cal_tip and '#FF9800' in html_cal_tip)
+check("Calendar page shows 'Unknown workout' fallback for orphan session",
+      'title="Unknown workout &middot; Foundation"' in html_cal_tip)
 
 # Next-workout notes
 print("\n--- Next-workout notes ---")
