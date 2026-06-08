@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_calendar_macros.html" as cal %}
 {% block title %}FitLocal - Calendar{% endblock %}
 {% block content %}
 <h1>Workout Calendar</h1>
@@ -16,36 +17,27 @@
 {% endif %}
 
 <div class="calendar-grid">
+    <div class="cal-header">Sun</div>
     <div class="cal-header">Mon</div>
     <div class="cal-header">Tue</div>
     <div class="cal-header">Wed</div>
     <div class="cal-header">Thu</div>
     <div class="cal-header">Fri</div>
     <div class="cal-header">Sat</div>
-    <div class="cal-header">Sun</div>
 
     {% for week in weeks %}
         {% for day in week %}
             {% if day is none %}
                 <div class="cal-day empty"></div>
             {% else %}
-                <div class="cal-day {{ 'completed' if day.completed else '' }} {{ 'missed' if day.missed else '' }} {{ 'today' if day.is_today else '' }} {{ 'planned' if day.planned and not day.is_past and not day.is_today else '' }}">
+                <div class="cal-day {{ 'today' if day.is_today else '' }}">
                     <span class="cal-day-num">{{ day.day }}</span>
-                    {% if day.completed %}
-                        <span class="cal-check">&#10003;</span>
-                    {% elif day.missed %}
-                        <span class="cal-miss">&#10007;</span>
-                    {% endif %}
+                    {{ cal.phase_dots(day) }}
                 </div>
             {% endif %}
         {% endfor %}
     {% endfor %}
 </div>
 
-<div class="calendar-legend mt-2">
-    <span class="legend-item"><span class="legend-dot completed"></span> Completed</span>
-    <span class="legend-item"><span class="legend-dot missed"></span> Missed</span>
-    <span class="legend-item"><span class="legend-dot today"></span> Today</span>
-    <span class="legend-item"><span class="legend-dot planned"></span> Planned</span>
-</div>
+{{ cal.phase_legend(phase_color_map) }}
 {% endblock %}

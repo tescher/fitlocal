@@ -325,8 +325,14 @@ print("\n--- Calendar ---")
 r = client.get("/calendar")
 check("GET /calendar returns 200", r.status_code == 200)
 check("Calendar has grid", b"calendar-grid" in r.data)
-check("Calendar shows completed day", b"completed" in r.data)
-check("Calendar has legend", b"calendar-legend" in r.data)
+# Calendar page uses the same color-coded phase dots, tooltips and legend as the dashboard
+check("Calendar shows phase dots", b"phase-dot" in r.data)
+check("Calendar dots link to history", b"/history/" in r.data)
+check("Calendar has phase legend", b"phase-legend" in r.data)
+_cal_html = r.data.decode()
+check("Calendar week starts on Sunday (Sun before Mon)",
+      "<div class=\"cal-header\">Sun</div>" in _cal_html
+      and _cal_html.find(">Sun<") < _cal_html.find(">Mon<"))
 
 # Test prev/next month
 r = client.get("/calendar?year=2026&month=1")
@@ -1585,9 +1591,17 @@ _tip_month = (_today.month - 1 if _today.month > 1 else 12)
 _tip_date  = _date(_tip_year, _tip_month, 15)
 
 with app.app_context():
+    from app import build_phase_color_map as _bpcm, get_active_plan as _gap_tip
     profile = UserProfile.query.first()
     pw_tip = PlannedWorkout.query.first()
     assert pw_tip, "Test setup broken: need at least one PlannedWorkout for tooltip test"
+
+    # Derive two distinct phase names and the expected dot color from the fixture
+    # — never hardcode plan-specific phase names or colors.
+    _tip_phases = plan_data["phases"]
+    tip_phase = _tip_phases[2]["phase_name"]
+    tip_orphan_phase = _tip_phases[0]["phase_name"]
+    tip_phase_color = _bpcm(_gap_tip(profile.id))[tip_phase]
 
     # Session with both workout name and phase
     tip_both = WorkoutSession(
@@ -1595,7 +1609,7 @@ with app.app_context():
         planned_workout_id=pw_tip.id,
         date=_tip_date,
         status='completed',
-        phase_name='Build',
+        phase_name=tip_phase,
     )
     # Session with workout name but no phase
     tip_no_phase = WorkoutSession(
@@ -1611,7 +1625,7 @@ with app.app_context():
         planned_workout_id=None,
         date=_tip_date,
         status='completed',
-        phase_name='Foundation',
+        phase_name=tip_orphan_phase,
     )
     db.session.add_all([tip_both, tip_no_phase, tip_orphan])
     db.session.commit()
@@ -1629,7 +1643,7 @@ check(
 )
 check(
     "Dot tooltip includes phase after middot when session has both",
-    f'{tip_workout_name} &middot; Build' in html_tip,
+    f'{tip_workout_name} &middot; {tip_phase}' in html_tip,
 )
 check(
     "Dot tooltip shows workout name only when session has no phase",
@@ -1637,8 +1651,20 @@ check(
 )
 check(
     "Dot tooltip shows 'Unknown workout' fallback when session has no planned_workout",
-    f'/history/{tip_orphan_id}' in html_tip and 'title="Unknown workout &middot; Foundation"' in html_tip,
+    f'/history/{tip_orphan_id}' in html_tip and f'title="Unknown workout &middot; {tip_orphan_phase}"' in html_tip,
 )
+
+# The full Calendar page (top menu) uses the same dots and tooltips.
+r_cal_tip = client.get(f"/calendar?year={_tip_year}&month={_tip_month}")
+html_cal_tip = r_cal_tip.data.decode()
+check("Calendar page dot links to the session history",
+      f'/history/{tip_both_id}' in html_cal_tip)
+check("Calendar page dot tooltip includes workout name and phase",
+      f'{tip_workout_name} &middot; {tip_phase}' in html_cal_tip)
+check("Calendar page dot uses the phase color from the shared color map",
+      'class="phase-dot"' in html_cal_tip and tip_phase_color in html_cal_tip)
+check("Calendar page shows 'Unknown workout' fallback for orphan session",
+      f'title="Unknown workout &middot; {tip_orphan_phase}"' in html_cal_tip)
 
 # Next-workout notes
 print("\n--- Next-workout notes ---")
@@ -1652,12 +1678,15 @@ check("NextWorkoutNote has user_id column",     "user_id"      in cols)
 check("NextWorkoutNote has workout_name column","workout_name" in cols)
 check("NextWorkoutNote has note column",        "note"         in cols)
 
-# Clear any paused sessions so GET /workout/today reaches the form
+# Clear any paused sessions so GET /workout/today reaches the form.
+# Also null out phase tags so the next workout resolves deterministically to the
+# first workout (these note tests log against the first workout, untagged).
 with app.app_context():
     from datetime import datetime, timezone as _tz
     WorkoutSession.query.filter_by(status='paused').update({
         'status': 'completed', 'end_time': datetime.now(_tz.utc)
     })
+    WorkoutSession.query.update({'phase_name': None})
     db.session.commit()
 
 # Determine the current workout name and the next-up workout name up front
@@ -1809,6 +1838,258 @@ check("Home page Next Up shows general next-workout note",
       "Home page general note" in html_home)
 check("Home page Next Up shows workout-specific next-workout note",
       "Home page specific note" in html_home)
+
+# Workout-Count Phase Progression
+# The next workout is determined SOLELY by which workout is next in the plan:
+# the next workout in the current phase, or the first workout of the next phase
+# once the current phase's workout count is complete. No weeks, no dates, no
+# session_offset. The current phase is the phase of the most recently logged
+# session (the user's selection is the source of truth).
+#
+# Phase names, counts, workout names and roles below are derived from the
+# fixture plan_json — NOT hardcoded — because real plans will be named anything.
+print("\n--- Workout-Count Phase Progression ---")
+
+from app import get_next_workout, get_plan_position, get_active_plan as _gap_wc
+
+
+def _wc_clear_sessions(pid):
+    from models import WorkoutSession as _WS, LoggedSet as _LS
+    sids = [s.id for s in _WS.query.filter_by(user_id=pid).all()]
+    if sids:
+        _LS.query.filter(_LS.session_id.in_(sids)).delete(synchronize_session=False)
+    _WS.query.filter_by(user_id=pid).delete()
+    db.session.commit()
+
+
+def _wc_seed(pid, plan, n, phase):
+    """Insert n completed sessions tagged `phase`, cycling through the workouts."""
+    from models import WorkoutSession as _WS
+    ws = sorted(plan.planned_workouts, key=lambda w: w.order_index)
+    for i in range(n):
+        db.session.add(_WS(user_id=pid, planned_workout_id=ws[i % len(ws)].id,
+                           date=date.today(), status='completed', phase_name=phase))
+    db.session.commit()
+
+
+# --- Derive all references from the fixture, so nothing is pinned to a name ---
+_wc_phases = plan_data["phases"]
+_wc_dpw = plan_data["days_per_week"]
+
+
+def _wc_quota(p):
+    return ((p["week_end"] - p["week_start"] + 1) * _wc_dpw)
+
+
+# Pick, by structural role, a progressive phase that is followed by another
+# phase, plus that following phase (used to test rollover).
+_prog_i = max(i for i, p in enumerate(_wc_phases[:-1]) if p["phase_type"] == "progressive")
+PROG, NEXTP = _wc_phases[_prog_i], _wc_phases[_prog_i + 1]
+PROG_NAME, PROG_QUOTA = PROG["phase_name"], _wc_quota(PROG)
+NEXT_NAME, NEXT_QUOTA = NEXTP["phase_name"], _wc_quota(NEXTP)
+FIRST_NAME = _wc_phases[0]["phase_name"]
+
+with app.app_context():
+    profile = UserProfile.query.first()
+    active = _gap_wc(profile.id)
+    wc_names = [w.workout_name for w in sorted(active.planned_workouts, key=lambda w: w.order_index)]
+_nlen = len(wc_names)            # number of distinct workouts in the rotation
+_mid = max(1, PROG_QUOTA // 2)   # a count partway through the progressive phase
+
+# Case 1: mid-phase — next is the workout after the last logged one.
+# current_week and session_offset are sabotaged to prove they are ignored.
+with app.app_context():
+    profile = UserProfile.query.first()
+    active = _gap_wc(profile.id)
+    _wc_clear_sessions(profile.id)
+    _wc_seed(profile.id, active, _mid, PROG_NAME)
+    active.current_week = 1
+    active.session_offset = 999
+    db.session.commit()
+    nxt = get_next_workout(profile.id, active)
+    pos = get_plan_position(profile.id, active)
+    check("mid-phase: next workout is next in rotation (ignores weeks & offset)",
+          nxt is not None and nxt.workout_name == wc_names[_mid % _nlen])
+    check("mid-phase: position phase is the current phase",
+          pos is not None and pos.get("phase_name") == PROG_NAME)
+    check("mid-phase: upcoming workout count is correct",
+          pos is not None and pos.get("workout_in_phase") == _mid + 1
+          and pos.get("phase_total_workouts") == PROG_QUOTA)
+    check("position carries no week/day keys",
+          pos is not None and "week_in_phase" not in pos and "day_in_week" not in pos)
+
+# Case 2: rollover — completing the phase advances to the next phase's first workout.
+with app.app_context():
+    profile = UserProfile.query.first()
+    active = _gap_wc(profile.id)
+    _wc_clear_sessions(profile.id)
+    _wc_seed(profile.id, active, PROG_QUOTA, PROG_NAME)
+    db.session.commit()
+    nxt = get_next_workout(profile.id, active)
+    pos = get_plan_position(profile.id, active)
+    check("rollover: phase complete advances to next phase's first workout",
+          nxt is not None and nxt.workout_name == wc_names[0])
+    check("rollover: position phase is the next phase",
+          pos is not None and pos.get("phase_name") == NEXT_NAME)
+    check("rollover: upcoming workout is 1 of the next phase's total",
+          pos is not None and pos.get("workout_in_phase") == 1 and pos.get("phase_total_workouts") == NEXT_QUOTA)
+    check("rollover: is_recovery matches the next phase's type",
+          pos is not None and pos.get("is_recovery") == (NEXTP["phase_type"] == "recovery"))
+
+# Case 3: the real scenario — most recent session tagged with the next phase (1 done).
+with app.app_context():
+    profile = UserProfile.query.first()
+    active = _gap_wc(profile.id)
+    _wc_clear_sessions(profile.id)
+    _wc_seed(profile.id, active, PROG_QUOTA, PROG_NAME)
+    _wc_seed(profile.id, active, 1, NEXT_NAME)
+    db.session.commit()
+    nxt = get_next_workout(profile.id, active)
+    pos = get_plan_position(profile.id, active)
+    check("real scenario: after 1st next-phase workout, next is 2nd in rotation",
+          nxt is not None and nxt.workout_name == wc_names[1 % _nlen])
+    check("real scenario: position phase is the next phase",
+          pos is not None and pos.get("phase_name") == NEXT_NAME)
+
+# Case 4: legacy fallback — untagged sessions default to the first phase.
+with app.app_context():
+    from models import WorkoutSession as _WS
+    profile = UserProfile.query.first()
+    active = _gap_wc(profile.id)
+    _wc_clear_sessions(profile.id)
+    ws = sorted(active.planned_workouts, key=lambda w: w.order_index)
+    for i in range(5):
+        db.session.add(_WS(user_id=profile.id, planned_workout_id=ws[i % _nlen].id,
+                           date=date.today(), status='completed', phase_name=None))
+    db.session.commit()
+    nxt = get_next_workout(profile.id, active)
+    pos = get_plan_position(profile.id, active)
+    check("legacy: untagged sessions fall back to the first phase",
+          pos is not None and pos.get("phase_name") == FIRST_NAME)
+    check("legacy: next workout is the first in rotation",
+          nxt is not None and nxt.workout_name == wc_names[0])
+
+# Case 5: phase name comes from plan_json, robust to stale TrainingPhase rows.
+with app.app_context():
+    from models import TrainingPhase as _TP
+    profile = UserProfile.query.first()
+    active = _gap_wc(profile.id)
+    _wc_clear_sessions(profile.id)
+    _wc_seed(profile.id, active, _mid, PROG_NAME)
+    db.session.add(_TP(plan_id=active.id, phase_name="ZZZ Stale", phase_type="progressive",
+                       week_start=1, week_end=1, order_index=-1))
+    db.session.commit()
+    pos = get_plan_position(profile.id, active)
+    check("position robust to stale/duplicate TrainingPhase rows",
+          pos is not None and pos.get("phase_name") == PROG_NAME)
+    stale_row = _TP.query.filter_by(plan_id=active.id, phase_name="ZZZ Stale").first()
+    if stale_row:
+        db.session.delete(stale_row)
+        db.session.commit()
+
+# Case 6: get_current_phase is workout-based, not calendar-based.
+from app import get_current_phase as _gcp_wc
+with app.app_context():
+    profile = UserProfile.query.first()
+    active = _gap_wc(profile.id)
+    _wc_clear_sessions(profile.id)
+    _wc_seed(profile.id, active, _mid, PROG_NAME)
+    active.current_week = 1  # old calendar logic would resolve to the first phase
+    db.session.commit()
+    try:
+        cp = _gcp_wc(profile.id, active)
+        cp_ok = cp is not None and cp.phase_name == PROG_NAME
+    except TypeError:
+        cp_ok = False
+    check("get_current_phase is workout-based, not calendar-based", cp_ok)
+
+# Case 7: end-to-end — logging the final phase workout advances Next Up.
+with app.app_context():
+    profile = UserProfile.query.first()
+    active = _gap_wc(profile.id)
+    _wc_clear_sessions(profile.id)
+    _wc_seed(profile.id, active, PROG_QUOTA - 1, PROG_NAME)  # one short of complete
+    db.session.commit()
+    pw_first = sorted(active.planned_workouts, key=lambda w: w.order_index)[0]
+    pw_first_id = pw_first.id
+    e2e_ex = PlannedExercise.query.filter_by(planned_workout_id=pw_first_id).all()
+    wc_names = [w.workout_name for w in sorted(active.planned_workouts, key=lambda w: w.order_index)]
+
+e2e_items = [
+    ("planned_workout_id", str(pw_first_id)),
+    ("overall_feeling", "4"), ("session_notes", ""), ("phase_name", PROG_NAME),
+]
+for ex in e2e_ex:
+    for s in range(1, ex.sets_prescribed + 1):
+        e2e_items += [
+            ("exercise_name", ex.exercise_name), ("set_number", str(s)),
+            ("weight", "100"), ("reps", "8"), ("rpe", ""), ("set_notes", ""),
+        ]
+r = client.post("/workout/log", data=MultiDict(e2e_items), follow_redirects=False)
+check("e2e: POST /workout/log with phase returns 200", r.status_code == 200)
+with app.app_context():
+    profile = UserProfile.query.first()
+    active = _gap_wc(profile.id)
+    nxt = get_next_workout(profile.id, active)
+    pos = get_plan_position(profile.id, active)
+    check("e2e: logging the final phase workout advances Next Up to the next phase's first workout",
+          nxt is not None and nxt.workout_name == wc_names[0]
+          and pos is not None and pos.get("phase_name") == NEXT_NAME)
+
+# Case 8: out-of-order logging — the next workout follows the one just logged,
+# not a positional count. Do the last workout out of turn; next wraps to the first.
+with app.app_context():
+    profile = UserProfile.query.first()
+    active = _gap_wc(profile.id)
+    _wc_clear_sessions(profile.id)
+    ws_ordered = sorted(active.planned_workouts, key=lambda w: w.order_index)
+    _wc_seed(profile.id, active, 1, PROG_NAME)  # 1 workout on ws[0]; suggested next = ws[1]
+    db.session.commit()
+    last_w = ws_ordered[_nlen - 1]
+    last_id = last_w.id
+    ooo_ex = PlannedExercise.query.filter_by(planned_workout_id=last_id).all()
+    wc_names = [w.workout_name for w in ws_ordered]
+
+ooo_items = [
+    ("planned_workout_id", str(last_id)),
+    ("overall_feeling", "4"), ("session_notes", ""), ("phase_name", PROG_NAME),
+]
+for ex in ooo_ex:
+    for s in range(1, ex.sets_prescribed + 1):
+        ooo_items += [
+            ("exercise_name", ex.exercise_name), ("set_number", str(s)),
+            ("weight", "100"), ("reps", "8"), ("rpe", ""), ("set_notes", ""),
+        ]
+r = client.post("/workout/log", data=MultiDict(ooo_items), follow_redirects=False)
+check("out-of-order: POST /workout/log returns 200", r.status_code == 200)
+with app.app_context():
+    profile = UserProfile.query.first()
+    active = _gap_wc(profile.id)
+    nxt = get_next_workout(profile.id, active)
+    # Did the last workout; the next is the one AFTER it -> wraps to the first.
+    check("out-of-order: next workout follows the workout just logged (sequence, not count)",
+          nxt is not None and nxt.workout_name == wc_names[0])
+
+# Case 9: the workout switcher is a display-only override (no position change).
+_show_idx = _nlen - 1
+with app.app_context():
+    profile = UserProfile.query.first()
+    active = _gap_wc(profile.id)
+    computed_before = get_next_workout(profile.id, active).workout_name
+r = client.post("/workout/choose", data={"workout_index": str(_show_idx)}, follow_redirects=False)
+check("switcher: POST /workout/choose redirects to workout/today?show",
+      r.status_code == 302 and f"show={_show_idx}" in r.headers.get("Location", ""))
+r2 = client.get(f"/workout/today?show={_show_idx}", follow_redirects=False)
+if r2.status_code == 200:
+    check("switcher: ?show displays the chosen workout",
+          wc_names[_show_idx] in r2.data.decode())
+else:
+    check("switcher: ?show displays the chosen workout (skipped — non-200)", False)
+with app.app_context():
+    profile = UserProfile.query.first()
+    active = _gap_wc(profile.id)
+    check("switcher: viewing a workout does not change plan position",
+          get_next_workout(profile.id, active).workout_name == computed_before)
 
 # Summary
 print(f"\n{'='*50}")
