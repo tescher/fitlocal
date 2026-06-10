@@ -89,12 +89,34 @@
                 <button type="submit" class="btn btn-success">Activate This Plan</button>
             </form>
             <form method="POST" action="{{ url_for('generate_plan_api') }}" onsubmit="showLoading()">
+                {% if latest_review %}
+                <div class="form-group mb-1" style="font-size:0.85rem;">
+                    <label style="display:flex; align-items:center; gap:0.4rem; cursor:pointer;">
+                        <input type="checkbox" name="include_review" value="on" checked>
+                        Include prior plan review
+                    </label>
+                    <p class="text-muted" style="font-size:0.75rem; margin:0.2rem 0 0 1.4rem;">
+                        Last review: {{ latest_review.created_at.strftime('%b %d, %Y') }}
+                    </p>
+                </div>
+                {% endif %}
                 <button type="submit" class="btn btn-secondary">Regenerate</button>
             </form>
         </div>
     </div>
 {% else %}
     <form method="POST" action="{{ url_for('generate_plan_api') }}" onsubmit="showLoading()" style="margin-bottom: 1.5rem;">
+        {% if latest_review %}
+        <div class="form-group mb-1" style="font-size:0.85rem;">
+            <label style="display:flex; align-items:center; gap:0.4rem; cursor:pointer;">
+                <input type="checkbox" name="include_review" value="on" checked>
+                Include prior plan review in new plan context
+            </label>
+            <p class="text-muted" style="font-size:0.75rem; margin:0.2rem 0 0 1.4rem;">
+                Last review: {{ latest_review.created_at.strftime('%b %d, %Y') }} — helps the AI build on what worked and address what didn't.
+            </p>
+        </div>
+        {% endif %}
         <button type="submit" class="btn btn-primary">Generate My Workout Plan</button>
     </form>
 {% endif %}
