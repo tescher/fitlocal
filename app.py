@@ -211,6 +211,25 @@ def get_active_plan(user_id):
     return WorkoutPlan.query.filter_by(status="active", user_id=user_id).first()
 
 
+def _get_review_sessions(user_id, plan_id):
+    """Return completed WorkoutSessions that belong to the given plan, newest first."""
+    pw_ids = [
+        w.id for w in PlannedWorkout.query.filter_by(plan_id=plan_id).all()
+    ]
+    if not pw_ids:
+        return []
+    return (
+        WorkoutSession.query
+        .filter(
+            WorkoutSession.user_id == user_id,
+            WorkoutSession.planned_workout_id.in_(pw_ids),
+            WorkoutSession.status == SESSION_STATUS_COMPLETED,
+        )
+        .order_by(WorkoutSession.date.desc())
+        .all()
+    )
+
+
 def _phase_workout_count(phase_data, days_per_week):
     """Number of workouts in a phase. Read from plan_json: a phase spanning
     `num_weeks` weeks contains num_weeks * days_per_week workouts. This is a
@@ -808,8 +827,16 @@ def generate_plan():
             "workouts": PlannedWorkout.query.filter_by(plan_id=p.id).order_by(PlannedWorkout.order_index).all(),
         })
 
+    latest_review = (
+        AIReview.query
+        .filter_by(user_id=profile.id)
+        .order_by(AIReview.created_at.desc())
+        .first()
+    )
+
     return render_template("generate_plan.html", profile=profile, pending_plan=pending_plan,
-                           suggested_start_index=suggested_start_index, past_plans=past_plans)
+                           suggested_start_index=suggested_start_index, past_plans=past_plans,
+                           latest_review=latest_review)
 
 
 @app.route("/generate-plan/generate", methods=["POST"])
@@ -824,9 +851,24 @@ def generate_plan_api():
         user_id=profile.id
     ).order_by(FitnessTest.test_date.desc()).first()
 
+    # Optionally pass the most recent AI review into the plan generation prompt
+    prior_review = None
+    if request.form.get("include_review"):
+        latest_ai_review = (
+            AIReview.query
+            .filter_by(user_id=profile.id)
+            .order_by(AIReview.created_at.desc())
+            .first()
+        )
+        if latest_ai_review and latest_ai_review.suggestions_json:
+            try:
+                prior_review = json.loads(latest_ai_review.suggestions_json)
+            except json.JSONDecodeError:
+                pass
+
     from ai import generate_workout_plan
     try:
-        plan_data = generate_workout_plan(profile, fitness_test=fitness_test)
+        plan_data = generate_workout_plan(profile, fitness_test=fitness_test, prior_review=prior_review)
 
         # Remove any old pending plans
         WorkoutPlan.query.filter_by(user_id=profile.id, status="pending").delete()
@@ -1453,6 +1495,9 @@ def review():
     if not profile:
         return redirect(url_for("setup"))
 
+    active_plan = get_active_plan(profile.id)
+    active_plan_session_count = len(_get_review_sessions(profile.id, active_plan.id)) if active_plan else 0
+
     last_review = (
         AIReview.query
         .filter_by(user_id=profile.id)
@@ -1467,7 +1512,9 @@ def review():
         except json.JSONDecodeError:
             pass
 
-    return render_template("review.html", last_review=last_review, review_data=review_data)
+    return render_template("review.html", last_review=last_review, review_data=review_data,
+                           active_plan_session_count=active_plan_session_count,
+                           active_plan=active_plan)
 
 
 @app.route("/review/generate", methods=["POST"])
@@ -1477,16 +1524,15 @@ def generate_review():
     if not profile:
         return redirect(url_for("setup"))
 
-    sessions = (
-        WorkoutSession.query
-        .filter_by(user_id=profile.id)
-        .order_by(WorkoutSession.date.desc())
-        .limit(30)
-        .all()
-    )
+    active_plan = get_active_plan(profile.id)
+    if not active_plan:
+        flash("No active plan to review.", "info")
+        return redirect(url_for("review"))
+
+    sessions = _get_review_sessions(profile.id, active_plan.id)
 
     if not sessions:
-        flash("No workout sessions to review yet!", "info")
+        flash("No completed sessions on your current plan yet!", "info")
         return redirect(url_for("review"))
 
     sessions_data = []
@@ -1503,6 +1549,7 @@ def generate_review():
         sessions_data.append({
             "date": s.date.isoformat() if s.date else None,
             "workout_name": s.planned_workout.workout_name if s.planned_workout else "Unplanned",
+            "phase": s.phase_name,
             "feeling": s.overall_feeling,
             "notes": s.session_notes,
             "sets": sets_data,
@@ -1510,7 +1557,7 @@ def generate_review():
 
     from ai import generate_progress_review
     try:
-        review_result = generate_progress_review(profile, sessions_data)
+        review_result = generate_progress_review(profile, sessions_data, plan_name=active_plan.name)
 
         ai_review = AIReview(
             user_id=profile.id,

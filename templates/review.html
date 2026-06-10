@@ -41,7 +41,20 @@
 </div>
 {% endif %}
 
+<div class="card mb-2" style="padding: 0.75rem 1rem;">
+    {% if active_plan %}
+        <p class="text-muted" style="margin: 0;">
+            Review will cover <strong>{{ active_plan_session_count }} session{{ 's' if active_plan_session_count != 1 else '' }}</strong>
+            from your current plan: <strong>{{ active_plan.name }}</strong>.
+        </p>
+    {% else %}
+        <p class="text-muted" style="margin: 0;">No active plan. Generate a plan first to enable reviews.</p>
+    {% endif %}
+</div>
+
 <form method="POST" action="{{ url_for('generate_review') }}">
-    <button type="submit" class="btn btn-primary">Generate New Review</button>
+    <button type="submit" class="btn btn-primary"{% if not active_plan or active_plan_session_count == 0 %} disabled{% endif %}>
+        Generate New Review
+    </button>
 </form>
 {% endblock %}

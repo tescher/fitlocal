@@ -32,7 +32,7 @@ def _extract_json(text):
         raise ValueError(f"Invalid JSON in response: {e}") from e
 
 
-def generate_workout_plan(profile, fitness_test=None):
+def generate_workout_plan(profile, fitness_test=None, prior_review=None):
     client = get_client()
 
     fitness_test_section = ""
@@ -47,10 +47,23 @@ Recent Fitness Test Results (use these to calibrate difficulty):
 - Vertical Jump: {fitness_test.vertical_jump_inches} inches
 """
 
+    prior_review_section = ""
+    if prior_review:
+        suggestions = prior_review.get("suggestions", [])
+        suggestions_text = "\n".join(f"  - {s}" for s in suggestions) if suggestions else "  None provided"
+        prior_review_section = f"""
+Prior Plan Review (use these insights to inform the new plan — build on what worked, address what didn't):
+- What was working well: {prior_review.get("whats_working", "N/A")}
+- Watch out for: {prior_review.get("watch_out_for", "N/A")}
+- Suggested adjustments:
+{suggestions_text}
+- Overall assessment: {prior_review.get("overall_assessment", "N/A")}
+"""
+
     prompt = f"""You are a certified personal trainer inspired by Tony Horton's P90X methodology. Create a detailed 12-week periodized workout plan for the following person:
 
 Age: {profile.age}, Sex: {profile.sex}, Fitness Level: {profile.fitness_level}, Goals: {profile.goals}.
-{fitness_test_section}
+{fitness_test_section}{prior_review_section}
 Requirements:
 - Create 3 workouts per cycle labeled "Workout A", "Workout B", "Workout C"
 - The user will do them in sequence on whatever days they choose — do NOT use day names like Monday/Wednesday/Friday
@@ -111,8 +124,11 @@ Return only valid JSON, no commentary."""
     return _extract_json(message.content[0].text)
 
 
-def generate_progress_review(profile, sessions_data):
+def generate_progress_review(profile, sessions_data, plan_name=None):
     client = get_client()
+
+    plan_label = f'"{plan_name}"' if plan_name else "their current"
+    sessions_label = f"all {len(sessions_data)} completed sessions from their {plan_label} plan"
 
     prompt = f"""You are Tony Horton — legendary fitness trainer, creator of P90X. You're reviewing one of your people's workout data. Be DIRECT, MOTIVATIONAL, and use your signature style:
 
@@ -123,7 +139,7 @@ def generate_progress_review(profile, sessions_data):
 
 Client: {profile.name}, Age: {profile.age}, Sex: {profile.sex}, Fitness Level: {profile.fitness_level}, Goals: {profile.goals}.
 
-Here is a summary of their recent workout sessions:
+Here is a summary of {sessions_label}:
 {json.dumps(sessions_data, indent=2)}
 
 Please analyze this data and provide your Tony Horton-style review.
