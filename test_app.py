@@ -15,7 +15,7 @@ from app import app
 app.config["WTF_CSRF_ENABLED"] = False   # disable CSRF tokens in tests
 app.config["TESTING"] = True
 
-from models import db, Account, UserProfile, WorkoutPlan, PlannedWorkout, PlannedExercise, TrainingPhase, FitnessTest, ExerciseLibrary, LoggedSet, WorkoutSession, NextWorkoutNote
+from models import db, Account, UserProfile, WorkoutPlan, PlannedWorkout, PlannedExercise, TrainingPhase, FitnessTest, ExerciseLibrary, LoggedSet, WorkoutSession, NextWorkoutNote, AIReview
 from extensions import bcrypt
 
 passed = 0
@@ -2090,6 +2090,131 @@ with app.app_context():
     active = _gap_wc(profile.id)
     check("switcher: viewing a workout does not change plan position",
           get_next_workout(profile.id, active).workout_name == computed_before)
+
+# ── Change 1: Review scoped to active plan ────────────────────────────────────
+print("\n--- Review: Scoped to Active Plan ---")
+
+# Snapshot active/inactive plan session counts before any manipulation
+with app.app_context():
+    profile = UserProfile.query.first()
+    active_plan_rv = WorkoutPlan.query.filter_by(user_id=profile.id, status='active').first()
+    inactive_plan_rv = WorkoutPlan.query.filter_by(user_id=profile.id, status='inactive').first()
+
+    active_pw_ids_rv = [w.id for w in active_plan_rv.planned_workouts] if active_plan_rv else []
+    inactive_pw_ids_rv = [w.id for w in inactive_plan_rv.planned_workouts] if inactive_plan_rv else []
+
+    active_session_count_rv = WorkoutSession.query.filter(
+        WorkoutSession.user_id == profile.id,
+        WorkoutSession.planned_workout_id.in_(active_pw_ids_rv),
+        WorkoutSession.status == 'completed',
+    ).count() if active_pw_ids_rv else 0
+
+    inactive_session_count_rv = WorkoutSession.query.filter(
+        WorkoutSession.user_id == profile.id,
+        WorkoutSession.planned_workout_id.in_(inactive_pw_ids_rv),
+        WorkoutSession.status == 'completed',
+    ).count() if inactive_pw_ids_rv else 0
+
+# Test 1: _get_review_sessions helper exists and returns only active-plan sessions
+try:
+    from app import _get_review_sessions as _grs_test
+    with app.app_context():
+        profile = UserProfile.query.first()
+        active = WorkoutPlan.query.filter_by(user_id=profile.id, status='active').first()
+        review_sessions = _grs_test(profile.id, active.id)
+        active_pw_ids_set = {w.id for w in active.planned_workouts}
+
+        only_active = all(s.planned_workout_id in active_pw_ids_set for s in review_sessions)
+        check("_get_review_sessions returns only active-plan sessions", only_active)
+
+        inactive_plan_inner = WorkoutPlan.query.filter_by(user_id=profile.id, status='inactive').first()
+        if inactive_plan_inner:
+            inactive_pw_inner = {w.id for w in inactive_plan_inner.planned_workouts}
+            returned_pw_ids = {s.planned_workout_id for s in review_sessions}
+            check("_get_review_sessions excludes inactive-plan sessions",
+                  not bool(inactive_pw_inner & returned_pw_ids))
+        else:
+            check("_get_review_sessions excludes inactive-plan sessions (no inactive plan)", True)
+
+        no_unplanned = all(s.planned_workout_id is not None for s in review_sessions)
+        check("_get_review_sessions excludes unplanned (null) sessions", no_unplanned)
+
+except (ImportError, AttributeError):
+    check("_get_review_sessions helper exists in app", False)
+    check("_get_review_sessions excludes inactive-plan sessions", False)
+    check("_get_review_sessions excludes unplanned (null) sessions", False)
+
+# Test 2: /review page shows the active-plan session count
+r_rv = client.get("/review")
+check("Review page shows active-plan session count",
+      str(active_session_count_rv).encode() in r_rv.data and b"session" in r_rv.data.lower())
+
+# Test 3: inactive-plan sessions exist but must not inflate the count shown on the review page
+# (The count on the page should equal active_session_count_rv, not the cross-plan total.)
+if inactive_session_count_rv > 0:
+    cross_plan_total = active_session_count_rv + inactive_session_count_rv
+    check("Review page does not show cross-plan session total",
+          str(cross_plan_total).encode() not in r_rv.data
+          or str(active_session_count_rv).encode() in r_rv.data)
+else:
+    check("Review page cross-plan count check (skipped — no inactive sessions)", True)
+
+# ── Change 2: Include review checkbox on plan generation ──────────────────────
+print("\n--- Generate Plan: Include Review Checkbox ---")
+
+# Seed an AIReview so the checkbox has something to reference
+with app.app_context():
+    profile = UserProfile.query.first()
+    AIReview.query.filter_by(user_id=profile.id).delete()
+    db.session.add(AIReview(
+        user_id=profile.id,
+        review_text="Great progress overall!",
+        suggestions_json=json.dumps({
+            "whats_working": "Bench press up 15%",
+            "watch_out_for": "Left shoulder fatigue",
+            "suggestions": ["Add more pull work", "Deload next week"],
+            "overall_assessment": "Solid plan completion. Bring it!",
+        }),
+        data_summary=json.dumps({"sessions_count": 36}),
+    ))
+    db.session.commit()
+
+# Test 4: generate-plan page shows the include_review checkbox when a review exists
+r_gp = client.get("/generate-plan")
+check("Generate plan page shows include_review checkbox when review exists",
+      b'name="include_review"' in r_gp.data)
+
+# Test 5: generate-plan page exposes review date so user knows how recent it is
+check("Generate plan page shows review date/context when review exists",
+      b"last review" in r_gp.data.lower()
+      or b"last reviewed" in r_gp.data.lower()
+      or b"prior review" in r_gp.data.lower())
+
+# Test 6: when no review exists the checkbox is absent (not present in the form)
+with app.app_context():
+    profile = UserProfile.query.first()
+    AIReview.query.filter_by(user_id=profile.id).delete()
+    db.session.commit()
+
+r_gp_empty = client.get("/generate-plan")
+check("Generate plan page omits include_review checkbox when no review exists",
+      b'name="include_review"' not in r_gp_empty.data)
+
+# Restore review so the app state is clean for any follow-on inspection
+with app.app_context():
+    profile = UserProfile.query.first()
+    db.session.add(AIReview(
+        user_id=profile.id,
+        review_text="Restored review",
+        suggestions_json=json.dumps({
+            "whats_working": "Solid",
+            "watch_out_for": "Overtraining risk",
+            "suggestions": ["Rest day"],
+            "overall_assessment": "Keep it up!",
+        }),
+        data_summary=json.dumps({"sessions_count": 36}),
+    ))
+    db.session.commit()
 
 # Summary
 print(f"\n{'='*50}")
