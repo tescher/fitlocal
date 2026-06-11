@@ -2253,6 +2253,78 @@ try:
 except Exception as _e:
     check(f"extra_context text appears in plan generation prompt (error: {_e})", False)
 
+# ── Calendar phase colors survive plan activation ─────────────────────────────
+print("\n--- Calendar: Phase Colors After Plan Activation ---")
+
+# Build an old (inactive) plan with its own phase names, tag a session to it,
+# then switch to a new active plan with completely different phase names.
+# The calendar must still show a non-grey color for the old session.
+
+with app.app_context():
+    from app import build_phase_color_map, NO_PHASE_COLOR
+    _profile = UserProfile.query.first()
+
+    # Old plan — now inactive
+    _old_plan = WorkoutPlan(
+        user_id=_profile.id,
+        name="Old Plan",
+        description="",
+        days_per_week=3,
+        plan_json=json.dumps({
+            "plan_name": "Old Plan", "days_per_week": 3, "total_weeks": 12,
+            "phases": [
+                {"phase_name": "Vintage Foundation", "phase_type": "progressive",
+                 "week_start": 1, "week_end": 4, "description": ""},
+            ],
+            "workouts": [],
+        }),
+        status="inactive",
+        total_weeks=12,
+    )
+    db.session.add(_old_plan)
+    db.session.flush()
+
+    # New active plan — completely different phase names
+    _new_plan = WorkoutPlan(
+        user_id=_profile.id,
+        name="New Plan",
+        description="",
+        days_per_week=3,
+        plan_json=json.dumps({
+            "plan_name": "New Plan", "days_per_week": 3, "total_weeks": 12,
+            "phases": [
+                {"phase_name": "Fresh Start", "phase_type": "progressive",
+                 "week_start": 1, "week_end": 4, "description": ""},
+            ],
+            "workouts": [],
+        }),
+        status="active",
+        total_weeks=12,
+    )
+    db.session.add(_new_plan)
+    db.session.commit()
+
+    # Color map built from active plan only — reproduces the bug
+    _active_only_map = build_phase_color_map(_new_plan)
+    _old_color_active_only = _active_only_map.get("Vintage Foundation", NO_PHASE_COLOR)
+
+    # Color map built with user_id — the fix
+    try:
+        _full_map = build_phase_color_map(_new_plan, user_id=_profile.id)
+        _old_color_full = _full_map.get("Vintage Foundation", NO_PHASE_COLOR)
+    except TypeError:
+        _old_color_full = NO_PHASE_COLOR  # user_id kwarg not yet supported
+
+    # Cleanup the test plans
+    db.session.delete(_old_plan)
+    db.session.delete(_new_plan)
+    db.session.commit()
+
+check("Old phase is absent from active-plan-only color map (bug reproduced)",
+      _old_color_active_only == NO_PHASE_COLOR)
+check("Old phase is present in full (user_id) color map",
+      _old_color_full != NO_PHASE_COLOR)
+
 # Summary
 print(f"\n{'='*50}")
 print(f"Results: {passed} passed, {failed} failed out of {passed + failed} tests")
