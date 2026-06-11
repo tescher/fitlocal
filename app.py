@@ -603,16 +603,38 @@ PHASE_COLORS = [
 NO_PHASE_COLOR = "#555555"
 
 
-def build_phase_color_map(active_plan):
-    """Return {phase_name: color} from the plan's phases list."""
-    if not active_plan:
+def build_phase_color_map(active_plan, user_id=None):
+    """Return {phase_name: color} covering phases from all of the user's plans.
+
+    When user_id is provided, inactive (previous) plans are included so that
+    past sessions retain their phase colors after a new plan is activated.
+    Falls back to active_plan only if user_id is not given.
+    """
+    if user_id is not None:
+        plans = (
+            WorkoutPlan.query
+            .filter(WorkoutPlan.user_id == user_id, WorkoutPlan.status.in_(["active", "inactive"]))
+            .order_by(WorkoutPlan.created_at)
+            .all()
+        )
+    elif active_plan:
+        plans = [active_plan]
+    else:
         return {}
-    try:
-        plan_data = json.loads(active_plan.plan_json or "{}")
-        phases = [p.get("phase_name", "") for p in plan_data.get("phases", []) if p.get("phase_name")]
-    except Exception:
-        phases = []
-    return {name: PHASE_COLORS[i % len(PHASE_COLORS)] for i, name in enumerate(phases)}
+
+    all_names = []
+    seen: set = set()
+    for plan in plans:
+        try:
+            plan_data = json.loads(plan.plan_json or "{}")
+            for p in plan_data.get("phases", []):
+                name = p.get("phase_name", "")
+                if name and name not in seen:
+                    all_names.append(name)
+                    seen.add(name)
+        except Exception:
+            pass
+    return {name: PHASE_COLORS[i % len(PHASE_COLORS)] for i, name in enumerate(all_names)}
 
 
 def build_month_calendar(profile_id, year, month, phase_color_map):
@@ -712,7 +734,7 @@ def index():
     # Monthly calendar
     cal_year = request.args.get("cal_year", today.year, type=int)
     cal_month = request.args.get("cal_month", today.month, type=int)
-    phase_color_map = build_phase_color_map(active_plan)
+    phase_color_map = build_phase_color_map(active_plan, user_id=profile.id)
     cal_weeks = build_month_calendar(profile.id, cal_year, cal_month, phase_color_map)
     cal_month_name = cal_module.month_name[cal_month]
     cal_prev_year, cal_prev_month, cal_next_year, cal_next_month = _prev_next_month(cal_year, cal_month)
@@ -1932,7 +1954,7 @@ def calendar_view():
 
     # Reuse the dashboard's phase-colored calendar builder so both views match.
     active_plan = get_active_plan(profile.id)
-    phase_color_map = build_phase_color_map(active_plan)
+    phase_color_map = build_phase_color_map(active_plan, user_id=profile.id)
     weeks = build_month_calendar(profile.id, year, month, phase_color_map)
 
     prev_year, prev_month, next_year, next_month = _prev_next_month(year, month)
