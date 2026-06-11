@@ -100,6 +100,12 @@
                     </p>
                 </div>
                 {% endif %}
+                <div class="form-group mb-1">
+                    <label for="extra_context_regen" style="font-size:0.85rem; font-weight:600;">Additional context <span class="text-muted" style="font-weight:normal;">(optional)</span></label>
+                    <textarea name="extra_context" id="extra_context_regen" rows="3"
+                        placeholder="e.g. Add more variety to the routine, I was getting bored at the end of the last 12 weeks"
+                        style="width:100%; margin-top:0.3rem; padding:0.5rem; border:1px solid var(--border); border-radius:6px; font-size:0.9rem; resize:vertical;"></textarea>
+                </div>
                 <button type="submit" class="btn btn-secondary">Regenerate</button>
             </form>
         </div>
@@ -117,6 +123,13 @@
             </p>
         </div>
         {% endif %}
+        <div class="form-group mb-1">
+            <label for="extra_context" style="font-size:0.85rem; font-weight:600;">Additional context <span class="text-muted" style="font-weight:normal;">(optional)</span></label>
+            <textarea name="extra_context" id="extra_context" rows="3"
+                placeholder="e.g. Add more variety to the routine, I was getting bored at the end of the last 12 weeks"
+                style="width:100%; margin-top:0.3rem; padding:0.5rem; border:1px solid var(--border); border-radius:6px; font-size:0.9rem; resize:vertical;"></textarea>
+            <p class="text-muted" style="font-size:0.75rem; margin-top:0.2rem;">Anything extra you want the AI to factor in — preferences, things to avoid, goals that have shifted, etc.</p>
+        </div>
         <button type="submit" class="btn btn-primary">Generate My Workout Plan</button>
     </form>
 {% endif %}

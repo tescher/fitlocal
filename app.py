@@ -866,9 +866,11 @@ def generate_plan_api():
             except json.JSONDecodeError:
                 pass
 
+    extra_context = request.form.get("extra_context", "").strip() or None
+
     from ai import generate_workout_plan
     try:
-        plan_data = generate_workout_plan(profile, fitness_test=fitness_test, prior_review=prior_review)
+        plan_data = generate_workout_plan(profile, fitness_test=fitness_test, prior_review=prior_review, extra_context=extra_context)
 
         # Remove any old pending plans
         WorkoutPlan.query.filter_by(user_id=profile.id, status="pending").delete()
