@@ -32,7 +32,7 @@ def _extract_json(text):
         raise ValueError(f"Invalid JSON in response: {e}") from e
 
 
-def generate_workout_plan(profile, fitness_test=None, prior_review=None):
+def generate_workout_plan(profile, fitness_test=None, prior_review=None, extra_context=None):
     client = get_client()
 
     fitness_test_section = ""
@@ -60,10 +60,17 @@ Prior Plan Review (use these insights to inform the new plan — build on what w
 - Overall assessment: {prior_review.get("overall_assessment", "N/A")}
 """
 
+    extra_context_section = ""
+    if extra_context and extra_context.strip():
+        extra_context_section = f"""
+Additional context from the user (treat this as high-priority input when building the plan):
+{extra_context.strip()}
+"""
+
     prompt = f"""You are a certified personal trainer inspired by Tony Horton's P90X methodology. Create a detailed 12-week periodized workout plan for the following person:
 
 Age: {profile.age}, Sex: {profile.sex}, Fitness Level: {profile.fitness_level}, Goals: {profile.goals}.
-{fitness_test_section}{prior_review_section}
+{fitness_test_section}{prior_review_section}{extra_context_section}
 Requirements:
 - Create 3 workouts per cycle labeled "Workout A", "Workout B", "Workout C"
 - The user will do them in sequence on whatever days they choose — do NOT use day names like Monday/Wednesday/Friday
