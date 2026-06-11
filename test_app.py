@@ -2216,6 +2216,43 @@ with app.app_context():
     ))
     db.session.commit()
 
+# ── Extra context textarea on plan generation ─────────────────────────────────
+print("\n--- Generate Plan: Extra Context Textarea ---")
+
+# Test: generate-plan page always shows the extra_context textarea
+r_gp_ctx = client.get("/generate-plan")
+check("Generate plan page shows extra_context textarea",
+      b'name="extra_context"' in r_gp_ctx.data)
+
+# Test: extra_context textarea has a useful placeholder or label
+check("Generate plan page labels the extra_context field meaningfully",
+      b"extra_context" in r_gp_ctx.data and (
+          b"context" in r_gp_ctx.data.lower() or b"notes" in r_gp_ctx.data.lower()
+      ))
+
+# Unit test: extra_context is forwarded into the plan generation prompt
+print("\n--- AI: extra_context in plan generation prompt ---")
+import unittest.mock as _mock
+_stub_plan = json.dumps({
+    "plan_name": "Test Plan", "description": "", "days_per_week": 3,
+    "total_weeks": 12, "phases": [], "workouts": [],
+})
+try:
+    with _mock.patch("ai.get_client") as _mock_client:
+        _msg = _mock.MagicMock()
+        _msg.content = [_mock.MagicMock(text=_stub_plan)]
+        _mock_client.return_value.messages.create.return_value = _msg
+        with app.app_context():
+            from ai import generate_workout_plan
+            _profile = UserProfile.query.first()
+            _extra = "Add more variety, I was getting bored at the end of the last 12 weeks"
+            generate_workout_plan(_profile, extra_context=_extra)
+            _call = _mock_client.return_value.messages.create.call_args
+            _prompt = _call.kwargs["messages"][0]["content"]
+            check("extra_context text appears in plan generation prompt", _extra in _prompt)
+except Exception as _e:
+    check(f"extra_context text appears in plan generation prompt (error: {_e})", False)
+
 # Summary
 print(f"\n{'='*50}")
 print(f"Results: {passed} passed, {failed} failed out of {passed + failed} tests")
