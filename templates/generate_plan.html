@@ -70,8 +70,8 @@
             </div>
         {% endfor %}
 
-        <div class="flex-between mt-2" style="align-items: flex-end; gap: 1rem;">
-            <form method="POST" action="{{ url_for('confirm_plan') }}" style="flex: 1;">
+        <div class="mt-2">
+            <form method="POST" action="{{ url_for('confirm_plan') }}">
                 <div class="form-group mb-1">
                     <label for="start_workout"><strong>Start from:</strong></label>
                     <select name="start_workout_index" id="start_workout"
@@ -88,7 +88,11 @@
                 </div>
                 <button type="submit" class="btn btn-success">Activate This Plan</button>
             </form>
+
+            <hr style="margin: 1.5rem 0; border: none; border-top: 1px solid var(--border);">
+
             <form method="POST" action="{{ url_for('generate_plan_api') }}" onsubmit="showLoading()">
+                <p style="font-weight:600; margin-bottom:0.75rem;">Not quite right? Regenerate with adjustments:</p>
                 {% if latest_review %}
                 <div class="form-group mb-1" style="font-size:0.85rem;">
                     <label style="display:flex; align-items:center; gap:0.4rem; cursor:pointer;">
@@ -105,6 +109,7 @@
                     <textarea name="extra_context" id="extra_context_regen" rows="3"
                         placeholder="e.g. Add more variety to the routine, I was getting bored at the end of the last 12 weeks"
                         style="width:100%; margin-top:0.3rem; padding:0.5rem; border:1px solid var(--border); border-radius:6px; font-size:0.9rem; resize:vertical;"></textarea>
+                    <p class="text-muted" style="font-size:0.75rem; margin-top:0.2rem;">Anything extra you want the AI to factor in — preferences, things to avoid, goals that have shifted, etc.</p>
                 </div>
                 <button type="submit" class="btn btn-secondary">Regenerate</button>
             </form>
