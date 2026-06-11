@@ -2253,6 +2253,99 @@ try:
 except Exception as _e:
     check(f"extra_context text appears in plan generation prompt (error: {_e})", False)
 
+# ── Calendar phase colors survive plan activation ─────────────────────────────
+print("\n--- Calendar: Phase Colors After Plan Activation ---")
+
+# Scenario: old plan (inactive) has phases "Vintage Foundation" (index 0) and
+# "Vintage Peak" (index 1). A new active plan has completely different phase
+# names. Sessions from the old plan must be colored by their phase's position
+# (index) in the OLD plan, not grey.
+
+with app.app_context():
+    from app import build_phase_color_map, build_month_calendar, PHASE_COLORS, NO_PHASE_COLOR
+    from datetime import date as _date
+    _profile = UserProfile.query.first()
+    _today = _date.today()
+
+    # Old plan — two phases
+    _old_plan = WorkoutPlan(
+        user_id=_profile.id, name="Old Plan", description="",
+        days_per_week=3,
+        plan_json=json.dumps({
+            "plan_name": "Old Plan", "days_per_week": 3, "total_weeks": 12,
+            "phases": [
+                {"phase_name": "Vintage Foundation", "phase_type": "progressive",
+                 "week_start": 1, "week_end": 4, "description": ""},
+                {"phase_name": "Vintage Peak", "phase_type": "progressive",
+                 "week_start": 5, "week_end": 8, "description": ""},
+            ],
+            "workouts": [],
+        }),
+        status="inactive", total_weeks=12,
+    )
+    db.session.add(_old_plan)
+    db.session.flush()
+
+    _old_pw = PlannedWorkout(
+        plan_id=_old_plan.id, day_of_week="Workout A",
+        workout_name="Old Workout", order_index=0,
+    )
+    db.session.add(_old_pw)
+    db.session.flush()
+
+    # New active plan — different phase names
+    _new_plan = WorkoutPlan(
+        user_id=_profile.id, name="New Plan", description="",
+        days_per_week=3,
+        plan_json=json.dumps({
+            "plan_name": "New Plan", "days_per_week": 3, "total_weeks": 12,
+            "phases": [
+                {"phase_name": "Fresh Start", "phase_type": "progressive",
+                 "week_start": 1, "week_end": 4, "description": ""},
+            ],
+            "workouts": [],
+        }),
+        status="active", total_weeks=12,
+    )
+    db.session.add(_new_plan)
+
+    # Session tagged to the old plan's second phase (index 1)
+    _old_session = WorkoutSession(
+        user_id=_profile.id, planned_workout_id=_old_pw.id,
+        date=_today, phase_name="Vintage Peak",
+        status="completed", overall_feeling=3,
+    )
+    db.session.add(_old_session)
+    db.session.commit()
+
+    # Legend uses only the current active plan — must NOT include old phase names
+    _legend_map = build_phase_color_map(_new_plan)
+
+    # Calendar must color the old session by its phase's index in the OLD plan
+    try:
+        _weeks = build_month_calendar(_profile.id, _today.year, _today.month)
+        _session_color = NO_PHASE_COLOR
+        for _week in _weeks:
+            for _day in _week:
+                if _day and _day["date"] == _today:
+                    for _s in _day["sessions"]:
+                        if _s["id"] == _old_session.id:
+                            _session_color = _s["color"]
+    except Exception as _ce:
+        _session_color = f"error: {_ce}"
+
+    # Cleanup
+    db.session.delete(_old_session)
+    db.session.delete(_old_pw)
+    db.session.delete(_old_plan)
+    db.session.delete(_new_plan)
+    db.session.commit()
+
+check("Legend (build_phase_color_map) omits old plan phase names",
+      "Vintage Foundation" not in _legend_map and "Vintage Peak" not in _legend_map)
+check("Old session colored by phase index in its own plan (not grey)",
+      _session_color == PHASE_COLORS[1])  # "Vintage Peak" is index 1 → PHASE_COLORS[1]
+
 # Summary
 print(f"\n{'='*50}")
 print(f"Results: {passed} passed, {failed} failed out of {passed + failed} tests")

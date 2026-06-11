@@ -604,7 +604,7 @@ NO_PHASE_COLOR = "#555555"
 
 
 def build_phase_color_map(active_plan):
-    """Return {phase_name: color} from the plan's phases list."""
+    """Return {phase_name: color} for the active plan's phases (legend use only)."""
     if not active_plan:
         return {}
     try:
@@ -615,11 +615,14 @@ def build_phase_color_map(active_plan):
     return {name: PHASE_COLORS[i % len(PHASE_COLORS)] for i, name in enumerate(phases)}
 
 
-def build_month_calendar(profile_id, year, month, phase_color_map):
+def build_month_calendar(profile_id, year, month):
     """Build a Sun-Sat calendar grid for the given month.
 
     Each day is None (padding) or a dict with keys:
         day, date, is_today, sessions=[{id, phase_name, color}]
+
+    Sessions are colored by their phase's position (index) in the plan they
+    belong to, so colors survive plan activation without polluting the legend.
     """
     today = date.today()
     first_day = date(year, month, 1)
@@ -632,14 +635,39 @@ def build_month_calendar(profile_id, year, month, phase_color_map):
         WorkoutSession.status == SESSION_STATUS_COMPLETED,
     ).order_by(WorkoutSession.date, WorkoutSession.id).all()
 
-    # Group sessions by date
+    # Build per-plan phase-name → color map (keyed by plan_id) for all plans
+    # referenced by sessions in this month, resolved in one batch.
+    pw_ids = {s.planned_workout_id for s in sessions if s.planned_workout_id}
+    plan_id_by_pw: dict = {}
+    if pw_ids:
+        for pw in PlannedWorkout.query.filter(PlannedWorkout.id.in_(pw_ids)).all():
+            plan_id_by_pw[pw.id] = pw.plan_id
+
+    phase_colors_by_plan: dict = {}
+    plan_ids = set(plan_id_by_pw.values())
+    if plan_ids:
+        for plan in WorkoutPlan.query.filter(WorkoutPlan.id.in_(plan_ids)).all():
+            try:
+                phases = json.loads(plan.plan_json or "{}").get("phases", [])
+                phase_colors_by_plan[plan.id] = {
+                    p["phase_name"]: PHASE_COLORS[i % len(PHASE_COLORS)]
+                    for i, p in enumerate(phases)
+                    if p.get("phase_name")
+                }
+            except Exception:
+                phase_colors_by_plan[plan.id] = {}
+
+    # Group sessions by date, coloring each by its phase index within its own plan
     sessions_by_date = {}
     for s in sessions:
+        plan_id = plan_id_by_pw.get(s.planned_workout_id)
+        plan_phases = phase_colors_by_plan.get(plan_id, {}) if plan_id else {}
+        color = plan_phases.get(s.phase_name, NO_PHASE_COLOR) if s.phase_name else NO_PHASE_COLOR
         sessions_by_date.setdefault(s.date, []).append({
             "id": s.id,
             "phase_name": s.phase_name,
             "workout_name": s.planned_workout.workout_name if s.planned_workout else None,
-            "color": phase_color_map.get(s.phase_name, NO_PHASE_COLOR) if s.phase_name else NO_PHASE_COLOR,
+            "color": color,
         })
 
     # Build Sun-Sat grid (firstweekday=6 means Sunday)
@@ -713,7 +741,7 @@ def index():
     cal_year = request.args.get("cal_year", today.year, type=int)
     cal_month = request.args.get("cal_month", today.month, type=int)
     phase_color_map = build_phase_color_map(active_plan)
-    cal_weeks = build_month_calendar(profile.id, cal_year, cal_month, phase_color_map)
+    cal_weeks = build_month_calendar(profile.id, cal_year, cal_month)
     cal_month_name = cal_module.month_name[cal_month]
     cal_prev_year, cal_prev_month, cal_next_year, cal_next_month = _prev_next_month(cal_year, cal_month)
 
@@ -1933,7 +1961,7 @@ def calendar_view():
     # Reuse the dashboard's phase-colored calendar builder so both views match.
     active_plan = get_active_plan(profile.id)
     phase_color_map = build_phase_color_map(active_plan)
-    weeks = build_month_calendar(profile.id, year, month, phase_color_map)
+    weeks = build_month_calendar(profile.id, year, month)
 
     prev_year, prev_month, next_year, next_month = _prev_next_month(year, month)
     month_name = cal_module.month_name[month]
