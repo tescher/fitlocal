@@ -778,6 +778,120 @@ class TestHistory:
 
 
 # ---------------------------------------------------------------------------
+# Exercise ordering in workout summary and history detail
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def reversed_order_plan(application, profile):
+    """Plan where exercise order is intentionally reverse-alphabetical
+    (Squats at index 0, Bench Press at index 1), so plan order differs
+    from alphabetical order and can be detected in tests."""
+    plan_data = {
+        "plan_name": "Order Test Plan", "description": "desc",
+        "days_per_week": 1, "total_weeks": 4,
+        "phases": [],
+        "workouts": [
+            {"day": "Workout A", "name": "Full Body", "exercises": [
+                {"name": "Squats", "type": "main", "sets": 2, "reps": "10",
+                 "rest_seconds": 90, "notes": "", "form_cues": ""},
+                {"name": "Bench Press", "type": "main", "sets": 2, "reps": "10",
+                 "rest_seconds": 90, "notes": "", "form_cues": ""},
+            ]},
+        ],
+    }
+    with application.app_context():
+        p = UserProfile.query.get(profile)
+        plan = WorkoutPlan(
+            user_id=p.id, name="Order Test Plan", description="desc",
+            days_per_week=1, plan_json=json.dumps(plan_data),
+            is_active=True, total_weeks=4, current_week=1,
+            start_date=date.today(),
+        )
+        db.session.add(plan)
+        db.session.flush()
+        pw = PlannedWorkout(
+            plan_id=plan.id, day_of_week="Workout A",
+            workout_name="Full Body", order_index=0,
+        )
+        db.session.add(pw)
+        db.session.flush()
+        for idx, ex in enumerate([
+            {"name": "Squats", "type": "main", "sets": 2, "reps": "10",
+             "rest_seconds": 90, "notes": "", "form_cues": ""},
+            {"name": "Bench Press", "type": "main", "sets": 2, "reps": "10",
+             "rest_seconds": 90, "notes": "", "form_cues": ""},
+        ]):
+            pe = PlannedExercise(
+                planned_workout_id=pw.id,
+                exercise_name=ex["name"],
+                sets_prescribed=ex["sets"],
+                reps_prescribed=ex["reps"],
+                rest_seconds=ex["rest_seconds"],
+                notes=ex["notes"],
+                exercise_type=ex["type"],
+                form_cues=ex["form_cues"],
+                order_index=idx,
+            )
+            db.session.add(pe)
+        db.session.commit()
+        return plan.id
+
+
+class TestExerciseOrdering:
+    """Exercises in workout summary and history detail follow plan order, not alphabetical."""
+
+    def _build_form(self, application):
+        items = [("overall_feeling", "4"), ("session_notes", "")]
+        with application.app_context():
+            pw = PlannedWorkout.query.filter_by(workout_name="Full Body").first()
+            items.append(("planned_workout_id", str(pw.id)))
+            for ex in (PlannedExercise.query
+                       .filter_by(planned_workout_id=pw.id)
+                       .order_by(PlannedExercise.order_index)
+                       .all()):
+                for s in range(1, ex.sets_prescribed + 1):
+                    items += [
+                        ("exercise_name", ex.exercise_name),
+                        ("set_number", str(s)),
+                        ("weight", "135"),
+                        ("reps", "10"),
+                        ("rpe", "7"),
+                        ("set_notes", ""),
+                    ]
+        return items
+
+    def test_workout_done_shows_exercises_in_plan_order(
+        self, client, application, profile, reversed_order_plan
+    ):
+        """POST /workout/log summary must show Squats (order 0) before Bench Press (order 1)."""
+        r = client.post("/workout/log", data=MultiDict(self._build_form(application)))
+        assert r.status_code == 200
+        html = r.data
+        assert b"Squats" in html and b"Bench Press" in html
+        assert html.index(b"Squats") < html.index(b"Bench Press"), (
+            "Squats (plan order 0) should appear before Bench Press (plan order 1) "
+            "but response shows alphabetical order (Bench Press first)"
+        )
+
+    def test_session_detail_shows_exercises_in_plan_order(
+        self, client, application, profile, reversed_order_plan
+    ):
+        """GET /history/<id> must show Squats (order 0) before Bench Press (order 1)."""
+        client.post("/workout/log", data=MultiDict(self._build_form(application)))
+        with application.app_context():
+            ws = WorkoutSession.query.first()
+            sid = ws.id
+        r = client.get(f"/history/{sid}")
+        assert r.status_code == 200
+        html = r.data
+        assert b"Squats" in html and b"Bench Press" in html
+        assert html.index(b"Squats") < html.index(b"Bench Press"), (
+            "Squats (plan order 0) should appear before Bench Press (plan order 1) "
+            "but response shows alphabetical order (Bench Press first)"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Review page
 # ---------------------------------------------------------------------------
 

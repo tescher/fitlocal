@@ -1070,6 +1070,20 @@ def choose_workout():
     return redirect(url_for("workout_today", show=workout_index))
 
 
+def _exercise_order_key(session_obj):
+    order_map = {}
+    if session_obj.planned_workout_id:
+        planned = (
+            PlannedExercise.query
+            .filter_by(planned_workout_id=session_obj.planned_workout_id)
+            .order_by(PlannedExercise.order_index)
+            .all()
+        )
+        order_map = {e.exercise_name: i for i, e in enumerate(planned)}
+    fallback = len(order_map)
+    return lambda s: (order_map.get(s.exercise_name, fallback), s.set_number)
+
+
 def _parse_logged_sets_from_form():
     """Parse the list-based set fields from the current request form."""
     exercise_names = request.form.getlist("exercise_name")
@@ -1398,7 +1412,7 @@ def workout_log():
     return render_template(
         "workout_done.html",
         session_obj=workout_session,
-        logged_sets=workout_session.logged_sets,
+        logged_sets=sorted(workout_session.logged_sets, key=_exercise_order_key(workout_session)),
     )
 
 
@@ -1505,7 +1519,7 @@ def delete_session(session_id):
 @login_required
 def session_detail(session_id):
     workout_session = WorkoutSession.query.get_or_404(session_id)
-    logged_sets = sorted(workout_session.logged_sets, key=lambda s: (s.exercise_name, s.set_number))
+    logged_sets = sorted(workout_session.logged_sets, key=_exercise_order_key(workout_session))
 
     exercises = {}
     for s in logged_sets:
