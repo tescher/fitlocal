@@ -18,7 +18,14 @@
     {% endif %}
 </div>
 
+{% set section_labels = {'warmup': 'Warm-Up', 'main': 'Workout', 'cooldown': 'Cool-Down'} %}
+{% set ns = namespace(current_type=None) %}
 {% for exercise_name, sets in exercises.items() %}
+{% set ex_type = exercise_type_map.get(exercise_name, 'main') %}
+{% if ex_type != ns.current_type %}
+{% set ns.current_type = ex_type %}
+<div class="section-header {{ ex_type }}-header">{{ section_labels.get(ex_type, 'Workout') }}</div>
+{% endif %}
 {% set exercise_has_superset = sets | selectattr('weight_b') | list | length > 0 %}
 <div class="exercise-block">
     <h3>{{ exercise_name }}</h3>

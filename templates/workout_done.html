@@ -16,6 +16,9 @@
     {% endif %}
 
     {% set has_superset = logged_sets | selectattr('weight_b') | list | length > 0 %}
+    {% set col_count = 6 if has_superset else 4 %}
+    {% set section_labels = {'warmup': 'Warm-Up', 'main': 'Workout', 'cooldown': 'Cool-Down'} %}
+    {% set ns = namespace(current_type=None) %}
     <table class="mt-2">
         <thead>
             <tr>
@@ -28,7 +31,16 @@
             </tr>
         </thead>
         <tbody>
-            {% for s in logged_sets | sort(attribute='set_number') | sort(attribute='exercise_name') %}
+            {% for s in logged_sets %}
+            {% set ex_type = exercise_type_map.get(s.exercise_name, 'main') %}
+            {% if ex_type != ns.current_type %}
+            {% set ns.current_type = ex_type %}
+            <tr>
+                <td colspan="{{ col_count }}" class="section-header {{ ex_type }}-header" style="border:none;">
+                    {{ section_labels.get(ex_type, 'Workout') }}
+                </td>
+            </tr>
+            {% endif %}
             <tr>
                 <td>{{ s.exercise_name }}</td>
                 <td>{{ s.set_number }}</td>

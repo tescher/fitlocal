@@ -1070,6 +1070,37 @@ def choose_workout():
     return redirect(url_for("workout_today", show=workout_index))
 
 
+def _planned_exercises_for_session(session_obj):
+    if not session_obj.planned_workout_id:
+        return []
+    return (
+        PlannedExercise.query
+        .filter_by(planned_workout_id=session_obj.planned_workout_id)
+        .order_by(PlannedExercise.order_index)
+        .all()
+    )
+
+
+_TYPE_PRIORITY = {"warmup": 0, "main": 1, "cooldown": 2}
+
+
+def _exercise_order_key(session_obj):
+    planned = _planned_exercises_for_session(session_obj)
+    order_map = {e.exercise_name: i for i, e in enumerate(planned)}
+    type_map = {e.exercise_name: e.exercise_type for e in planned}
+    fallback_order = len(order_map)
+    return lambda s: (
+        _TYPE_PRIORITY.get(type_map.get(s.exercise_name, "main"), 1),
+        order_map.get(s.exercise_name, fallback_order),
+        s.set_number,
+    )
+
+
+def _exercise_type_map(session_obj):
+    return {e.exercise_name: e.exercise_type
+            for e in _planned_exercises_for_session(session_obj)}
+
+
 def _parse_logged_sets_from_form():
     """Parse the list-based set fields from the current request form."""
     exercise_names = request.form.getlist("exercise_name")
@@ -1398,7 +1429,8 @@ def workout_log():
     return render_template(
         "workout_done.html",
         session_obj=workout_session,
-        logged_sets=workout_session.logged_sets,
+        logged_sets=sorted(workout_session.logged_sets, key=_exercise_order_key(workout_session)),
+        exercise_type_map=_exercise_type_map(workout_session),
     )
 
 
@@ -1505,7 +1537,7 @@ def delete_session(session_id):
 @login_required
 def session_detail(session_id):
     workout_session = WorkoutSession.query.get_or_404(session_id)
-    logged_sets = sorted(workout_session.logged_sets, key=lambda s: (s.exercise_name, s.set_number))
+    logged_sets = sorted(workout_session.logged_sets, key=_exercise_order_key(workout_session))
 
     exercises = {}
     for s in logged_sets:
@@ -1515,6 +1547,7 @@ def session_detail(session_id):
         "session_detail.html",
         session_obj=workout_session,
         exercises=exercises,
+        exercise_type_map=_exercise_type_map(workout_session),
     )
 
 
