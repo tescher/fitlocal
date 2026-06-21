@@ -1081,16 +1081,24 @@ def _planned_exercises_for_session(session_obj):
     )
 
 
+_TYPE_PRIORITY = {"warmup": 0, "main": 1, "cooldown": 2}
+
+
 def _exercise_order_key(session_obj):
     planned = _planned_exercises_for_session(session_obj)
     order_map = {e.exercise_name: i for i, e in enumerate(planned)}
-    fallback = len(order_map)
-    return lambda s: (order_map.get(s.exercise_name, fallback), s.set_number)
+    type_map = {e.exercise_name: e.exercise_type for e in planned}
+    fallback_order = len(order_map)
+    return lambda s: (
+        _TYPE_PRIORITY.get(type_map.get(s.exercise_name, "main"), 1),
+        order_map.get(s.exercise_name, fallback_order),
+        s.set_number,
+    )
 
 
 def _exercise_type_map(session_obj):
-    planned = _planned_exercises_for_session(session_obj)
-    return {e.exercise_name: e.exercise_type for e in planned}
+    return {e.exercise_name: e.exercise_type
+            for e in _planned_exercises_for_session(session_obj)}
 
 
 def _parse_logged_sets_from_form():
