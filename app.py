@@ -1070,18 +1070,27 @@ def choose_workout():
     return redirect(url_for("workout_today", show=workout_index))
 
 
+def _planned_exercises_for_session(session_obj):
+    if not session_obj.planned_workout_id:
+        return []
+    return (
+        PlannedExercise.query
+        .filter_by(planned_workout_id=session_obj.planned_workout_id)
+        .order_by(PlannedExercise.order_index)
+        .all()
+    )
+
+
 def _exercise_order_key(session_obj):
-    order_map = {}
-    if session_obj.planned_workout_id:
-        planned = (
-            PlannedExercise.query
-            .filter_by(planned_workout_id=session_obj.planned_workout_id)
-            .order_by(PlannedExercise.order_index)
-            .all()
-        )
-        order_map = {e.exercise_name: i for i, e in enumerate(planned)}
+    planned = _planned_exercises_for_session(session_obj)
+    order_map = {e.exercise_name: i for i, e in enumerate(planned)}
     fallback = len(order_map)
     return lambda s: (order_map.get(s.exercise_name, fallback), s.set_number)
+
+
+def _exercise_type_map(session_obj):
+    planned = _planned_exercises_for_session(session_obj)
+    return {e.exercise_name: e.exercise_type for e in planned}
 
 
 def _parse_logged_sets_from_form():
@@ -1413,6 +1422,7 @@ def workout_log():
         "workout_done.html",
         session_obj=workout_session,
         logged_sets=sorted(workout_session.logged_sets, key=_exercise_order_key(workout_session)),
+        exercise_type_map=_exercise_type_map(workout_session),
     )
 
 
@@ -1529,6 +1539,7 @@ def session_detail(session_id):
         "session_detail.html",
         session_obj=workout_session,
         exercises=exercises,
+        exercise_type_map=_exercise_type_map(workout_session),
     )
 
 
