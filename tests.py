@@ -124,7 +124,7 @@ def active_plan(application, profile):
         plan = WorkoutPlan(
             user_id=p.id, name="Test Plan", description="desc",
             days_per_week=3, plan_json=json.dumps(plan_data),
-            is_active=True, total_weeks=12, current_week=1,
+            status="active", total_weeks=12, current_week=1,
             start_date=date.today(),
         )
         db.session.add(plan)
@@ -296,7 +296,7 @@ class TestPlanGeneration:
             pending = WorkoutPlan(
                 user_id=p.id, name="AI Plan", description="desc",
                 days_per_week=3, plan_json=plan_json,
-                is_active=False, notes="pending", total_weeks=12,
+                status="pending", total_weeks=12,
             )
             db.session.add(pending)
             db.session.commit()
@@ -305,7 +305,7 @@ class TestPlanGeneration:
         assert r.status_code == 302
 
         with application.app_context():
-            plan = WorkoutPlan.query.filter_by(is_active=True).first()
+            plan = WorkoutPlan.query.filter_by(status="active").first()
             assert plan is not None
             assert plan.name == "AI Plan"
             assert plan.start_date == date.today()
@@ -330,7 +330,7 @@ class TestPlanGeneration:
             pending = WorkoutPlan(
                 user_id=p.id, name="Plan", description="",
                 days_per_week=3, plan_json=plan_json,
-                is_active=False, notes="pending", total_weeks=12,
+                status="pending", total_weeks=12,
             )
             db.session.add(pending)
             db.session.commit()
@@ -367,7 +367,7 @@ class TestExerciseLibraryFK:
             p = UserProfile.query.get(profile)
             pending = WorkoutPlan(
                 user_id=p.id, name="Plan", description="", days_per_week=3,
-                plan_json=plan_json, is_active=False, notes="pending", total_weeks=12,
+                plan_json=plan_json, status="pending", total_weeks=12,
             )
             db.session.add(pending)
             db.session.commit()
@@ -393,7 +393,7 @@ class TestExerciseLibraryFK:
             p = UserProfile.query.get(profile)
             pending = WorkoutPlan(
                 user_id=p.id, name="Plan", description="", days_per_week=3,
-                plan_json=plan_json, is_active=False, notes="pending", total_weeks=12,
+                plan_json=plan_json, status="pending", total_weeks=12,
             )
             db.session.add(pending)
             db.session.commit()
