@@ -2346,6 +2346,54 @@ check("Legend (build_phase_color_map) omits old plan phase names",
 check("Old session colored by phase index in its own plan (not grey)",
       _session_color == PHASE_COLORS[1])  # "Vintage Peak" is index 1 → PHASE_COLORS[1]
 
+# ── Exercise History API (popup chart) ─────────────────────────────────────────
+print("\n--- Exercise History API ---")
+
+with app.app_context():
+    from app import get_active_plan as _gap_hist
+    _profile_hist = UserProfile.query.first()
+    _active_hist = _gap_hist(_profile_hist.id)
+    _pw_hist = PlannedWorkout.query.filter_by(plan_id=_active_hist.id).first()
+
+    _hist_session = WorkoutSession(
+        user_id=_profile_hist.id, planned_workout_id=_pw_hist.id,
+        date=date.today(), status="completed", overall_feeling=4,
+    )
+    db.session.add(_hist_session)
+    db.session.flush()
+    db.session.add(LoggedSet(session_id=_hist_session.id, exercise_name="History Chart Exercise",
+                              set_number=1, weight_lbs=100.0, reps_completed=10, rpe=6))
+    db.session.add(LoggedSet(session_id=_hist_session.id, exercise_name="History Chart Exercise",
+                              set_number=2, weight_lbs=110.0, reps_completed=8, rpe=8))
+    db.session.commit()
+    _hist_session_id = _hist_session.id
+
+r = client.get("/api/exercise/history", query_string={"name": "History Chart Exercise"})
+check("GET /api/exercise/history returns 200", r.status_code == 200)
+
+_hist_json = r.get_json()
+check("Response is a list with one session", isinstance(_hist_json, list) and len(_hist_json) == 1)
+if _hist_json:
+    check("Session volume computed correctly",
+          _hist_json[0]["volume"] == 100.0 * 10 + 110.0 * 8)
+    check("Session avg_rpe computed correctly", _hist_json[0]["avg_rpe"] == 7.0)
+    check("Session id included", _hist_json[0]["session_id"] == _hist_session_id)
+
+# Missing name param
+r = client.get("/api/exercise/history")
+check("GET /api/exercise/history without name returns 400", r.status_code == 400)
+
+# Unknown exercise name returns empty list, not an error
+r = client.get("/api/exercise/history", query_string={"name": "Never Logged Exercise"})
+check("GET /api/exercise/history for unknown exercise returns 200", r.status_code == 200)
+check("Unknown exercise returns empty list", r.get_json() == [])
+
+# Unauthenticated request is rejected
+anon_client = app.test_client()
+r_anon = anon_client.get("/api/exercise/history", query_string={"name": "History Chart Exercise"})
+check("GET /api/exercise/history unauthenticated returns 401 or redirect",
+      r_anon.status_code in (401, 302))
+
 # Summary
 print(f"\n{'='*50}")
 print(f"Results: {passed} passed, {failed} failed out of {passed + failed} tests")
