@@ -561,6 +561,41 @@ def get_recent_performance(user_id, exercise_name, limit=3):
     return result
 
 
+def get_exercise_history(user_id, exercise_name):
+    """All completed sessions containing this exercise, oldest first, with
+    per-session total volume (sum of weight x reps) and average RPE.
+    Powers the exercise history popup chart on the workout logging page.
+    """
+    sessions = (
+        WorkoutSession.query
+        .filter(
+            WorkoutSession.user_id == user_id,
+            WorkoutSession.logged_sets.any(LoggedSet.exercise_name == exercise_name),
+            WorkoutSession.status == SESSION_STATUS_COMPLETED,
+        )
+        .order_by(WorkoutSession.date.asc(), WorkoutSession.id.asc())
+        .all()
+    )
+
+    result = []
+    for session in sessions:
+        sets = [s for s in session.logged_sets if s.exercise_name == exercise_name]
+        volume = sum(
+            (s.weight_lbs or 0) * (s.reps_completed or 0)
+            + (s.weight_b or 0) * (s.reps_b or 0)
+            for s in sets
+        )
+        rpes = [s.rpe for s in sets if s.rpe is not None]
+        avg_rpe = round(sum(rpes) / len(rpes), 1) if rpes else None
+        result.append({
+            "date": session.date.isoformat(),
+            "session_id": session.id,
+            "volume": volume,
+            "avg_rpe": avg_rpe,
+        })
+    return result
+
+
 def update_streak(profile):
     """Update the user's workout streak after logging a session."""
     today = date.today()
@@ -1912,6 +1947,18 @@ def api_exercise_library():
                for n in sorted(history_names)]
 
     return jsonify(result)
+
+
+@app.route("/api/exercise/history")
+@login_required
+def api_exercise_history():
+    profile = get_profile()
+    if not profile:
+        return jsonify([]), 401
+    exercise_name = request.args.get("name", "")
+    if not exercise_name:
+        return jsonify({"error": "name required"}), 400
+    return jsonify(get_exercise_history(profile.id, exercise_name))
 
 
 @app.route("/settings")

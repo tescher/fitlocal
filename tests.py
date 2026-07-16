@@ -687,6 +687,106 @@ class TestLastPerformance:
 
 
 # ---------------------------------------------------------------------------
+# Exercise history (for the exercise history popup chart)
+# ---------------------------------------------------------------------------
+
+class TestExerciseHistory:
+    def test_returns_empty_list_when_no_history(self, application, profile):
+        with application.app_context():
+            from app import get_exercise_history
+            result = get_exercise_history(profile, "Bench Press")
+            assert result == []
+
+    def test_computes_volume_and_avg_rpe(self, application, profile, active_plan):
+        with application.app_context():
+            pw = PlannedWorkout.query.filter_by(day_of_week="Workout A").first()
+            ws = WorkoutSession(user_id=profile, planned_workout_id=pw.id,
+                                 date=date.today(), overall_feeling=4)
+            db.session.add(ws)
+            db.session.flush()
+            db.session.add(LoggedSet(session_id=ws.id, exercise_name="Bench Press",
+                                     set_number=1, weight_lbs=135.0, reps_completed=10, rpe=7))
+            db.session.add(LoggedSet(session_id=ws.id, exercise_name="Bench Press",
+                                     set_number=2, weight_lbs=145.0, reps_completed=8, rpe=9))
+            db.session.commit()
+
+        with application.app_context():
+            from app import get_exercise_history
+            result = get_exercise_history(profile, "Bench Press")
+            assert len(result) == 1
+            assert result[0]["volume"] == 135.0 * 10 + 145.0 * 8
+            assert result[0]["avg_rpe"] == 8.0
+
+    def test_includes_drop_set_b_values_in_volume(self, application, profile, active_plan):
+        with application.app_context():
+            pw = PlannedWorkout.query.filter_by(day_of_week="Workout A").first()
+            ws = WorkoutSession(user_id=profile, planned_workout_id=pw.id,
+                                 date=date.today(), overall_feeling=4)
+            db.session.add(ws)
+            db.session.flush()
+            db.session.add(LoggedSet(session_id=ws.id, exercise_name="Bench Press",
+                                     set_number=1, weight_lbs=135.0, reps_completed=10,
+                                     weight_b=95.0, reps_b=6, rpe=8))
+            db.session.commit()
+
+        with application.app_context():
+            from app import get_exercise_history
+            result = get_exercise_history(profile, "Bench Press")
+            assert result[0]["volume"] == 135.0 * 10 + 95.0 * 6
+
+    def test_avg_rpe_is_none_when_no_rpe_recorded(self, application, profile, active_plan):
+        with application.app_context():
+            pw = PlannedWorkout.query.filter_by(day_of_week="Workout A").first()
+            ws = WorkoutSession(user_id=profile, planned_workout_id=pw.id,
+                                 date=date.today(), overall_feeling=4)
+            db.session.add(ws)
+            db.session.flush()
+            db.session.add(LoggedSet(session_id=ws.id, exercise_name="Bench Press",
+                                     set_number=1, weight_lbs=135.0, reps_completed=10))
+            db.session.commit()
+
+        with application.app_context():
+            from app import get_exercise_history
+            result = get_exercise_history(profile, "Bench Press")
+            assert result[0]["avg_rpe"] is None
+
+    def test_orders_sessions_oldest_first(self, application, profile, active_plan):
+        with application.app_context():
+            pw = PlannedWorkout.query.filter_by(day_of_week="Workout A").first()
+            pw_id = pw.id
+
+        log_session(application, profile, pw_id, [("Bench Press", 1)], delta_days=7)
+        log_session(application, profile, pw_id, [("Bench Press", 1)], delta_days=0)
+
+        with application.app_context():
+            from app import get_exercise_history
+            result = get_exercise_history(profile, "Bench Press")
+            assert len(result) == 2
+            assert result[0]["date"] < result[1]["date"]
+
+    def test_ignores_other_exercises_and_incomplete_sessions(self, application, profile, active_plan):
+        with application.app_context():
+            pw = PlannedWorkout.query.filter_by(day_of_week="Workout A").first()
+            pw_id = pw.id
+
+        log_session(application, profile, pw_id, [("Pull-Ups", 2)])
+
+        with application.app_context():
+            ws = WorkoutSession(user_id=profile, planned_workout_id=pw_id,
+                                 date=date.today(), status="in_progress")
+            db.session.add(ws)
+            db.session.flush()
+            db.session.add(LoggedSet(session_id=ws.id, exercise_name="Bench Press",
+                                     set_number=1, weight_lbs=999.0, reps_completed=1))
+            db.session.commit()
+
+        with application.app_context():
+            from app import get_exercise_history
+            result = get_exercise_history(profile, "Bench Press")
+            assert result == []
+
+
+# ---------------------------------------------------------------------------
 # Fitness test
 # ---------------------------------------------------------------------------
 
