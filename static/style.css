@@ -597,6 +597,77 @@ tr:hover {
     line-height: 1.5;
 }
 
+/* ===== Exercise history icon + popup chart ===== */
+.btn-info-icon {
+    background: none;
+    border: none;
+    color: var(--info);
+    font-size: 1.1rem;
+    line-height: 1;
+    padding: 0 0.15rem;
+    cursor: pointer;
+    vertical-align: middle;
+}
+
+.btn-info-icon:hover,
+.btn-info-icon:focus {
+    color: var(--primary);
+}
+
+.exercise-chart-legend {
+    display: flex;
+    gap: 1rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.5rem;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+}
+
+.exercise-chart-legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+}
+
+.exercise-chart-legend-key {
+    display: inline-block;
+    width: 14px;
+    height: 3px;
+    border-radius: 2px;
+}
+
+.exercise-chart-tooltip {
+    position: absolute;
+    top: 0.5rem;
+    transform: translateX(-50%);
+    background: var(--text);
+    color: #fff;
+    padding: 0.5rem 0.65rem;
+    border-radius: 6px;
+    font-size: 0.8rem;
+    pointer-events: none;
+    white-space: nowrap;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+}
+
+.exercise-chart-tooltip-date {
+    font-weight: 600;
+    margin-bottom: 0.2rem;
+}
+
+.exercise-chart-tooltip-row {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+}
+
+.exercise-chart-tooltip-key {
+    display: inline-block;
+    width: 10px;
+    height: 3px;
+    border-radius: 2px;
+}
+
 /* ===== Last Performance Badge ===== */
 .last-perf-badge {
     display: inline-block;
