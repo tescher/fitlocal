@@ -28,7 +28,9 @@
 {% endif %}
 {% set exercise_has_superset = sets | selectattr('weight_b') | list | length > 0 %}
 <div class="exercise-block">
-    <h3>{{ exercise_name }}</h3>
+    <h3>{{ exercise_name }}
+        <button type="button" class="btn-info-icon" aria-label="View history for {{ exercise_name }}" data-exercise-name="{{ exercise_name }}" onclick="openExerciseHistory(this.dataset.exerciseName)">&#9432;</button>
+    </h3>
     <table>
         <thead>
             <tr>
@@ -57,4 +59,6 @@
 {% endfor %}
 
 <a href="{{ url_for('history') }}" class="btn btn-secondary">Back to History</a>
+
+{% include "_exercise_history_modal.html" %}
 {% endblock %}

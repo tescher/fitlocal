@@ -1,0 +1,292 @@
+<!-- Exercise History Modal (shared by workout_today.html and session_detail.html) -->
+<div id="exerciseHistoryModal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.6); z-index:1000; align-items:center; justify-content:center;">
+    <div style="background:#fff; border-radius:12px; padding:1.5rem; max-width:560px; width:92%; box-shadow:0 8px 32px rgba(0,0,0,0.3);">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.5rem;">
+            <h2 style="margin:0;" id="exerciseHistoryTitle">Exercise History</h2>
+            <button type="button" class="btn btn-secondary" onclick="closeExerciseHistoryModal()">Close</button>
+        </div>
+        <div id="exerciseHistoryBody"></div>
+    </div>
+</div>
+
+<script>
+// --- Exercise history popup chart ---
+
+async function openExerciseHistory(name) {
+    const modal = document.getElementById('exerciseHistoryModal');
+    const titleEl = document.getElementById('exerciseHistoryTitle');
+    const body = document.getElementById('exerciseHistoryBody');
+    titleEl.textContent = name + ' History';
+    body.textContent = 'Loading...';
+    modal.style.display = 'flex';
+
+    try {
+        const res = await fetch('/api/exercise/history?name=' + encodeURIComponent(name));
+        const sessions = await res.json();
+        renderExerciseHistory(body, sessions);
+    } catch (err) {
+        body.textContent = 'Could not load history.';
+    }
+}
+
+function closeExerciseHistoryModal() {
+    document.getElementById('exerciseHistoryModal').style.display = 'none';
+}
+
+document.getElementById('exerciseHistoryModal').addEventListener('click', function(e) {
+    if (e.target === this) closeExerciseHistoryModal();
+});
+
+function formatShortDate(iso) {
+    const d = new Date(iso + 'T00:00:00');
+    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+function renderExerciseHistory(container, sessions) {
+    container.innerHTML = '';
+    if (!sessions || sessions.length === 0) {
+        const p = document.createElement('p');
+        p.className = 'text-muted';
+        p.textContent = 'No history yet for this exercise.';
+        container.appendChild(p);
+        return;
+    }
+
+    drawExerciseChart(container, sessions);
+
+    const details = document.createElement('details');
+    details.className = 'form-cues';
+    details.style.marginTop = '0.75rem';
+    const summary = document.createElement('summary');
+    summary.textContent = 'View as table';
+    details.appendChild(summary);
+
+    const table = document.createElement('table');
+    table.className = 'log-table';
+    const thead = document.createElement('thead');
+    const headRow = document.createElement('tr');
+    ['Date', 'Volume (lbs)', 'Avg RPE'].forEach(function(h) {
+        const th = document.createElement('th');
+        th.textContent = h;
+        headRow.appendChild(th);
+    });
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+
+    const tbody = document.createElement('tbody');
+    sessions.forEach(function(s) {
+        const tr = document.createElement('tr');
+        [formatShortDate(s.date), Math.round(s.volume).toLocaleString(), s.avg_rpe === null ? '—' : s.avg_rpe]
+            .forEach(function(v) {
+                const td = document.createElement('td');
+                td.textContent = v;
+                tr.appendChild(td);
+            });
+        tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    details.appendChild(table);
+    container.appendChild(details);
+}
+
+function drawExerciseChart(container, sessions) {
+    const width = 520, height = 260;
+    const marginLeft = 50, marginRight = 46, marginTop = 20, marginBottom = 30;
+    const plotW = width - marginLeft - marginRight;
+    const plotH = height - marginTop - marginBottom;
+    const n = sessions.length;
+
+    const volumes = sessions.map(function(s) { return s.volume; });
+    let volMin = Math.min.apply(null, volumes);
+    let volMax = Math.max.apply(null, volumes);
+    if (volMin === volMax) { volMin -= 1; volMax += 1; }
+    const volPad = (volMax - volMin) * 0.1;
+    volMin -= volPad;
+    volMax += volPad;
+
+    const rpeMin = 1, rpeMax = 10;
+
+    const xFor = function(i) { return n === 1 ? marginLeft + plotW / 2 : marginLeft + (plotW * i) / (n - 1); };
+    const yForVol = function(v) { return marginTop + plotH * (1 - (v - volMin) / (volMax - volMin)); };
+    const yForRpe = function(r) { return marginTop + plotH * (1 - (r - rpeMin) / (rpeMax - rpeMin)); };
+
+    const svgNS = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(svgNS, 'svg');
+    svg.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
+    svg.setAttribute('width', '100%');
+    svg.style.display = 'block';
+
+    function addText(x, y, anchor, text, fill) {
+        const el = document.createElementNS(svgNS, 'text');
+        el.setAttribute('x', x);
+        el.setAttribute('y', y);
+        el.setAttribute('text-anchor', anchor);
+        el.setAttribute('font-size', '10');
+        el.setAttribute('fill', fill || '#64748b');
+        el.textContent = text;
+        svg.appendChild(el);
+    }
+
+    // Volume gridlines + axis labels
+    const gridSteps = 4;
+    for (let g = 0; g <= gridSteps; g++) {
+        const v = volMin + (volMax - volMin) * (g / gridSteps);
+        const y = yForVol(v);
+        const line = document.createElementNS(svgNS, 'line');
+        line.setAttribute('x1', marginLeft);
+        line.setAttribute('x2', width - marginRight);
+        line.setAttribute('y1', y);
+        line.setAttribute('y2', y);
+        line.setAttribute('stroke', '#e2e8f0');
+        line.setAttribute('stroke-width', '1');
+        svg.appendChild(line);
+        addText(marginLeft - 8, y + 3, 'end', Math.round(v).toLocaleString());
+    }
+
+    // RPE axis labels (fixed 1-10 scale)
+    [1, 4, 7, 10].forEach(function(r) {
+        addText(width - marginRight + 8, yForRpe(r) + 3, 'start', String(r));
+    });
+
+    // X-axis date labels (thin out if crowded)
+    const labelEvery = Math.max(1, Math.ceil(n / 6));
+    sessions.forEach(function(s, i) {
+        if (i % labelEvery !== 0 && i !== n - 1) return;
+        addText(xFor(i), height - marginBottom + 16, 'middle', formatShortDate(s.date));
+    });
+
+    function addLine(points, color) {
+        const d = points.map(function(pt, idx) { return (idx === 0 ? 'M' : 'L') + pt[0] + ' ' + pt[1]; }).join(' ');
+        const path = document.createElementNS(svgNS, 'path');
+        path.setAttribute('d', d);
+        path.setAttribute('fill', 'none');
+        path.setAttribute('stroke', color);
+        path.setAttribute('stroke-width', '2');
+        path.setAttribute('stroke-linejoin', 'round');
+        path.setAttribute('stroke-linecap', 'round');
+        svg.appendChild(path);
+    }
+
+    addLine(sessions.map(function(s, i) { return [xFor(i), yForVol(s.volume)]; }), '#2563eb');
+
+    // RPE line: break into segments around missing (null) values
+    let seg = [];
+    sessions.forEach(function(s, i) {
+        if (s.avg_rpe === null) {
+            if (seg.length > 1) addLine(seg, '#d97706');
+            seg = [];
+        } else {
+            seg.push([xFor(i), yForRpe(s.avg_rpe)]);
+        }
+    });
+    if (seg.length > 1) addLine(seg, '#d97706');
+
+    function addDot(x, y, color) {
+        const dot = document.createElementNS(svgNS, 'circle');
+        dot.setAttribute('cx', x);
+        dot.setAttribute('cy', y);
+        dot.setAttribute('r', 4);
+        dot.setAttribute('fill', color);
+        dot.setAttribute('stroke', '#fff');
+        dot.setAttribute('stroke-width', '2');
+        svg.appendChild(dot);
+    }
+
+    sessions.forEach(function(s, i) {
+        addDot(xFor(i), yForVol(s.volume), '#2563eb');
+        if (s.avg_rpe !== null) addDot(xFor(i), yForRpe(s.avg_rpe), '#d97706');
+    });
+
+    // Hover crosshair + tooltip
+    const crosshair = document.createElementNS(svgNS, 'line');
+    crosshair.setAttribute('y1', marginTop);
+    crosshair.setAttribute('y2', height - marginBottom);
+    crosshair.setAttribute('stroke', '#94a3b8');
+    crosshair.setAttribute('stroke-width', '1');
+    crosshair.style.display = 'none';
+    svg.appendChild(crosshair);
+
+    const tooltip = document.createElement('div');
+    tooltip.className = 'exercise-chart-tooltip';
+    tooltip.style.display = 'none';
+
+    function showTooltip(i) {
+        const s = sessions[i];
+        crosshair.setAttribute('x1', xFor(i));
+        crosshair.setAttribute('x2', xFor(i));
+        crosshair.style.display = '';
+
+        tooltip.innerHTML = '';
+        const dateEl = document.createElement('div');
+        dateEl.className = 'exercise-chart-tooltip-date';
+        dateEl.textContent = formatShortDate(s.date);
+        tooltip.appendChild(dateEl);
+
+        function addRow(color, value, label) {
+            const row = document.createElement('div');
+            row.className = 'exercise-chart-tooltip-row';
+            const key = document.createElement('span');
+            key.className = 'exercise-chart-tooltip-key';
+            key.style.background = color;
+            row.appendChild(key);
+            const val = document.createElement('strong');
+            val.textContent = value;
+            row.appendChild(val);
+            const lbl = document.createElement('span');
+            lbl.className = 'text-muted';
+            lbl.textContent = ' ' + label;
+            row.appendChild(lbl);
+            tooltip.appendChild(row);
+        }
+        addRow('#2563eb', Math.round(s.volume).toLocaleString() + ' lbs', 'total volume');
+        addRow('#d97706', s.avg_rpe === null ? 'n/a' : s.avg_rpe, 'avg RPE');
+
+        const pct = (xFor(i) / width) * 100;
+        tooltip.style.left = pct + '%';
+        tooltip.style.display = '';
+    }
+
+    const bandW = n === 1 ? plotW : plotW / (n - 1);
+    sessions.forEach(function(s, i) {
+        const hit = document.createElementNS(svgNS, 'rect');
+        hit.setAttribute('x', xFor(i) - bandW / 2);
+        hit.setAttribute('y', marginTop);
+        hit.setAttribute('width', bandW);
+        hit.setAttribute('height', plotH);
+        hit.setAttribute('fill', 'transparent');
+        hit.setAttribute('tabindex', '0');
+        hit.style.cursor = 'pointer';
+        hit.addEventListener('pointerenter', function() { showTooltip(i); });
+        hit.addEventListener('focus', function() { showTooltip(i); });
+        svg.appendChild(hit);
+    });
+
+    svg.addEventListener('pointerleave', function() {
+        crosshair.style.display = 'none';
+        tooltip.style.display = 'none';
+    });
+
+    // Legend
+    const legend = document.createElement('div');
+    legend.className = 'exercise-chart-legend';
+    [['Total Volume (lbs)', '#2563eb'], ['Avg RPE (1-10)', '#d97706']].forEach(function(item) {
+        const entry = document.createElement('span');
+        entry.className = 'exercise-chart-legend-item';
+        const key = document.createElement('span');
+        key.className = 'exercise-chart-legend-key';
+        key.style.background = item[1];
+        entry.appendChild(key);
+        const text = document.createElement('span');
+        text.textContent = item[0];
+        entry.appendChild(text);
+        legend.appendChild(entry);
+    });
+    container.appendChild(legend);
+
+    const svgWrap = document.createElement('div');
+    svgWrap.style.position = 'relative';
+    svgWrap.appendChild(svg);
+    svgWrap.appendChild(tooltip);
+    container.appendChild(svgWrap);
+}
+</script>
