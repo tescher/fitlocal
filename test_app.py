@@ -3,6 +3,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 from datetime import date
 from werkzeug.datastructures import MultiDict
 
@@ -38,6 +39,19 @@ def check(label, condition):
     else:
         print(f"  FAIL: {label}")
         failed += 1
+
+def wait_for_video_sync_done(profile_id, timeout=5):
+    """Video sync runs in a background thread now — poll the same progress
+    dict the frontend polls instead of asserting DB state right after the
+    (now-fast) POST response."""
+    from app import _video_sync_progress
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        progress = _video_sync_progress.get(profile_id)
+        if progress and progress.get("done"):
+            return progress
+        time.sleep(0.02)
+    raise AssertionError(f"video sync for profile {profile_id} did not finish within {timeout}s")
 
 client = app.test_client()
 
@@ -2419,10 +2433,18 @@ with app.app_context():
         for pe in w.planned_exercises
     }
 
+with app.app_context():
+    _profile_bf_id = UserProfile.query.first().id
+
+# The search itself now runs in a background thread after the response is
+# sent, so the mock must stay active until that thread actually finishes —
+# not just for the POST call, or the thread falls through to the real
+# (unmocked) ai.find_exercise_video once the `with` block exits.
 with _video_mock.patch("ai.find_exercise_video", return_value="https://example.com/backfilled"), \
      _video_mock.patch("app._video_url_resolves", return_value=True):
     r = client.post("/settings/backfill-videos", follow_redirects=False)
-check("POST /settings/backfill-videos redirects", r.status_code == 302)
+    check("POST /settings/backfill-videos redirects", r.status_code == 302)
+    wait_for_video_sync_done(_profile_bf_id)
 
 with app.app_context():
     _libs_bf = ExerciseLibrary.query.filter(ExerciseLibrary.name.in_(_bf_exercise_names)).all()
@@ -2433,14 +2455,32 @@ with app.app_context():
 r_bf_anon = anon_client.get("/settings/backfill-videos", follow_redirects=False)
 check("GET /settings/backfill-videos unauthenticated redirects", r_bf_anon.status_code == 302)
 
+# The response must return promptly even when the search is slow — this is
+# the actual bug fix: a synchronous 45-minute request risks gunicorn's 120s
+# worker timeout and idle-connection drops on the home-network path.
+print("\n--- Exercise Video Sync: response does not block on the search ---")
+
+def _slow_find(name):
+    time.sleep(0.3)
+    return "https://example.com/slow-video"
+
+with _video_mock.patch("ai.find_exercise_video", side_effect=_slow_find), \
+     _video_mock.patch("app._video_url_resolves", return_value=True):
+    _t0 = time.time()
+    r = client.post("/settings/backfill-videos", follow_redirects=False)
+    _elapsed = time.time() - _t0
+    check("POST /settings/backfill-videos returns before the search finishes",
+          r.status_code == 302 and _elapsed < 0.5)
+    wait_for_video_sync_done(_profile_bf_id, timeout=30)
+
 # Live progress endpoint
 print("\n--- Exercise Video Sync Progress ---")
 
 r = client.get("/api/video-sync-progress")
 check("GET /api/video-sync-progress returns 200", r.status_code == 200)
 _progress_json = r.get_json()
-check("Progress response has current/index/total/done keys",
-      _progress_json is not None and set(_progress_json.keys()) == {"current", "index", "total", "done"})
+check("Progress response has current/index/total/done/error keys",
+      _progress_json is not None and set(_progress_json.keys()) == {"current", "index", "total", "done", "error"})
 
 r_progress_anon = anon_client.get("/api/video-sync-progress", follow_redirects=False)
 check("GET /api/video-sync-progress unauthenticated redirects", r_progress_anon.status_code == 302)
