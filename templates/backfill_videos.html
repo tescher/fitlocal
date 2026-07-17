@@ -11,6 +11,7 @@
         <p class="text-muted" id="loadingMessage">Searching for a form video for each exercise in your current plan — this can take a few minutes.</p>
         <p class="text-muted" id="loadingStatus" style="font-style:italic;"></p>
         <p class="loading-timer" id="loadingTimer">0s</p>
+        <button type="button" class="btn btn-secondary" id="cancelVideoSyncBtn" style="margin-top:1rem;" onclick="cancelVideoSync()">Cancel Video Search</button>
     </div>
 </div>
 
@@ -36,6 +37,14 @@ function pollVideoSyncProgress() {
             }
         }).catch(function() {});
     }, 700);
+}
+
+function cancelVideoSync() {
+    var btn = document.getElementById('cancelVideoSyncBtn');
+    btn.disabled = true;
+    btn.textContent = 'Cancelling…';
+    document.getElementById('loadingStatus').textContent = 'Finishing the current search, then stopping — videos found so far are already saved.';
+    fetch('/api/video-sync-cancel', { method: 'POST' }).catch(function() {});
 }
 
 function showLoading(title, message) {

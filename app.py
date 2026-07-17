@@ -968,8 +968,9 @@ def _video_url_resolves(url):
 
 # In-memory live-progress tracker for exercise video sync, keyed by an
 # arbitrary caller-supplied key (profile.id in practice). Single-process app,
-# so a plain dict is enough — no need for cross-process/shared storage.
+# so plain dict/set are enough — no need for cross-process/shared storage.
 _video_sync_progress = {}
+_video_sync_cancel_requested = set()
 
 
 def sync_exercise_videos(exercise_names, force=False, progress_key=None):
@@ -981,7 +982,11 @@ def sync_exercise_videos(exercise_names, force=False, progress_key=None):
 
     progress_key, if given, is updated in _video_sync_progress as each
     exercise is processed, so a concurrent request (e.g. UI polling) can
-    show live status. Returns {"found": int, "checked": int}.
+    show live status. It also gates cancellation: whatever has already been
+    saved stays saved (nothing here is rolled back), and a caller can cancel
+    the rest via /api/video-sync-cancel, checked between exercises — the
+    exercise currently in flight still finishes since the search itself
+    isn't interruptible mid-call. Returns {"found": int, "checked": int}.
     """
     from ai import find_exercise_video
 
@@ -989,10 +994,18 @@ def sync_exercise_videos(exercise_names, force=False, progress_key=None):
     total = len(names)
     found = 0
     checked = 0
+    last_index = 0
+
+    if progress_key is not None:
+        _video_sync_cancel_requested.discard(progress_key)
+
     for i, name in enumerate(names):
+        if progress_key is not None and progress_key in _video_sync_cancel_requested:
+            break
+        last_index = i + 1
         if progress_key is not None:
             _video_sync_progress[progress_key] = {
-                "current": name, "index": i + 1, "total": total, "done": False,
+                "current": name, "index": last_index, "total": total, "done": False,
             }
         lib = ExerciseLibrary.query.filter(db.func.lower(ExerciseLibrary.name) == name.lower()).first()
         if lib is None:
@@ -1013,8 +1026,9 @@ def sync_exercise_videos(exercise_names, force=False, progress_key=None):
             lib.video_url = None
     if progress_key is not None:
         _video_sync_progress[progress_key] = {
-            "current": None, "index": total, "total": total, "done": True,
+            "current": None, "index": last_index, "total": total, "done": True,
         }
+        _video_sync_cancel_requested.discard(progress_key)
     db.session.commit()
     return {"found": found, "checked": checked}
 
@@ -2083,6 +2097,16 @@ def api_video_sync_progress():
     if not profile:
         return jsonify(default)
     return jsonify(_video_sync_progress.get(profile.id, default))
+
+
+@app.route("/api/video-sync-cancel", methods=["POST"])
+@csrf.exempt
+@login_required
+def api_video_sync_cancel():
+    profile = get_profile()
+    if profile:
+        _video_sync_cancel_requested.add(profile.id)
+    return jsonify({"ok": True})
 
 
 # --- Fitness Test Routes ---
