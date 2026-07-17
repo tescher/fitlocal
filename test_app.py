@@ -18,6 +18,15 @@ app.config["TESTING"] = True
 from models import db, Account, UserProfile, WorkoutPlan, PlannedWorkout, PlannedExercise, TrainingPhase, FitnessTest, ExerciseLibrary, LoggedSet, WorkoutSession, NextWorkoutNote, AIReview
 from extensions import bcrypt
 
+# confirm_plan() now syncs exercise videos on every confirmation — patch the
+# AI call globally for this script so the existing confirm-plan checks below
+# don't hit the real Anthropic API. Left patched for the whole run; specific
+# sections re-patch locally with a real-looking URL where they want to assert
+# on the video-sync behavior itself.
+import unittest.mock as _video_mock
+_video_patcher = _video_mock.patch("ai.find_exercise_video", return_value=None)
+_video_patcher.start()
+
 passed = 0
 failed = 0
 
@@ -2393,6 +2402,36 @@ anon_client = app.test_client()
 r_anon = anon_client.get("/api/exercise/history", query_string={"name": "History Chart Exercise"})
 check("GET /api/exercise/history unauthenticated returns 401 or redirect",
       r_anon.status_code in (401, 302))
+
+# ── Exercise video backfill (Settings) ─────────────────────────────────────────
+print("\n--- Exercise Video Backfill ---")
+
+r = client.get("/settings/backfill-videos")
+check("GET /settings/backfill-videos returns 200", r.status_code == 200)
+
+with app.app_context():
+    from app import get_active_plan as _gap_backfill
+    _profile_bf = UserProfile.query.first()
+    _active_bf = _gap_backfill(_profile_bf.id)
+    _bf_exercise_names = {
+        pe.exercise_name
+        for w in _active_bf.planned_workouts
+        for pe in w.planned_exercises
+    }
+
+with _video_mock.patch("ai.find_exercise_video", return_value="https://example.com/backfilled"), \
+     _video_mock.patch("app._video_url_resolves", return_value=True):
+    r = client.post("/settings/backfill-videos", follow_redirects=False)
+check("POST /settings/backfill-videos redirects", r.status_code == 302)
+
+with app.app_context():
+    _libs_bf = ExerciseLibrary.query.filter(ExerciseLibrary.name.in_(_bf_exercise_names)).all()
+    check("Backfill populated video_url for the active plan's exercises",
+          len(_libs_bf) > 0 and all(l.video_url == "https://example.com/backfilled" for l in _libs_bf))
+
+# Unauthenticated request is rejected
+r_bf_anon = anon_client.get("/settings/backfill-videos", follow_redirects=False)
+check("GET /settings/backfill-videos unauthenticated redirects", r_bf_anon.status_code == 302)
 
 # Summary
 print(f"\n{'='*50}")
