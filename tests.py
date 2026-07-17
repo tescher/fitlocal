@@ -692,6 +692,30 @@ class TestVideoSyncBackgrounding:
 
         assert progress["error"] is False
 
+    def test_backfill_videos_links_planned_exercises_to_library(self, client, application, profile, active_plan):
+        """Reproduces the reported bug: the active_plan fixture (like any
+        plan confirmed before video links existed) has PlannedExercise rows
+        with exercise_library_id still null. Settings > Refresh Exercise
+        Videos must not just populate ExerciseLibrary.video_url — it must
+        also link the plan's own exercises to it, or the workout page's
+        exercise.exercise_library lookup finds nothing and no link renders,
+        even though the sync reports done/success."""
+        with application.app_context():
+            pe = PlannedExercise.query.filter_by(exercise_name="Bench Press").first()
+            assert pe.exercise_library_id is None  # sanity check on the fixture
+
+        with patch("ai.find_exercise_video", return_value="https://example.com/bench-press"), \
+             patch("app._video_url_resolves", return_value=True):
+            r = client.post("/settings/backfill-videos")
+            assert r.status_code == 302
+            progress = _wait_for_video_sync_done(profile)
+
+        assert progress["error"] is False
+        with application.app_context():
+            pe = PlannedExercise.query.filter_by(exercise_name="Bench Press").first()
+            assert pe.exercise_library_id is not None
+            assert pe.exercise_library.video_url == "https://example.com/bench-press"
+
     def test_background_exception_marks_progress_done_with_error(self, client, application, profile):
         self._make_pending_plan(application, profile, ["Bench Press"])
 
