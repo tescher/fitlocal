@@ -2493,6 +2493,36 @@ check("POST /api/video-sync-cancel returns ok", r.get_json() == {"ok": True})
 r_cancel_anon = anon_client.post("/api/video-sync-cancel", follow_redirects=False)
 check("POST /api/video-sync-cancel unauthenticated redirects", r_cancel_anon.status_code == 302)
 
+# ── Relink to already-found videos (no AI call — free) ─────────────────────────
+print("\n--- Relink Videos (no new search) ---")
+
+with app.app_context():
+    from app import get_active_plan as _gap_relink
+    _profile_relink = UserProfile.query.first()
+    _active_relink = _gap_relink(_profile_relink.id)
+    _relink_pw = _active_relink.planned_workouts[0]
+    _relink_pe = PlannedExercise(
+        planned_workout_id=_relink_pw.id, exercise_name="Zercher Squat",
+        sets_prescribed=3, reps_prescribed="8", rest_seconds=90, exercise_type="main",
+    )
+    db.session.add(_relink_pe)
+    _relink_lib = ExerciseLibrary(name="Zercher Squat", video_url="https://example.com/zercher-already-found")
+    db.session.add(_relink_lib)
+    db.session.commit()
+    check("Relink test setup: exercise starts unlinked", _relink_pe.exercise_library_id is None)
+
+with _video_mock.patch("ai.find_exercise_video") as _mock_relink_find:
+    r = client.post("/settings/relink-videos", follow_redirects=False)
+    check("POST /settings/relink-videos does not call ai.find_exercise_video",
+          not _mock_relink_find.called)
+check("POST /settings/relink-videos redirects", r.status_code == 302)
+
+with app.app_context():
+    _relinked = PlannedExercise.query.filter_by(exercise_name="Zercher Squat").first()
+    check("Relink links the exercise to its existing library video",
+          _relinked.exercise_library_id is not None
+          and _relinked.exercise_library.video_url == "https://example.com/zercher-already-found")
+
 # Summary
 print(f"\n{'='*50}")
 print(f"Results: {passed} passed, {failed} failed out of {passed + failed} tests")
