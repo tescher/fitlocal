@@ -1,3 +1,5 @@
+import csv
+import io
 import json
 import os
 import calendar as cal_module
@@ -1966,6 +1968,89 @@ def api_exercise_history():
 def settings():
     profile = get_profile()
     return render_template("settings.html", profile=profile, account=current_user)
+
+
+@app.route("/settings/export-exercises")
+@login_required
+def export_exercises():
+    profile = get_profile()
+    if not profile:
+        return redirect(url_for("setup"))
+
+    active = get_active_plan(profile.id)
+    if not active:
+        flash("No active plan.", "error")
+        return redirect(url_for("settings"))
+
+    names = sorted({
+        pe.exercise_name
+        for pw in active.planned_workouts
+        for pe in pw.planned_exercises
+    })
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    for name in names:
+        writer.writerow([name])
+
+    return send_file(
+        io.BytesIO(output.getvalue().encode("utf-8")),
+        mimetype="text/csv",
+        as_attachment=True,
+        download_name=f"exercises_{date.today().isoformat()}.csv",
+    )
+
+
+@app.route("/settings/import-exercise-videos", methods=["GET", "POST"])
+@login_required
+def import_exercise_videos():
+    profile = get_profile()
+    if not profile:
+        return redirect(url_for("setup"))
+
+    if request.method == "POST":
+        upload = request.files.get("csv_file")
+        if not upload or not upload.filename:
+            flash("Please choose a CSV file to upload.", "error")
+            return redirect(url_for("import_exercise_videos"))
+
+        reader = csv.reader(io.StringIO(upload.stream.read().decode("utf-8")))
+        linked = 0
+        skipped = 0
+        for row in reader:
+            if len(row) < 2 or not row[0].strip() or not row[1].strip():
+                skipped += 1
+                continue
+            name, video_url = row[0].strip(), row[1].strip()
+            lib = ExerciseLibrary.query.filter(
+                db.func.lower(ExerciseLibrary.name) == name.lower()
+            ).first()
+            if lib is None:
+                lib = ExerciseLibrary(name=name)
+                db.session.add(lib)
+                db.session.flush()
+            lib.video_url = video_url
+            linked += 1
+
+        # Backfill FKs across every plan, not just the active one -- a plan
+        # confirmed before an exercise had a library entry keeps a null FK
+        # forever otherwise, even after the video_url is set.
+        for pe in PlannedExercise.query.filter(PlannedExercise.exercise_library_id.is_(None)).all():
+            lib_entry = ExerciseLibrary.query.filter(
+                db.func.lower(ExerciseLibrary.name) == pe.exercise_name.lower()
+            ).first()
+            if lib_entry:
+                pe.exercise_library_id = lib_entry.id
+
+        db.session.commit()
+
+        message = f"Imported {linked} video link{'s' if linked != 1 else ''}."
+        if skipped:
+            message += f" Skipped {skipped} row{'s' if skipped != 1 else ''} missing a name or URL."
+        flash(message, "success")
+        return redirect(url_for("settings"))
+
+    return render_template("import_exercise_videos.html", profile=profile)
 
 
 # --- Fitness Test Routes ---

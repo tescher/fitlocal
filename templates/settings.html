@@ -16,6 +16,14 @@
         <strong>Export Data</strong>
         <p class="text-muted">Download your workout log as a spreadsheet</p>
     </a>
+    <a href="{{ url_for('export_exercises') }}" class="link-row">
+        <strong>Export Exercise Names</strong>
+        <p class="text-muted">Download a CSV of your current plan's exercise names</p>
+    </a>
+    <a href="{{ url_for('import_exercise_videos') }}" class="link-row">
+        <strong>Import Exercise Videos</strong>
+        <p class="text-muted">Upload a CSV of exercise names and video links to show in your workouts</p>
+    </a>
 </div>
 
 <div class="card mt-2" style="padding: 0; overflow: hidden;">

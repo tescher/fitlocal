@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}FitLocal - Import Exercise Videos{% endblock %}
+{% block content %}
+<h1>Import Exercise Videos</h1>
+
+<div class="card">
+    <p class="mb-2">
+        Upload a CSV of exercise names and video links to show a "Watch form video" link
+        next to each exercise's Form Cues during a workout session.
+    </p>
+    <p class="text-muted mb-2">
+        Format: one row per exercise, exercise name in the first column and the video URL in
+        the second column, no header row. Use Settings &gt; Export Exercise Names to get a
+        starting CSV of your current plan's exercise names.
+    </p>
+    <form method="POST" enctype="multipart/form-data">
+        <input type="file" name="csv_file" accept=".csv" required>
+        <button type="submit" class="btn btn-primary mt-2">Import</button>
+    </form>
+</div>
+{% endblock %}

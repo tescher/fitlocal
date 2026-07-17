@@ -145,10 +145,15 @@ def migrate():
                 equipment VARCHAR(100),
                 description TEXT,
                 form_cues TEXT,
-                difficulty VARCHAR(20)
+                difficulty VARCHAR(20),
+                video_url VARCHAR(500)
             )
         """)
         print("  Created exercise_library table")
+
+    if not column_exists("exercise_library", "video_url"):
+        cursor.execute("ALTER TABLE exercise_library ADD COLUMN video_url VARCHAR(500)")
+        print("  Added exercise_library.video_url")
 
     if not table_exists("next_workout_note"):
         cursor.execute("""
