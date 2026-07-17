@@ -6,7 +6,7 @@ from datetime import datetime, date, timedelta, timezone
 
 import requests
 from dotenv import load_dotenv
-from flask import Flask, render_template, request, redirect, url_for, flash, send_file, jsonify
+from flask import Flask, render_template, request, redirect, url_for, flash, send_file, jsonify, current_app
 from flask_login import login_required, current_user
 from werkzeug.middleware.proxy_fix import ProxyFix
 
@@ -974,6 +974,13 @@ _video_sync_progress = {}
 _video_sync_cancel_requested = set()
 
 
+def _video_progress(current=None, index=0, total=0, done=False, error=False):
+    """Build a _video_sync_progress entry. Centralizes the dict shape so
+    every writer (the sync loop, its background wrappers, and the routes
+    that seed initial state before spawning a thread) stays in sync."""
+    return {"current": current, "index": index, "total": total, "done": done, "error": error}
+
+
 def sync_exercise_videos(exercise_names, force=False, progress_key=None):
     """Ensure each exercise name has an ExerciseLibrary row and a video_url.
 
@@ -1005,9 +1012,7 @@ def sync_exercise_videos(exercise_names, force=False, progress_key=None):
             break
         last_index = i + 1
         if progress_key is not None:
-            _video_sync_progress[progress_key] = {
-                "current": name, "index": last_index, "total": total, "done": False, "error": False,
-            }
+            _video_sync_progress[progress_key] = _video_progress(current=name, index=last_index, total=total)
         lib = ExerciseLibrary.query.filter(db.func.lower(ExerciseLibrary.name) == name.lower()).first()
         if lib is None:
             lib = ExerciseLibrary(name=name)
@@ -1019,16 +1024,17 @@ def sync_exercise_videos(exercise_names, force=False, progress_key=None):
         try:
             url = find_exercise_video(name)
         except Exception:
+            current_app.logger.exception("Video search failed for %r", name)
             url = None
+        # A failed/errored search (e.g. an API quota error) never clears an
+        # already-good video_url, even on force — only a genuine new success
+        # overwrites it. Losing a working link to a transient search failure
+        # would be worse than just leaving it stale.
         if url and _video_url_resolves(url):
             lib.video_url = url
             found += 1
-        elif force:
-            lib.video_url = None
     if progress_key is not None:
-        _video_sync_progress[progress_key] = {
-            "current": None, "index": last_index, "total": total, "done": True, "error": False,
-        }
+        _video_sync_progress[progress_key] = _video_progress(index=last_index, total=total, done=True)
         _video_sync_cancel_requested.discard(progress_key)
     db.session.commit()
     return {"found": found, "checked": checked}
@@ -1057,18 +1063,21 @@ def _backfill_exercise_library_fks(plan):
                     pe.exercise_library_id = lib_entry.id
 
 
-def _run_backfill_video_sync(app_obj, profile_id, exercise_names, progress_key):
-    """Background-thread target for the Settings video refresh. Runs the
-    (potentially long, real-API) search off the request thread so the HTTP
-    response returns immediately — see the exercise-video-links PR for why
-    a synchronous multi-minute request is unsafe (gunicorn's 120s worker
-    timeout, and idle-connection drops on the home-network path).
+def _run_video_sync_background(app_obj, exercise_names, progress_key, force, plan_lookup):
+    """Background-thread target for both the Settings video refresh and the
+    post-plan-confirmation video sync. Runs the (potentially long, real-API)
+    search off the request thread so the HTTP response returns immediately —
+    see the exercise-video-links PR for why a synchronous multi-minute
+    request is unsafe (gunicorn's 120s worker timeout, and idle-connection
+    drops on the home-network path).
 
-    Re-queries the active plan by profile_id (not passed as an ORM instance —
-    unusable once the request's session is torn down) to run the same FK
-    backfill confirm_plan already does, so exercises from plans confirmed
-    before this feature existed actually get linked, not just their shared
-    ExerciseLibrary row.
+    plan_lookup is a zero-arg callable that re-queries the plan to FK-backfill
+    (by profile's active plan, or by a specific plan id — the two call sites
+    differ only in this and in `force`). It's a callable rather than an ORM
+    instance because instances from the request's session are unusable once
+    that session is torn down; only primitives may cross the thread boundary,
+    so each call site captures what it needs (a profile_id or plan_id) in a
+    closure and re-queries fresh here.
 
     Every exit path must leave _video_sync_progress[progress_key] `done`,
     including an unexpected exception — otherwise a crash here leaves any
@@ -1077,36 +1086,14 @@ def _run_backfill_video_sync(app_obj, profile_id, exercise_names, progress_key):
     """
     with app_obj.app_context():
         try:
-            sync_exercise_videos(exercise_names, force=True, progress_key=progress_key)
-            active = get_active_plan(profile_id)
-            if active:
-                _backfill_exercise_library_fks(active)
-                db.session.commit()
-        except Exception:
-            app_obj.logger.exception("Background video sync failed")
-            _video_sync_progress[progress_key] = {
-                "current": None, "index": 0, "total": 0, "done": True, "error": True,
-            }
-
-
-def _run_confirm_plan_video_sync(app_obj, plan_id, exercise_names, progress_key):
-    """Background-thread target for the post-plan-confirmation video sync.
-    Re-queries the plan by id — ORM instances from the request's session
-    aren't usable once that session is torn down, so only primitives are
-    passed across the thread boundary. See _run_backfill_video_sync for why
-    this can't run on the request thread."""
-    with app_obj.app_context():
-        try:
-            sync_exercise_videos(exercise_names, progress_key=progress_key)
-            plan = WorkoutPlan.query.get(plan_id)
+            sync_exercise_videos(exercise_names, force=force, progress_key=progress_key)
+            plan = plan_lookup()
             if plan:
                 _backfill_exercise_library_fks(plan)
                 db.session.commit()
         except Exception:
             app_obj.logger.exception("Background video sync failed")
-            _video_sync_progress[progress_key] = {
-                "current": None, "index": 0, "total": 0, "done": True, "error": True,
-            }
+            _video_sync_progress[progress_key] = _video_progress(done=True, error=True)
 
 
 @app.route("/generate-plan/confirm", methods=["POST"])
@@ -1198,12 +1185,11 @@ def confirm_plan():
         # Set before spawning so the frontend's first poll (which can arrive
         # within milliseconds of this response) never reads a stale
         # done:true left over from a previous run.
-        _video_sync_progress[profile.id] = {
-            "current": None, "index": 0, "total": len(exercise_names), "done": False, "error": False,
-        }
+        _video_sync_progress[profile.id] = _video_progress(total=len(exercise_names))
+        new_plan_id = plan.id
         threading.Thread(
-            target=_run_confirm_plan_video_sync,
-            args=(app, plan.id, exercise_names, profile.id),
+            target=_run_video_sync_background,
+            args=(app, exercise_names, profile.id, False, lambda: WorkoutPlan.query.get(new_plan_id)),
             daemon=True,
         ).start()
 
@@ -2158,12 +2144,10 @@ def backfill_videos():
             for pe in pw.planned_exercises
         }
         if names:
-            _video_sync_progress[profile.id] = {
-                "current": None, "index": 0, "total": len(names), "done": False, "error": False,
-            }
+            _video_sync_progress[profile.id] = _video_progress(total=len(names))
             threading.Thread(
-                target=_run_backfill_video_sync,
-                args=(app, profile.id, names, profile.id),
+                target=_run_video_sync_background,
+                args=(app, names, profile.id, True, lambda: get_active_plan(profile.id)),
                 daemon=True,
             ).start()
             flash(f"Refreshing videos for {len(names)} exercises — watch progress on this page, or leave; it keeps running.", "success")
