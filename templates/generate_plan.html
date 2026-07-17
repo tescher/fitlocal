@@ -73,7 +73,7 @@
         {% endfor %}
 
         <div class="mt-2">
-            <form method="POST" action="{{ url_for('confirm_plan') }}" onsubmit="showLoading('Activating Your Plan', 'Finding form videos for each exercise — this may take a few minutes the first time.', true)">
+            <form method="POST" action="{{ url_for('confirm_plan') }}" onsubmit="submitAndWaitForVideoSync(event, 'Activating Your Plan', 'Finding form videos for each exercise — this may take a few minutes the first time.', '{{ url_for('index') }}')">
                 <div class="form-group mb-1">
                     <label for="start_workout"><strong>Start from:</strong></label>
                     <select name="start_workout_index" id="start_workout"
@@ -184,19 +184,6 @@
 {% endif %}
 
 <script>
-function pollVideoSyncProgress() {
-    setInterval(function() {
-        fetch('/api/video-sync-progress').then(function(r) { return r.json(); }).then(function(p) {
-            var el = document.getElementById('loadingStatus');
-            if (p.current) {
-                el.textContent = 'Searching for video for ' + p.current + '… (' + p.index + ' of ' + p.total + ')';
-            } else if (!p.done) {
-                el.textContent = '';
-            }
-        }).catch(function() {});
-    }, 700);
-}
-
 function cancelVideoSync() {
     var btn = document.getElementById('cancelVideoSyncBtn');
     btn.disabled = true;
@@ -215,7 +202,39 @@ function showLoading(title, message, showCancel) {
         var elapsed = Math.floor((Date.now() - start) / 1000);
         document.getElementById('loadingTimer').textContent = elapsed + 's';
     }, 1000);
-    pollVideoSyncProgress();
+}
+
+// The video search runs in a background thread on the server, so the POST
+// below returns almost instantly — we poll for completion afterward instead
+// of relying on the (now-fast) response to drive the redirect.
+function pollUntilVideoSyncDone(redirectTo) {
+    localStorage.setItem('videoSyncPending', '1');
+    var timer = setInterval(function() {
+        fetch('/api/video-sync-progress').then(function(r) { return r.json(); }).then(function(p) {
+            var el = document.getElementById('loadingStatus');
+            if (p.error) {
+                el.textContent = 'Video search hit an error — you can retry from Settings.';
+            } else if (p.current) {
+                el.textContent = 'Searching for video for ' + p.current + '… (' + p.index + ' of ' + p.total + ')';
+            }
+            if (p.done) {
+                clearInterval(timer);
+                localStorage.removeItem('videoSyncPending');
+                window.location.href = redirectTo;
+            }
+        }).catch(function() {});
+    }, 700);
+}
+
+function submitAndWaitForVideoSync(event, title, message, redirectTo) {
+    event.preventDefault();
+    var formEl = event.target;
+    showLoading(title, message, true);
+    fetch(formEl.action, { method: 'POST', body: new FormData(formEl) })
+        .catch(function() {})  // even on a network error, the server may have
+        .finally(function() {  // already processed it — fall through to polling
+            pollUntilVideoSyncDone(redirectTo);
+        });
 }
 </script>
 {% endblock %}
