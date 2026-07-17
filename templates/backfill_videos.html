@@ -20,8 +20,22 @@
         Re-checks every exercise in your current active plan for a form video, replacing any
         link already found. Use this if a video stops working or you just want a fresh search.
     </p>
+    <p class="text-muted" style="font-size:0.85rem; margin-bottom:0.75rem;">
+        This calls the AI search for every exercise — it costs API usage each time you run it.
+    </p>
     <form method="POST" onsubmit="submitAndWaitForVideoSync(event, 'Refreshing Exercise Videos', 'Searching for a form video for each exercise — this can take a few minutes.', '{{ url_for('settings') }}')">
         <button type="submit" class="btn btn-primary">Refresh Videos</button>
+    </form>
+</div>
+
+<div class="card mt-2">
+    <p class="mb-2">
+        Already have videos saved from a previous search, but some exercises aren't showing a
+        link? This links your current plan's exercises to videos already found — no new search,
+        no API usage.
+    </p>
+    <form method="POST" action="{{ url_for('relink_videos') }}">
+        <button type="submit" class="btn btn-secondary">Relink to Already-Found Videos (free)</button>
     </form>
 </div>
 

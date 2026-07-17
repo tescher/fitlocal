@@ -730,6 +730,56 @@ class TestVideoSyncBackgrounding:
 
 
 # ---------------------------------------------------------------------------
+# Relink to already-found videos (no new AI search — free)
+# ---------------------------------------------------------------------------
+
+class TestRelinkVideos:
+    def test_links_without_calling_ai(self, client, application, profile, active_plan):
+        """The active_plan fixture's exercises have no exercise_library_id
+        (same as any plan confirmed before video links existed, or one hit
+        by the FK-backfill bug). Pre-seed ExerciseLibrary rows that already
+        have a video_url — simulating videos already found by a prior,
+        possibly-paid search — and confirm relink just links to them without
+        spending another AI call."""
+        with application.app_context():
+            db.session.add(ExerciseLibrary(name="Bench Press", video_url="https://example.com/bench-press"))
+            db.session.add(ExerciseLibrary(name="Pull-Ups", video_url="https://example.com/pull-ups"))
+            db.session.commit()
+            pe = PlannedExercise.query.filter_by(exercise_name="Bench Press").first()
+            assert pe.exercise_library_id is None  # sanity check on the fixture
+
+        with patch("ai.find_exercise_video") as mock_find:
+            r = client.post("/settings/relink-videos")
+            mock_find.assert_not_called()
+
+        assert r.status_code == 302
+        with application.app_context():
+            bench = PlannedExercise.query.filter_by(exercise_name="Bench Press").first()
+            pullups = PlannedExercise.query.filter_by(exercise_name="Pull-Ups").first()
+            assert bench.exercise_library_id is not None
+            assert bench.exercise_library.video_url == "https://example.com/bench-press"
+            assert pullups.exercise_library_id is not None
+            assert pullups.exercise_library.video_url == "https://example.com/pull-ups"
+
+    def test_leaves_exercises_without_a_library_match_unlinked(self, client, application, profile, active_plan):
+        """No ExerciseLibrary row exists for these names at all — relink
+        should not crash, and should just leave them unlinked (there's
+        nothing to link to without an actual search)."""
+        with patch("ai.find_exercise_video") as mock_find:
+            r = client.post("/settings/relink-videos")
+            mock_find.assert_not_called()
+
+        assert r.status_code == 302
+        with application.app_context():
+            pe = PlannedExercise.query.filter_by(exercise_name="Bench Press").first()
+            assert pe.exercise_library_id is None
+
+    def test_no_active_plan_flashes_error(self, client, profile):
+        r = client.post("/settings/relink-videos", follow_redirects=True)
+        assert b"No active plan" in r.data
+
+
+# ---------------------------------------------------------------------------
 # Workout logging
 # ---------------------------------------------------------------------------
 

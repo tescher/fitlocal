@@ -2174,6 +2174,35 @@ def backfill_videos():
     return render_template("backfill_videos.html", profile=profile)
 
 
+@app.route("/settings/relink-videos", methods=["POST"])
+@login_required
+def relink_videos():
+    """Link the active plan's exercises to videos already found by a prior
+    search, with zero AI calls — for exercises whose ExerciseLibrary row
+    already has a video_url but whose PlannedExercise.exercise_library_id
+    never got set (e.g. plans confirmed before this feature existed, or hit
+    by the FK-backfill bug). Purely a DB operation, so no background thread
+    or progress polling is needed — it runs synchronously."""
+    profile = get_profile()
+    if not profile:
+        return redirect(url_for("setup"))
+
+    active = get_active_plan(profile.id)
+    if not active:
+        flash("No active plan.", "error")
+        return redirect(url_for("backfill_videos"))
+
+    unlinked = [
+        pe for pw in active.planned_workouts for pe in pw.planned_exercises
+        if pe.exercise_library_id is None
+    ]
+    _backfill_exercise_library_fks(active)
+    db.session.commit()
+    linked_count = sum(1 for pe in unlinked if pe.exercise_library_id is not None)
+    flash(f"Linked {linked_count} of {len(unlinked)} previously-unlinked exercises to already-found videos — no new search performed.", "success")
+    return redirect(url_for("settings"))
+
+
 @app.route("/api/video-sync-progress")
 @login_required
 def api_video_sync_progress():
