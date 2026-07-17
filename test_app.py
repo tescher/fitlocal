@@ -3,7 +3,6 @@ import json
 import os
 import sys
 import tempfile
-import time
 from datetime import date
 from werkzeug.datastructures import MultiDict
 
@@ -19,15 +18,6 @@ app.config["TESTING"] = True
 from models import db, Account, UserProfile, WorkoutPlan, PlannedWorkout, PlannedExercise, TrainingPhase, FitnessTest, ExerciseLibrary, LoggedSet, WorkoutSession, NextWorkoutNote, AIReview
 from extensions import bcrypt
 
-# confirm_plan() now syncs exercise videos on every confirmation — patch the
-# AI call globally for this script so the existing confirm-plan checks below
-# don't hit the real Anthropic API. Left patched for the whole run; specific
-# sections re-patch locally with a real-looking URL where they want to assert
-# on the video-sync behavior itself.
-import unittest.mock as _video_mock
-_video_patcher = _video_mock.patch("ai.find_exercise_video", return_value=None)
-_video_patcher.start()
-
 passed = 0
 failed = 0
 
@@ -39,21 +29,6 @@ def check(label, condition):
     else:
         print(f"  FAIL: {label}")
         failed += 1
-
-def wait_for_video_sync_done(profile_id, timeout=5):
-    """Video sync runs in a background thread now — poll the DB-backed
-    progress (not an in-memory dict, so it's visible across gunicorn
-    worker processes too) instead of asserting DB state right after the
-    (now-fast) POST response."""
-    from app import _get_video_progress
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        with app.app_context():
-            progress = _get_video_progress(profile_id)
-        if progress.get("done"):
-            return progress
-        time.sleep(0.02)
-    raise AssertionError(f"video sync for profile {profile_id} did not finish within {timeout}s")
 
 client = app.test_client()
 
@@ -2418,112 +2393,6 @@ anon_client = app.test_client()
 r_anon = anon_client.get("/api/exercise/history", query_string={"name": "History Chart Exercise"})
 check("GET /api/exercise/history unauthenticated returns 401 or redirect",
       r_anon.status_code in (401, 302))
-
-# ── Exercise video backfill (Settings) ─────────────────────────────────────────
-print("\n--- Exercise Video Backfill ---")
-
-r = client.get("/settings/backfill-videos")
-check("GET /settings/backfill-videos returns 200", r.status_code == 200)
-
-with app.app_context():
-    from app import get_active_plan as _gap_backfill
-    _profile_bf = UserProfile.query.first()
-    _active_bf = _gap_backfill(_profile_bf.id)
-    _bf_exercise_names = {
-        pe.exercise_name
-        for w in _active_bf.planned_workouts
-        for pe in w.planned_exercises
-    }
-
-with app.app_context():
-    _profile_bf_id = UserProfile.query.first().id
-
-# The search itself now runs in a background thread after the response is
-# sent, so the mock must stay active until that thread actually finishes —
-# not just for the POST call, or the thread falls through to the real
-# (unmocked) ai.find_exercise_video once the `with` block exits.
-with _video_mock.patch("ai.find_exercise_video", return_value="https://example.com/backfilled"), \
-     _video_mock.patch("app._video_url_resolves", return_value=True):
-    r = client.post("/settings/backfill-videos", follow_redirects=False)
-    check("POST /settings/backfill-videos redirects", r.status_code == 302)
-    wait_for_video_sync_done(_profile_bf_id)
-
-with app.app_context():
-    _libs_bf = ExerciseLibrary.query.filter(ExerciseLibrary.name.in_(_bf_exercise_names)).all()
-    check("Backfill populated video_url for the active plan's exercises",
-          len(_libs_bf) > 0 and all(l.video_url == "https://example.com/backfilled" for l in _libs_bf))
-
-# Unauthenticated request is rejected
-r_bf_anon = anon_client.get("/settings/backfill-videos", follow_redirects=False)
-check("GET /settings/backfill-videos unauthenticated redirects", r_bf_anon.status_code == 302)
-
-# The response must return promptly even when the search is slow — this is
-# the actual bug fix: a synchronous 45-minute request risks gunicorn's 120s
-# worker timeout and idle-connection drops on the home-network path.
-print("\n--- Exercise Video Sync: response does not block on the search ---")
-
-def _slow_find(name):
-    time.sleep(0.3)
-    return "https://example.com/slow-video"
-
-with _video_mock.patch("ai.find_exercise_video", side_effect=_slow_find), \
-     _video_mock.patch("app._video_url_resolves", return_value=True):
-    _t0 = time.time()
-    r = client.post("/settings/backfill-videos", follow_redirects=False)
-    _elapsed = time.time() - _t0
-    check("POST /settings/backfill-videos returns before the search finishes",
-          r.status_code == 302 and _elapsed < 0.5)
-    wait_for_video_sync_done(_profile_bf_id, timeout=30)
-
-# Live progress endpoint
-print("\n--- Exercise Video Sync Progress ---")
-
-r = client.get("/api/video-sync-progress")
-check("GET /api/video-sync-progress returns 200", r.status_code == 200)
-_progress_json = r.get_json()
-check("Progress response has current/index/total/done/error keys",
-      _progress_json is not None and set(_progress_json.keys()) == {"current", "index", "total", "done", "error"})
-
-r_progress_anon = anon_client.get("/api/video-sync-progress", follow_redirects=False)
-check("GET /api/video-sync-progress unauthenticated redirects", r_progress_anon.status_code == 302)
-
-# Cancel endpoint
-r = client.post("/api/video-sync-cancel")
-check("POST /api/video-sync-cancel returns 200", r.status_code == 200)
-check("POST /api/video-sync-cancel returns ok", r.get_json() == {"ok": True})
-
-r_cancel_anon = anon_client.post("/api/video-sync-cancel", follow_redirects=False)
-check("POST /api/video-sync-cancel unauthenticated redirects", r_cancel_anon.status_code == 302)
-
-# ── Relink to already-found videos (no AI call — free) ─────────────────────────
-print("\n--- Relink Videos (no new search) ---")
-
-with app.app_context():
-    from app import get_active_plan as _gap_relink
-    _profile_relink = UserProfile.query.first()
-    _active_relink = _gap_relink(_profile_relink.id)
-    _relink_pw = _active_relink.planned_workouts[0]
-    _relink_pe = PlannedExercise(
-        planned_workout_id=_relink_pw.id, exercise_name="Zercher Squat",
-        sets_prescribed=3, reps_prescribed="8", rest_seconds=90, exercise_type="main",
-    )
-    db.session.add(_relink_pe)
-    _relink_lib = ExerciseLibrary(name="Zercher Squat", video_url="https://example.com/zercher-already-found")
-    db.session.add(_relink_lib)
-    db.session.commit()
-    check("Relink test setup: exercise starts unlinked", _relink_pe.exercise_library_id is None)
-
-with _video_mock.patch("ai.find_exercise_video") as _mock_relink_find:
-    r = client.post("/settings/relink-videos", follow_redirects=False)
-    check("POST /settings/relink-videos does not call ai.find_exercise_video",
-          not _mock_relink_find.called)
-check("POST /settings/relink-videos redirects", r.status_code == 302)
-
-with app.app_context():
-    _relinked = PlannedExercise.query.filter_by(exercise_name="Zercher Squat").first()
-    check("Relink links the exercise to its existing library video",
-          _relinked.exercise_library_id is not None
-          and _relinked.exercise_library.video_url == "https://example.com/zercher-already-found")
 
 # Summary
 print(f"\n{'='*50}")
