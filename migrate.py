@@ -102,10 +102,6 @@ def migrate():
         cursor.execute("ALTER TABLE planned_exercise ADD COLUMN form_cues TEXT")
         print("  Added planned_exercise.form_cues")
 
-    if not column_exists("exercise_library", "video_url"):
-        cursor.execute("ALTER TABLE exercise_library ADD COLUMN video_url VARCHAR(500)")
-        print("  Added exercise_library.video_url")
-
     # --- New tables ---
     if not table_exists("fitness_test"):
         cursor.execute("""

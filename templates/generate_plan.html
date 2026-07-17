@@ -15,11 +15,9 @@
 <div id="loadingOverlay" class="loading-overlay" style="display:none;">
     <div class="loading-card">
         <div class="loading-spinner"></div>
-        <h2 id="loadingTitle">Building Your Plan</h2>
-        <p class="text-muted" id="loadingMessage">Generating your plan with AI — this usually takes 3-5 minutes.</p>
-        <p class="text-muted" id="loadingStatus" style="font-style:italic;"></p>
+        <h2>Building Your Plan</h2>
+        <p class="text-muted">Generating your plan with AI — this usually takes 3-5 minutes.</p>
         <p class="loading-timer" id="loadingTimer">0s</p>
-        <button type="button" class="btn btn-secondary" id="cancelVideoSyncBtn" style="display:none; margin-top:1rem;" onclick="cancelVideoSync()">Cancel Video Search</button>
     </div>
 </div>
 
@@ -73,7 +71,7 @@
         {% endfor %}
 
         <div class="mt-2">
-            <form method="POST" action="{{ url_for('confirm_plan') }}" onsubmit="submitAndWaitForVideoSync(event, 'Activating Your Plan', 'Finding form videos for each exercise — this may take a few minutes the first time.', '{{ url_for('index') }}')">
+            <form method="POST" action="{{ url_for('confirm_plan') }}">
                 <div class="form-group mb-1">
                     <label for="start_workout"><strong>Start from:</strong></label>
                     <select name="start_workout_index" id="start_workout"
@@ -184,57 +182,13 @@
 {% endif %}
 
 <script>
-function cancelVideoSync() {
-    var btn = document.getElementById('cancelVideoSyncBtn');
-    btn.disabled = true;
-    btn.textContent = 'Cancelling…';
-    document.getElementById('loadingStatus').textContent = 'Finishing the current search, then continuing without the rest — your plan is already saved.';
-    fetch('/api/video-sync-cancel', { method: 'POST' }).catch(function() {});
-}
-
-function showLoading(title, message, showCancel) {
-    document.getElementById('loadingTitle').textContent = title || 'Building Your Plan';
-    document.getElementById('loadingMessage').textContent = message || 'Generating your plan with AI — this usually takes 3-5 minutes.';
-    document.getElementById('cancelVideoSyncBtn').style.display = showCancel ? '' : 'none';
+function showLoading() {
     document.getElementById('loadingOverlay').style.display = 'flex';
     var start = Date.now();
     setInterval(function() {
         var elapsed = Math.floor((Date.now() - start) / 1000);
         document.getElementById('loadingTimer').textContent = elapsed + 's';
     }, 1000);
-}
-
-// The video search runs in a background thread on the server, so the POST
-// below returns almost instantly — we poll for completion afterward instead
-// of relying on the (now-fast) response to drive the redirect.
-function pollUntilVideoSyncDone(redirectTo) {
-    localStorage.setItem('videoSyncPending', '1');
-    var timer = setInterval(function() {
-        fetch('/api/video-sync-progress').then(function(r) { return r.json(); }).then(function(p) {
-            var el = document.getElementById('loadingStatus');
-            if (p.error) {
-                el.textContent = 'Video search hit an error — you can retry from Settings.';
-            } else if (p.current) {
-                el.textContent = 'Searching for video for ' + p.current + '… (' + p.index + ' of ' + p.total + ')';
-            }
-            if (p.done) {
-                clearInterval(timer);
-                localStorage.removeItem('videoSyncPending');
-                window.location.href = redirectTo;
-            }
-        }).catch(function() {});
-    }, 700);
-}
-
-function submitAndWaitForVideoSync(event, title, message, redirectTo) {
-    event.preventDefault();
-    var formEl = event.target;
-    showLoading(title, message, true);
-    fetch(formEl.action, { method: 'POST', body: new FormData(formEl) })
-        .catch(function() {})  // even on a network error, the server may have
-        .finally(function() {  // already processed it — fall through to polling
-            pollUntilVideoSyncDone(redirectTo);
-        });
 }
 </script>
 {% endblock %}

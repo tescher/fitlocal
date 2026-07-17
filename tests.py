@@ -5,12 +5,9 @@ AI calls are mocked throughout.
 """
 import json
 import os
-import sqlite3
-import threading
-import time
-import uuid
 import pytest
 import sqlalchemy as sa
+from sqlalchemy.pool import StaticPool
 from datetime import date, timedelta
 from unittest.mock import patch, MagicMock
 from werkzeug.datastructures import MultiDict
@@ -30,51 +27,18 @@ from extensions import bcrypt
 # Fixtures
 # ---------------------------------------------------------------------------
 
-def _join_video_sync_workers(timeout=5):
-    """Wait for any background video-sync threads to fully finish. Each
-    test gets its own in-memory SQLite engine swapped into
-    db._app_engines — a still-running thread from a previous test that
-    hasn't finished yet would otherwise end up talking to whatever engine
-    is current *right now* (possibly a different test's, or a disposed
-    one), which corrupts or crashes rather than just failing cleanly."""
-    for t in threading.enumerate():
-        if t.name == "video-sync-worker":
-            t.join(timeout=timeout)
-
-
 @pytest.fixture
 def application():
-    # Guard against a straggler from the *previous* test still running when
-    # this test's engine gets swapped in below.
-    _join_video_sync_workers()
-
     flask_app.app.config["TESTING"] = True
     flask_app.app.config["WTF_CSRF_ENABLED"] = False
 
     # Flask-SQLAlchemy bakes the engine URI at init_app() time, so we must
     # directly swap the cached engine with an in-memory one.
-    #
-    # A plain "sqlite:///:memory:" + StaticPool forces every thread through
-    # one single shared sqlite3.Connection object -- fine when only the
-    # main thread ever touched the DB, but the video-sync background
-    # thread and the test's own polling loop now both issue real SQL
-    # concurrently, and two threads driving one raw connection object is
-    # unsafe regardless of how carefully transactions are managed (it
-    # produced actual session corruption/crashes, not just flakiness).
-    #
-    # A named shared-cache in-memory DB gives each thread its own real
-    # connection while all of them still see the same in-memory data --
-    # much closer to how separate gunicorn worker processes each have
-    # their own connection to the same on-disk DB in production. Shared-
-    # cache memory DBs only persist while at least one connection to them
-    # is open, so a dedicated keepalive connection (outside the pool,
-    # never closed until teardown) keeps the data alive even while the
-    # pool's own connections come and go.
-    db_uri = f"file:test_{uuid.uuid4().hex}?mode=memory&cache=shared"
-    keepalive_conn = sqlite3.connect(db_uri, uri=True)
+    # StaticPool ensures all pool connections share the same in-memory DB.
     mem_engine = sa.create_engine(
-        f"sqlite:///{db_uri}",
-        connect_args={"check_same_thread": False, "uri": True},
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
     )
     original_engines = db._app_engines.get(flask_app.app)
     db._app_engines[flask_app.app] = {None: mem_engine}
@@ -82,14 +46,10 @@ def application():
     with flask_app.app.app_context():
         db.create_all()
         yield flask_app.app
-        # And guard against this test's own thread still running when the
-        # engine below gets disposed.
-        _join_video_sync_workers()
         db.session.remove()
         db.drop_all()
 
     mem_engine.dispose()
-    keepalive_conn.close()
     # Restore so the real app still works after tests
     if original_engines is not None:
         db._app_engines[flask_app.app] = original_engines
@@ -224,31 +184,6 @@ def log_session(application, profile_id, planned_workout_id, exercises, delta_da
                 db.session.add(ls)
         db.session.commit()
         return ws.id
-
-
-def _wait_for_video_sync_done(profile_id, timeout=5):
-    """Poll the DB-backed video-sync progress the same way the frontend
-    does, since the video sync now runs in a background thread instead of
-    blocking the request. Returns the final progress dict, or fails the
-    test on timeout."""
-    from app import _get_video_progress
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        progress = _get_video_progress(profile_id)
-        if progress.get("done"):
-            return progress
-        time.sleep(0.02)
-    raise AssertionError(f"video sync for profile {profile_id} did not finish within {timeout}s")
-
-
-@pytest.fixture(autouse=True)
-def _mock_exercise_video_search():
-    """confirm_plan() now syncs exercise videos on every confirmation — patch
-    the AI call by default so unrelated tests don't hit the real Anthropic
-    API. Tests that care about video behavior nest their own patch, which
-    takes precedence for its scope."""
-    with patch("ai.find_exercise_video", return_value=None):
-        yield
 
 
 # ---------------------------------------------------------------------------
@@ -444,11 +379,8 @@ class TestExerciseLibraryFK:
             assert pe is not None
             assert pe.exercise_library_id == lib_id
 
-    def test_fk_populated_via_auto_created_library_entry(self, client, application, profile):
-        """As of the exercise-video-links feature, confirm_plan() creates an
-        ExerciseLibrary row for any exercise name that doesn't already have
-        one — every exercise needs a durable home for its video link — so the
-        FK is now always populated, not left null for free-text names."""
+    def test_fk_null_when_no_library_match(self, client, application, profile):
+        """FK stays null for free-text exercise names not in the library."""
         plan_json = json.dumps({
             "plan_name": "Plan", "description": "", "days_per_week": 3,
             "total_weeks": 12, "phases": [],
@@ -467,14 +399,11 @@ class TestExerciseLibraryFK:
             db.session.commit()
 
         client.post("/generate-plan/confirm")
-        _wait_for_video_sync_done(profile)
 
         with application.app_context():
             pe = PlannedExercise.query.filter_by(exercise_name="Some Custom Exercise").first()
             assert pe is not None
-            assert pe.exercise_library_id is not None
-            lib = ExerciseLibrary.query.get(pe.exercise_library_id)
-            assert lib.name == "Some Custom Exercise"
+            assert pe.exercise_library_id is None
 
     def test_logged_set_fk_populated(self, application, profile, active_plan):
         """LoggedSet.exercise_library_id is set when name matches library."""
@@ -493,382 +422,6 @@ class TestExerciseLibraryFK:
             ls = LoggedSet.query.filter_by(exercise_name="Bench Press").first()
             assert ls is not None
             assert ls.exercise_library_id == lib_id
-
-
-# ---------------------------------------------------------------------------
-# Exercise video sync (exercise-video-links feature)
-# ---------------------------------------------------------------------------
-
-class TestSyncExerciseVideos:
-    def test_creates_library_entry_when_none_exists(self, application):
-        with application.app_context():
-            from app import sync_exercise_videos
-            with patch("ai.find_exercise_video", return_value="https://example.com/video"), \
-                 patch("app._video_url_resolves", return_value=True):
-                result = sync_exercise_videos(["Brand New Exercise"])
-            lib = ExerciseLibrary.query.filter_by(name="Brand New Exercise").first()
-            assert lib is not None
-            assert lib.video_url == "https://example.com/video"
-            assert result == {"found": 1, "checked": 1}
-
-    def test_skips_exercise_with_existing_video_when_not_forced(self, application):
-        with application.app_context():
-            from app import sync_exercise_videos
-            lib = ExerciseLibrary(name="Bench Press", video_url="https://existing.example.com")
-            db.session.add(lib)
-            db.session.commit()
-            with patch("ai.find_exercise_video") as mock_find:
-                result = sync_exercise_videos(["Bench Press"])
-            mock_find.assert_not_called()
-            refreshed = ExerciseLibrary.query.filter_by(name="Bench Press").first()
-            assert refreshed.video_url == "https://existing.example.com"
-            assert result == {"found": 0, "checked": 0}
-
-    def test_force_overwrites_existing_video(self, application):
-        with application.app_context():
-            from app import sync_exercise_videos
-            lib = ExerciseLibrary(name="Bench Press", video_url="https://old.example.com")
-            db.session.add(lib)
-            db.session.commit()
-            with patch("ai.find_exercise_video", return_value="https://new.example.com"), \
-                 patch("app._video_url_resolves", return_value=True):
-                result = sync_exercise_videos(["Bench Press"], force=True)
-            refreshed = ExerciseLibrary.query.filter_by(name="Bench Press").first()
-            assert refreshed.video_url == "https://new.example.com"
-            assert result == {"found": 1, "checked": 1}
-
-    def test_unresolvable_url_is_not_saved(self, application):
-        with application.app_context():
-            from app import sync_exercise_videos
-            with patch("ai.find_exercise_video", return_value="https://dead-link.example.com"), \
-                 patch("app._video_url_resolves", return_value=False):
-                result = sync_exercise_videos(["Some Exercise"])
-            lib = ExerciseLibrary.query.filter_by(name="Some Exercise").first()
-            assert lib is not None
-            assert lib.video_url is None
-            assert result == {"found": 0, "checked": 1}
-
-    def test_one_exercise_failure_does_not_stop_others(self, application):
-        with application.app_context():
-            from app import sync_exercise_videos
-
-            def side_effect(name):
-                if name == "Bad Exercise":
-                    raise RuntimeError("search failed")
-                return "https://ok.example.com"
-
-            with patch("ai.find_exercise_video", side_effect=side_effect), \
-                 patch("app._video_url_resolves", return_value=True):
-                result = sync_exercise_videos(["Bad Exercise", "Good Exercise"])
-            bad = ExerciseLibrary.query.filter_by(name="Bad Exercise").first()
-            good = ExerciseLibrary.query.filter_by(name="Good Exercise").first()
-            assert bad is not None and bad.video_url is None
-            assert good is not None and good.video_url == "https://ok.example.com"
-            assert result == {"found": 1, "checked": 2}
-
-    def test_force_refresh_failure_does_not_wipe_existing_video(self, application):
-        """A force=True refresh (e.g. Settings > Refresh Videos) that fails to
-        find a new video — because the search call raised, e.g. an API quota
-        error — must never destroy an already-good, working video_url. Only a
-        genuine new success should overwrite it."""
-        with application.app_context():
-            from app import sync_exercise_videos
-            lib = ExerciseLibrary(name="Bench Press", video_url="https://already-good.example.com")
-            db.session.add(lib)
-            db.session.commit()
-            with patch("ai.find_exercise_video", side_effect=RuntimeError("quota exceeded")):
-                result = sync_exercise_videos(["Bench Press"], force=True)
-            refreshed = ExerciseLibrary.query.filter_by(name="Bench Press").first()
-            assert refreshed.video_url == "https://already-good.example.com"
-            assert result == {"found": 0, "checked": 1}
-
-    def test_force_refresh_unresolvable_url_does_not_wipe_existing_video(self, application):
-        """Same as above, but the search returns a URL that fails the
-        resolve-check rather than raising outright — should also leave the
-        existing good video_url untouched."""
-        with application.app_context():
-            from app import sync_exercise_videos
-            lib = ExerciseLibrary(name="Bench Press", video_url="https://already-good.example.com")
-            db.session.add(lib)
-            db.session.commit()
-            with patch("ai.find_exercise_video", return_value="https://dead-link.example.com"), \
-                 patch("app._video_url_resolves", return_value=False):
-                result = sync_exercise_videos(["Bench Press"], force=True)
-            refreshed = ExerciseLibrary.query.filter_by(name="Bench Press").first()
-            assert refreshed.video_url == "https://already-good.example.com"
-            assert result == {"found": 0, "checked": 1}
-
-    def test_search_exception_is_logged(self, application):
-        """Individual search failures were previously swallowed with no
-        record anywhere, which made a total outage (e.g. the account hitting
-        its API usage limit) indistinguishable from "nothing needed a video"
-        in the UI. Each failure must now be logged."""
-        with application.app_context():
-            from app import sync_exercise_videos
-            with patch("ai.find_exercise_video", side_effect=RuntimeError("quota exceeded")), \
-                 patch.object(flask_app.app.logger, "exception") as mock_log:
-                sync_exercise_videos(["Bench Press"])
-            assert mock_log.called
-            logged_args = str(mock_log.call_args)
-            assert "Bench Press" in logged_args
-
-    def test_progress_key_tracks_current_exercise(self, application):
-        """Progress must be readable via a plain DB query -- not a
-        process-local dict -- since gunicorn runs multiple worker
-        processes and the POST that starts a sync can land on a different
-        one than a later GET poll for its progress."""
-        with application.app_context():
-            from app import sync_exercise_videos, _get_video_progress
-            snapshots = []
-
-            def side_effect(name):
-                snapshots.append(_get_video_progress("test-progress-key"))
-                return "https://ok.example.com"
-
-            with patch("ai.find_exercise_video", side_effect=side_effect), \
-                 patch("app._video_url_resolves", return_value=True):
-                sync_exercise_videos(["Exercise A", "Exercise B"], progress_key="test-progress-key")
-
-            assert snapshots[0] == {"current": "Exercise A", "index": 1, "total": 2, "done": False, "error": False}
-            assert snapshots[1] == {"current": "Exercise B", "index": 2, "total": 2, "done": False, "error": False}
-            final = _get_video_progress("test-progress-key")
-            assert final["done"] is True
-
-    def test_no_progress_key_does_not_touch_progress_table(self, application):
-        with application.app_context():
-            from app import sync_exercise_videos
-            from models import VideoSyncProgress
-            with patch("ai.find_exercise_video", return_value="https://ok.example.com"), \
-                 patch("app._video_url_resolves", return_value=True):
-                sync_exercise_videos(["Exercise A"])
-            assert VideoSyncProgress.query.count() == 0
-
-    def test_cancel_stops_processing_remaining_exercises(self, application):
-        with application.app_context():
-            from app import sync_exercise_videos, _request_video_cancel, _is_video_cancel_requested
-
-            def side_effect(name):
-                if name == "Exercise A":
-                    _request_video_cancel("cancel-key")
-                return "https://ok.example.com"
-
-            with patch("ai.find_exercise_video", side_effect=side_effect), \
-                 patch("app._video_url_resolves", return_value=True):
-                result = sync_exercise_videos(
-                    ["Exercise A", "Exercise B", "Exercise C"], progress_key="cancel-key",
-                )
-
-            a = ExerciseLibrary.query.filter_by(name="Exercise A").first()
-            b = ExerciseLibrary.query.filter_by(name="Exercise B").first()
-            c = ExerciseLibrary.query.filter_by(name="Exercise C").first()
-            assert a is not None and a.video_url == "https://ok.example.com"
-            assert b is None
-            assert c is None
-            assert result == {"found": 1, "checked": 1}
-            assert not _is_video_cancel_requested("cancel-key")
-
-    def test_stale_cancel_flag_is_cleared_at_start_of_new_run(self, application):
-        with application.app_context():
-            from app import sync_exercise_videos, _set_video_progress, _request_video_cancel
-            # A row must already exist to attach a stale cancel flag to --
-            # simulates a previous run for this key leaving one behind.
-            _set_video_progress("stale-key", done=True)
-            _request_video_cancel("stale-key")
-            with patch("ai.find_exercise_video", return_value="https://ok.example.com"), \
-                 patch("app._video_url_resolves", return_value=True):
-                result = sync_exercise_videos(["Exercise A"], progress_key="stale-key")
-            assert result == {"found": 1, "checked": 1}
-
-
-class TestPlanConfirmVideoSync:
-    def test_confirm_plan_populates_video_url(self, client, application, profile):
-        plan_json = json.dumps({
-            "plan_name": "Plan", "description": "", "days_per_week": 3,
-            "total_weeks": 12, "phases": [],
-            "workouts": [{"day": "Workout A", "name": "Upper", "exercises": [
-                {"name": "Bench Press", "type": "main", "sets": 3, "reps": "8",
-                 "rest_seconds": 90, "notes": "", "form_cues": ""}
-            ]}]
-        })
-        with application.app_context():
-            p = UserProfile.query.get(profile)
-            pending = WorkoutPlan(
-                user_id=p.id, name="Plan", description="", days_per_week=3,
-                plan_json=plan_json, status="pending", total_weeks=12,
-            )
-            db.session.add(pending)
-            db.session.commit()
-
-        # The search itself now runs in a background thread after the
-        # response is sent, so the mocks must stay active until that thread
-        # actually finishes — not just for the POST call, or the thread falls
-        # through to the real (unmocked) ai.find_exercise_video once the
-        # `with` block here exits.
-        with patch("ai.find_exercise_video", return_value="https://example.com/bench-press"), \
-             patch("app._video_url_resolves", return_value=True):
-            client.post("/generate-plan/confirm")
-            _wait_for_video_sync_done(profile)
-
-        with application.app_context():
-            lib = ExerciseLibrary.query.filter_by(name="Bench Press").first()
-            assert lib is not None
-            assert lib.video_url == "https://example.com/bench-press"
-            pe = PlannedExercise.query.filter_by(exercise_name="Bench Press").first()
-            assert pe.exercise_library_id == lib.id
-
-
-# ---------------------------------------------------------------------------
-# Video sync backgrounding (fixes long-request timeout risk)
-# ---------------------------------------------------------------------------
-
-class TestVideoSyncBackgrounding:
-    def _make_pending_plan(self, application, profile, exercise_names):
-        plan_json = json.dumps({
-            "plan_name": "Plan", "description": "", "days_per_week": 3,
-            "total_weeks": 12, "phases": [],
-            "workouts": [{"day": "Workout A", "name": "Upper", "exercises": [
-                {"name": name, "type": "main", "sets": 3, "reps": "8",
-                 "rest_seconds": 90, "notes": "", "form_cues": ""}
-                for name in exercise_names
-            ]}]
-        })
-        with application.app_context():
-            p = UserProfile.query.get(profile)
-            pending = WorkoutPlan(
-                user_id=p.id, name="Plan", description="", days_per_week=3,
-                plan_json=plan_json, status="pending", total_weeks=12,
-            )
-            db.session.add(pending)
-            db.session.commit()
-
-    def test_confirm_plan_response_does_not_block_on_video_search(self, client, application, profile):
-        self._make_pending_plan(application, profile, ["Bench Press"])
-
-        def slow_find(name):
-            time.sleep(1.0)
-            return "https://example.com/bench-press"
-
-        # Mocks must stay active until the background thread finishes (see
-        # comment in test_confirm_plan_populates_video_url above).
-        with patch("ai.find_exercise_video", side_effect=slow_find), \
-             patch("app._video_url_resolves", return_value=True):
-            start = time.time()
-            r = client.post("/generate-plan/confirm")
-            elapsed = time.time() - start
-
-            assert r.status_code == 302
-            assert elapsed < 0.5, f"response took {elapsed}s — video search should run in the background, not block"
-
-            # but the sync did actually run, just after the response was sent
-            _wait_for_video_sync_done(profile)
-
-        with application.app_context():
-            lib = ExerciseLibrary.query.filter_by(name="Bench Press").first()
-            assert lib is not None and lib.video_url == "https://example.com/bench-press"
-
-    def test_backfill_videos_response_does_not_block_on_video_search(self, client, application, profile, active_plan):
-        def slow_find(name):
-            time.sleep(1.0)
-            return "https://example.com/video"
-
-        with patch("ai.find_exercise_video", side_effect=slow_find), \
-             patch("app._video_url_resolves", return_value=True):
-            start = time.time()
-            r = client.post("/settings/backfill-videos")
-            elapsed = time.time() - start
-
-            assert r.status_code == 302
-            assert elapsed < 0.5, f"response took {elapsed}s — video search should run in the background, not block"
-
-            progress = _wait_for_video_sync_done(profile)
-
-        assert progress["error"] is False
-
-    def test_backfill_videos_links_planned_exercises_to_library(self, client, application, profile, active_plan):
-        """Reproduces the reported bug: the active_plan fixture (like any
-        plan confirmed before video links existed) has PlannedExercise rows
-        with exercise_library_id still null. Settings > Refresh Exercise
-        Videos must not just populate ExerciseLibrary.video_url — it must
-        also link the plan's own exercises to it, or the workout page's
-        exercise.exercise_library lookup finds nothing and no link renders,
-        even though the sync reports done/success."""
-        with application.app_context():
-            pe = PlannedExercise.query.filter_by(exercise_name="Bench Press").first()
-            assert pe.exercise_library_id is None  # sanity check on the fixture
-
-        with patch("ai.find_exercise_video", return_value="https://example.com/bench-press"), \
-             patch("app._video_url_resolves", return_value=True):
-            r = client.post("/settings/backfill-videos")
-            assert r.status_code == 302
-            progress = _wait_for_video_sync_done(profile)
-
-        assert progress["error"] is False
-        with application.app_context():
-            pe = PlannedExercise.query.filter_by(exercise_name="Bench Press").first()
-            assert pe.exercise_library_id is not None
-            assert pe.exercise_library.video_url == "https://example.com/bench-press"
-
-    def test_background_exception_marks_progress_done_with_error(self, client, application, profile):
-        self._make_pending_plan(application, profile, ["Bench Press"])
-
-        with patch("ai.find_exercise_video", return_value="https://example.com/bench-press"), \
-             patch("app._video_url_resolves", side_effect=RuntimeError("boom")):
-            r = client.post("/generate-plan/confirm")
-            assert r.status_code == 302
-            progress = _wait_for_video_sync_done(profile)
-
-        assert progress["done"] is True
-        assert progress["error"] is True
-
-
-# ---------------------------------------------------------------------------
-# Relink to already-found videos (no new AI search — free)
-# ---------------------------------------------------------------------------
-
-class TestRelinkVideos:
-    def test_links_without_calling_ai(self, client, application, profile, active_plan):
-        """The active_plan fixture's exercises have no exercise_library_id
-        (same as any plan confirmed before video links existed, or one hit
-        by the FK-backfill bug). Pre-seed ExerciseLibrary rows that already
-        have a video_url — simulating videos already found by a prior,
-        possibly-paid search — and confirm relink just links to them without
-        spending another AI call."""
-        with application.app_context():
-            db.session.add(ExerciseLibrary(name="Bench Press", video_url="https://example.com/bench-press"))
-            db.session.add(ExerciseLibrary(name="Pull-Ups", video_url="https://example.com/pull-ups"))
-            db.session.commit()
-            pe = PlannedExercise.query.filter_by(exercise_name="Bench Press").first()
-            assert pe.exercise_library_id is None  # sanity check on the fixture
-
-        with patch("ai.find_exercise_video") as mock_find:
-            r = client.post("/settings/relink-videos")
-            mock_find.assert_not_called()
-
-        assert r.status_code == 302
-        with application.app_context():
-            bench = PlannedExercise.query.filter_by(exercise_name="Bench Press").first()
-            pullups = PlannedExercise.query.filter_by(exercise_name="Pull-Ups").first()
-            assert bench.exercise_library_id is not None
-            assert bench.exercise_library.video_url == "https://example.com/bench-press"
-            assert pullups.exercise_library_id is not None
-            assert pullups.exercise_library.video_url == "https://example.com/pull-ups"
-
-    def test_leaves_exercises_without_a_library_match_unlinked(self, client, application, profile, active_plan):
-        """No ExerciseLibrary row exists for these names at all — relink
-        should not crash, and should just leave them unlinked (there's
-        nothing to link to without an actual search)."""
-        with patch("ai.find_exercise_video") as mock_find:
-            r = client.post("/settings/relink-videos")
-            mock_find.assert_not_called()
-
-        assert r.status_code == 302
-        with application.app_context():
-            pe = PlannedExercise.query.filter_by(exercise_name="Bench Press").first()
-            assert pe.exercise_library_id is None
-
-    def test_no_active_plan_flashes_error(self, client, profile):
-        r = client.post("/settings/relink-videos", follow_redirects=True)
-        assert b"No active plan" in r.data
 
 
 # ---------------------------------------------------------------------------

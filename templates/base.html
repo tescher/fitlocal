@@ -40,7 +40,6 @@
                 <div class="flash {{ category }}">{{ message }}</div>
             {% endfor %}
         {% endwith %}
-        <div id="videoSyncIndicator" class="flash" style="display:none;"></div>
         {% block content %}{% endblock %}
     </main>
 <script>
@@ -58,36 +57,6 @@
       }
     });
   });
-
-  // If a video search was left running when the user navigated here (from
-  // the plan-confirm or video-refresh pages), keep showing progress instead
-  // of it silently vanishing — the background thread keeps going either way.
-  // Only polls when that's actually the case, so a normal page load never
-  // makes this request.
-  (function () {
-    if (!localStorage.getItem('videoSyncPending')) return;
-    var el = document.getElementById('videoSyncIndicator');
-    el.style.display = '';
-    el.textContent = 'Checking video search progress…';
-    var timer = setInterval(function () {
-      fetch('/api/video-sync-progress').then(function (r) { return r.json(); }).then(function (p) {
-        if (p.error) {
-          el.className = 'flash error';
-          el.textContent = 'Video search hit an error — you can retry from Settings.';
-          clearInterval(timer);
-          localStorage.removeItem('videoSyncPending');
-        } else if (p.done) {
-          el.className = 'flash success';
-          el.textContent = 'Video search finished.';
-          clearInterval(timer);
-          localStorage.removeItem('videoSyncPending');
-          setTimeout(function () { el.style.display = 'none'; }, 4000);
-        } else if (p.current) {
-          el.textContent = 'Finding videos for your plan… (' + p.index + ' of ' + p.total + ')';
-        }
-      }).catch(function () {});
-    }, 3000);
-  })();
 </script>
 </body>
 </html>
