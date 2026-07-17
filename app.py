@@ -583,8 +583,8 @@ def get_exercise_history(user_id, exercise_name):
     for session in sessions:
         sets = [s for s in session.logged_sets if s.exercise_name == exercise_name]
         volume = sum(
-            (s.weight_lbs or 0) * (s.reps_completed or 0)
-            + (s.weight_b or 0) * (s.reps_b or 0)
+            (1 if s.weight_lbs is None else s.weight_lbs) * (s.reps_completed or 0)
+            + (1 if s.weight_b is None else s.weight_b) * (s.reps_b or 0)
             for s in sets
         )
         rpes = [s.rpe for s in sets if s.rpe is not None]
