@@ -5,6 +5,8 @@ AI calls are mocked throughout.
 """
 import json
 import os
+import threading
+import time
 import pytest
 import sqlalchemy as sa
 from sqlalchemy.pool import StaticPool
@@ -184,6 +186,20 @@ def log_session(application, profile_id, planned_workout_id, exercises, delta_da
                 db.session.add(ls)
         db.session.commit()
         return ws.id
+
+
+def _wait_for_video_sync_done(profile_id, timeout=5):
+    """Poll app._video_sync_progress the same way the frontend does, since
+    the video sync now runs in a background thread instead of blocking the
+    request. Returns the final progress dict, or fails the test on timeout."""
+    from app import _video_sync_progress
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        progress = _video_sync_progress.get(profile_id)
+        if progress and progress.get("done"):
+            return progress
+        time.sleep(0.02)
+    raise AssertionError(f"video sync for profile {profile_id} did not finish within {timeout}s")
 
 
 @pytest.fixture(autouse=True)
@@ -412,6 +428,7 @@ class TestExerciseLibraryFK:
             db.session.commit()
 
         client.post("/generate-plan/confirm")
+        _wait_for_video_sync_done(profile)
 
         with application.app_context():
             pe = PlannedExercise.query.filter_by(exercise_name="Some Custom Exercise").first()
@@ -523,8 +540,8 @@ class TestSyncExerciseVideos:
                  patch("app._video_url_resolves", return_value=True):
                 sync_exercise_videos(["Exercise A", "Exercise B"], progress_key="test-progress-key")
 
-            assert snapshots[0] == {"current": "Exercise A", "index": 1, "total": 2, "done": False}
-            assert snapshots[1] == {"current": "Exercise B", "index": 2, "total": 2, "done": False}
+            assert snapshots[0] == {"current": "Exercise A", "index": 1, "total": 2, "done": False, "error": False}
+            assert snapshots[1] == {"current": "Exercise B", "index": 2, "total": 2, "done": False, "error": False}
             final = _video_sync_progress["test-progress-key"]
             assert final["done"] is True
 
@@ -590,9 +607,15 @@ class TestPlanConfirmVideoSync:
             db.session.add(pending)
             db.session.commit()
 
+        # The search itself now runs in a background thread after the
+        # response is sent, so the mocks must stay active until that thread
+        # actually finishes — not just for the POST call, or the thread falls
+        # through to the real (unmocked) ai.find_exercise_video once the
+        # `with` block here exits.
         with patch("ai.find_exercise_video", return_value="https://example.com/bench-press"), \
              patch("app._video_url_resolves", return_value=True):
             client.post("/generate-plan/confirm")
+            _wait_for_video_sync_done(profile)
 
         with application.app_context():
             lib = ExerciseLibrary.query.filter_by(name="Bench Press").first()
@@ -600,6 +623,86 @@ class TestPlanConfirmVideoSync:
             assert lib.video_url == "https://example.com/bench-press"
             pe = PlannedExercise.query.filter_by(exercise_name="Bench Press").first()
             assert pe.exercise_library_id == lib.id
+
+
+# ---------------------------------------------------------------------------
+# Video sync backgrounding (fixes long-request timeout risk)
+# ---------------------------------------------------------------------------
+
+class TestVideoSyncBackgrounding:
+    def _make_pending_plan(self, application, profile, exercise_names):
+        plan_json = json.dumps({
+            "plan_name": "Plan", "description": "", "days_per_week": 3,
+            "total_weeks": 12, "phases": [],
+            "workouts": [{"day": "Workout A", "name": "Upper", "exercises": [
+                {"name": name, "type": "main", "sets": 3, "reps": "8",
+                 "rest_seconds": 90, "notes": "", "form_cues": ""}
+                for name in exercise_names
+            ]}]
+        })
+        with application.app_context():
+            p = UserProfile.query.get(profile)
+            pending = WorkoutPlan(
+                user_id=p.id, name="Plan", description="", days_per_week=3,
+                plan_json=plan_json, status="pending", total_weeks=12,
+            )
+            db.session.add(pending)
+            db.session.commit()
+
+    def test_confirm_plan_response_does_not_block_on_video_search(self, client, application, profile):
+        self._make_pending_plan(application, profile, ["Bench Press"])
+
+        def slow_find(name):
+            time.sleep(1.0)
+            return "https://example.com/bench-press"
+
+        # Mocks must stay active until the background thread finishes (see
+        # comment in test_confirm_plan_populates_video_url above).
+        with patch("ai.find_exercise_video", side_effect=slow_find), \
+             patch("app._video_url_resolves", return_value=True):
+            start = time.time()
+            r = client.post("/generate-plan/confirm")
+            elapsed = time.time() - start
+
+            assert r.status_code == 302
+            assert elapsed < 0.5, f"response took {elapsed}s — video search should run in the background, not block"
+
+            # but the sync did actually run, just after the response was sent
+            _wait_for_video_sync_done(profile)
+
+        with application.app_context():
+            lib = ExerciseLibrary.query.filter_by(name="Bench Press").first()
+            assert lib is not None and lib.video_url == "https://example.com/bench-press"
+
+    def test_backfill_videos_response_does_not_block_on_video_search(self, client, application, profile, active_plan):
+        def slow_find(name):
+            time.sleep(1.0)
+            return "https://example.com/video"
+
+        with patch("ai.find_exercise_video", side_effect=slow_find), \
+             patch("app._video_url_resolves", return_value=True):
+            start = time.time()
+            r = client.post("/settings/backfill-videos")
+            elapsed = time.time() - start
+
+            assert r.status_code == 302
+            assert elapsed < 0.5, f"response took {elapsed}s — video search should run in the background, not block"
+
+            progress = _wait_for_video_sync_done(profile)
+
+        assert progress["error"] is False
+
+    def test_background_exception_marks_progress_done_with_error(self, client, application, profile):
+        self._make_pending_plan(application, profile, ["Bench Press"])
+
+        with patch("ai.find_exercise_video", return_value="https://example.com/bench-press"), \
+             patch("app._video_url_resolves", side_effect=RuntimeError("boom")):
+            r = client.post("/generate-plan/confirm")
+            assert r.status_code == 302
+            progress = _wait_for_video_sync_done(profile)
+
+        assert progress["done"] is True
+        assert progress["error"] is True
 
 
 # ---------------------------------------------------------------------------
