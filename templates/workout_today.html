@@ -99,6 +99,9 @@
             <p>{{ exercise.form_cues }}</p>
         </details>
         {% endif %}
+        {% if exercise.exercise_library and exercise.exercise_library.video_url %}
+        <a href="{{ exercise.exercise_library.video_url }}" target="_blank" rel="noopener noreferrer">Watch form video &#8599;</a>
+        {% endif %}
         <table class="log-table">
             <thead>
                 <tr>
@@ -206,6 +209,9 @@
             <p>{{ exercise.form_cues }}</p>
         </details>
         {% endif %}
+        {% if exercise.exercise_library and exercise.exercise_library.video_url %}
+        <a href="{{ exercise.exercise_library.video_url }}" target="_blank" rel="noopener noreferrer">Watch form video &#8599;</a>
+        {% endif %}
         <table class="log-table">
             <thead>
                 <tr>
@@ -312,6 +318,9 @@
             <summary>Form Cues</summary>
             <p>{{ exercise.form_cues }}</p>
         </details>
+        {% endif %}
+        {% if exercise.exercise_library and exercise.exercise_library.video_url %}
+        <a href="{{ exercise.exercise_library.video_url }}" target="_blank" rel="noopener noreferrer">Watch form video &#8599;</a>
         {% endif %}
         <table class="log-table">
             <thead>

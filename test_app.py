@@ -2394,6 +2394,70 @@ r_anon = anon_client.get("/api/exercise/history", query_string={"name": "History
 check("GET /api/exercise/history unauthenticated returns 401 or redirect",
       r_anon.status_code in (401, 302))
 
+# ── CSV Export/Import for Exercise Videos ───────────────────────────────────
+print("\n--- CSV Export/Import for Exercise Videos ---")
+import io
+
+with app.app_context():
+    from app import get_active_plan as _gap_csv
+    _profile_csv = UserProfile.query.first()
+    _active_csv = _gap_csv(_profile_csv.id)
+    _pw_csv = PlannedWorkout.query.filter_by(plan_id=_active_csv.id).first()
+    _show_idx_csv = _pw_csv.order_index
+    _pe_csv = PlannedExercise(
+        planned_workout_id=_pw_csv.id, exercise_name="CSV Import Test Exercise",
+        sets_prescribed=3, reps_prescribed="8", rest_seconds=90, exercise_type="main",
+    )
+    db.session.add(_pe_csv)
+    db.session.commit()
+    check("CSV import test setup: exercise starts unlinked", _pe_csv.exercise_library_id is None)
+
+# Export
+r = client.get("/settings/export-exercises")
+check("GET /settings/export-exercises returns 200", r.status_code == 200)
+check("Export content-type is text/csv", "text/csv" in r.content_type)
+check("Export includes seeded exercise name", "CSV Import Test Exercise" in r.get_data(as_text=True))
+
+# Import (one good row, one malformed row missing a URL)
+_csv_content = "CSV Import Test Exercise,https://example.com/csv-import-video\nMalformed Row Without URL\n"
+_upload = {"csv_file": (io.BytesIO(_csv_content.encode("utf-8")), "exercises.csv")}
+r = client.post(
+    "/settings/import-exercise-videos", data=_upload,
+    content_type="multipart/form-data", follow_redirects=True,
+)
+check("POST /settings/import-exercise-videos succeeds", r.status_code == 200)
+check("Import flash message reports 1 imported video link", b"Imported 1 video link" in r.data)
+check("Import flash message reports 1 skipped row", b"Skipped 1 row" in r.data)
+
+with app.app_context():
+    _lib_csv = ExerciseLibrary.query.filter_by(name="CSV Import Test Exercise").first()
+    check("Import created ExerciseLibrary entry with video_url",
+          _lib_csv is not None and _lib_csv.video_url == "https://example.com/csv-import-video")
+    _pe_after_csv = PlannedExercise.query.filter_by(exercise_name="CSV Import Test Exercise").first()
+    check("Import backfilled PlannedExercise.exercise_library_id",
+          _pe_after_csv.exercise_library_id == _lib_csv.id)
+
+# Display on /workout/today -- force the exact workout via ?show= so this
+# doesn't depend on the "next workout" resolution, which is driven by
+# whatever session-logging history the rest of this script has built up.
+r = client.get(f"/workout/today?show={_show_idx_csv}")
+check("GET /workout/today shows Watch form video link after import",
+      b"Watch form video" in r.data and b"https://example.com/csv-import-video" in r.data)
+
+# No-file error
+r = client.post(
+    "/settings/import-exercise-videos", data={},
+    content_type="multipart/form-data", follow_redirects=True,
+)
+check("POST /settings/import-exercise-videos with no file flashes error",
+      b"Please choose a CSV file" in r.data)
+
+# Unauthenticated
+r_anon = anon_client.get("/settings/export-exercises", follow_redirects=False)
+check("GET /settings/export-exercises unauthenticated redirects", r_anon.status_code == 302)
+r_anon = anon_client.get("/settings/import-exercise-videos", follow_redirects=False)
+check("GET /settings/import-exercise-videos unauthenticated redirects", r_anon.status_code == 302)
+
 # Summary
 print(f"\n{'='*50}")
 print(f"Results: {passed} passed, {failed} failed out of {passed + failed} tests")

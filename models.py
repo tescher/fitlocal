@@ -184,3 +184,4 @@ class ExerciseLibrary(db.Model):
     description = db.Column(db.Text)
     form_cues = db.Column(db.Text)
     difficulty = db.Column(db.String(20))
+    video_url = db.Column(db.String(500))
