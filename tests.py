@@ -189,14 +189,15 @@ def log_session(application, profile_id, planned_workout_id, exercises, delta_da
 
 
 def _wait_for_video_sync_done(profile_id, timeout=5):
-    """Poll app._video_sync_progress the same way the frontend does, since
-    the video sync now runs in a background thread instead of blocking the
-    request. Returns the final progress dict, or fails the test on timeout."""
-    from app import _video_sync_progress
+    """Poll the DB-backed video-sync progress the same way the frontend
+    does, since the video sync now runs in a background thread instead of
+    blocking the request. Returns the final progress dict, or fails the
+    test on timeout."""
+    from app import _get_video_progress
     deadline = time.time() + timeout
     while time.time() < deadline:
-        progress = _video_sync_progress.get(profile_id)
-        if progress and progress.get("done"):
+        progress = _get_video_progress(profile_id)
+        if progress.get("done"):
             return progress
         time.sleep(0.02)
     raise AssertionError(f"video sync for profile {profile_id} did not finish within {timeout}s")
@@ -574,12 +575,16 @@ class TestSyncExerciseVideos:
             assert "Bench Press" in logged_args
 
     def test_progress_key_tracks_current_exercise(self, application):
+        """Progress must be readable via a plain DB query -- not a
+        process-local dict -- since gunicorn runs multiple worker
+        processes and the POST that starts a sync can land on a different
+        one than a later GET poll for its progress."""
         with application.app_context():
-            from app import sync_exercise_videos, _video_sync_progress
+            from app import sync_exercise_videos, _get_video_progress
             snapshots = []
 
             def side_effect(name):
-                snapshots.append(dict(_video_sync_progress.get("test-progress-key", {})))
+                snapshots.append(_get_video_progress("test-progress-key"))
                 return "https://ok.example.com"
 
             with patch("ai.find_exercise_video", side_effect=side_effect), \
@@ -588,25 +593,25 @@ class TestSyncExerciseVideos:
 
             assert snapshots[0] == {"current": "Exercise A", "index": 1, "total": 2, "done": False, "error": False}
             assert snapshots[1] == {"current": "Exercise B", "index": 2, "total": 2, "done": False, "error": False}
-            final = _video_sync_progress["test-progress-key"]
+            final = _get_video_progress("test-progress-key")
             assert final["done"] is True
 
-    def test_no_progress_key_does_not_touch_progress_dict(self, application):
+    def test_no_progress_key_does_not_touch_progress_table(self, application):
         with application.app_context():
-            from app import sync_exercise_videos, _video_sync_progress
-            _video_sync_progress.clear()
+            from app import sync_exercise_videos
+            from models import VideoSyncProgress
             with patch("ai.find_exercise_video", return_value="https://ok.example.com"), \
                  patch("app._video_url_resolves", return_value=True):
                 sync_exercise_videos(["Exercise A"])
-            assert _video_sync_progress == {}
+            assert VideoSyncProgress.query.count() == 0
 
     def test_cancel_stops_processing_remaining_exercises(self, application):
         with application.app_context():
-            from app import sync_exercise_videos, _video_sync_cancel_requested
+            from app import sync_exercise_videos, _request_video_cancel, _is_video_cancel_requested
 
             def side_effect(name):
                 if name == "Exercise A":
-                    _video_sync_cancel_requested.add("cancel-key")
+                    _request_video_cancel("cancel-key")
                 return "https://ok.example.com"
 
             with patch("ai.find_exercise_video", side_effect=side_effect), \
@@ -622,12 +627,15 @@ class TestSyncExerciseVideos:
             assert b is None
             assert c is None
             assert result == {"found": 1, "checked": 1}
-            assert "cancel-key" not in _video_sync_cancel_requested
+            assert not _is_video_cancel_requested("cancel-key")
 
     def test_stale_cancel_flag_is_cleared_at_start_of_new_run(self, application):
         with application.app_context():
-            from app import sync_exercise_videos, _video_sync_cancel_requested
-            _video_sync_cancel_requested.add("stale-key")
+            from app import sync_exercise_videos, _set_video_progress, _request_video_cancel
+            # A row must already exist to attach a stale cancel flag to --
+            # simulates a previous run for this key leaving one behind.
+            _set_video_progress("stale-key", done=True)
+            _request_video_cancel("stale-key")
             with patch("ai.find_exercise_video", return_value="https://ok.example.com"), \
                  patch("app._video_url_resolves", return_value=True):
                 result = sync_exercise_videos(["Exercise A"], progress_key="stale-key")
