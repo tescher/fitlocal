@@ -168,3 +168,37 @@ Return only valid JSON, no commentary."""
     )
 
     return _extract_json(message.content[0].text)
+
+
+def find_exercise_video(exercise_name):
+    """Search for a real, reputable video demonstrating correct form for an
+    exercise. Returns a URL string, or None if no good result was found.
+
+    Uses the web search tool so the model grounds its answer in a real
+    search rather than recalling a URL from memory (a common hallucination
+    source for LLM-generated links).
+    """
+    client = get_client()
+
+    prompt = f"""Find one high-quality, currently-working video that clearly
+demonstrates correct exercise form for: {exercise_name}.
+
+Prefer well-known, reputable fitness channels or official brand/gym channels.
+Use the web search tool to find a real, current URL — do not guess or recall
+a URL from memory.
+
+Return a JSON object: {{"video_url": string or null}}
+Return only valid JSON, no commentary."""
+
+    message = client.messages.create(
+        model="claude-opus-4-8",
+        max_tokens=1024,
+        tools=[{"type": "web_search_20260209", "name": "web_search", "max_uses": 3}],
+        messages=[{"role": "user", "content": prompt}],
+    )
+
+    text = next((b.text for b in reversed(message.content) if b.type == "text"), None)
+    if not text:
+        return None
+    result = _extract_json(text)
+    return result.get("video_url")

@@ -186,6 +186,16 @@ def log_session(application, profile_id, planned_workout_id, exercises, delta_da
         return ws.id
 
 
+@pytest.fixture(autouse=True)
+def _mock_exercise_video_search():
+    """confirm_plan() now syncs exercise videos on every confirmation — patch
+    the AI call by default so unrelated tests don't hit the real Anthropic
+    API. Tests that care about video behavior nest their own patch, which
+    takes precedence for its scope."""
+    with patch("ai.find_exercise_video", return_value=None):
+        yield
+
+
 # ---------------------------------------------------------------------------
 # Route tests — no profile
 # ---------------------------------------------------------------------------
@@ -379,8 +389,11 @@ class TestExerciseLibraryFK:
             assert pe is not None
             assert pe.exercise_library_id == lib_id
 
-    def test_fk_null_when_no_library_match(self, client, application, profile):
-        """FK stays null for free-text exercise names not in the library."""
+    def test_fk_populated_via_auto_created_library_entry(self, client, application, profile):
+        """As of the exercise-video-links feature, confirm_plan() creates an
+        ExerciseLibrary row for any exercise name that doesn't already have
+        one — every exercise needs a durable home for its video link — so the
+        FK is now always populated, not left null for free-text names."""
         plan_json = json.dumps({
             "plan_name": "Plan", "description": "", "days_per_week": 3,
             "total_weeks": 12, "phases": [],
@@ -403,7 +416,9 @@ class TestExerciseLibraryFK:
         with application.app_context():
             pe = PlannedExercise.query.filter_by(exercise_name="Some Custom Exercise").first()
             assert pe is not None
-            assert pe.exercise_library_id is None
+            assert pe.exercise_library_id is not None
+            lib = ExerciseLibrary.query.get(pe.exercise_library_id)
+            assert lib.name == "Some Custom Exercise"
 
     def test_logged_set_fk_populated(self, application, profile, active_plan):
         """LoggedSet.exercise_library_id is set when name matches library."""
@@ -422,6 +437,136 @@ class TestExerciseLibraryFK:
             ls = LoggedSet.query.filter_by(exercise_name="Bench Press").first()
             assert ls is not None
             assert ls.exercise_library_id == lib_id
+
+
+# ---------------------------------------------------------------------------
+# Exercise video sync (exercise-video-links feature)
+# ---------------------------------------------------------------------------
+
+class TestSyncExerciseVideos:
+    def test_creates_library_entry_when_none_exists(self, application):
+        with application.app_context():
+            from app import sync_exercise_videos
+            with patch("ai.find_exercise_video", return_value="https://example.com/video"), \
+                 patch("app._video_url_resolves", return_value=True):
+                result = sync_exercise_videos(["Brand New Exercise"])
+            lib = ExerciseLibrary.query.filter_by(name="Brand New Exercise").first()
+            assert lib is not None
+            assert lib.video_url == "https://example.com/video"
+            assert result == {"found": 1, "checked": 1}
+
+    def test_skips_exercise_with_existing_video_when_not_forced(self, application):
+        with application.app_context():
+            from app import sync_exercise_videos
+            lib = ExerciseLibrary(name="Bench Press", video_url="https://existing.example.com")
+            db.session.add(lib)
+            db.session.commit()
+            with patch("ai.find_exercise_video") as mock_find:
+                result = sync_exercise_videos(["Bench Press"])
+            mock_find.assert_not_called()
+            refreshed = ExerciseLibrary.query.filter_by(name="Bench Press").first()
+            assert refreshed.video_url == "https://existing.example.com"
+            assert result == {"found": 0, "checked": 0}
+
+    def test_force_overwrites_existing_video(self, application):
+        with application.app_context():
+            from app import sync_exercise_videos
+            lib = ExerciseLibrary(name="Bench Press", video_url="https://old.example.com")
+            db.session.add(lib)
+            db.session.commit()
+            with patch("ai.find_exercise_video", return_value="https://new.example.com"), \
+                 patch("app._video_url_resolves", return_value=True):
+                result = sync_exercise_videos(["Bench Press"], force=True)
+            refreshed = ExerciseLibrary.query.filter_by(name="Bench Press").first()
+            assert refreshed.video_url == "https://new.example.com"
+            assert result == {"found": 1, "checked": 1}
+
+    def test_unresolvable_url_is_not_saved(self, application):
+        with application.app_context():
+            from app import sync_exercise_videos
+            with patch("ai.find_exercise_video", return_value="https://dead-link.example.com"), \
+                 patch("app._video_url_resolves", return_value=False):
+                result = sync_exercise_videos(["Some Exercise"])
+            lib = ExerciseLibrary.query.filter_by(name="Some Exercise").first()
+            assert lib is not None
+            assert lib.video_url is None
+            assert result == {"found": 0, "checked": 1}
+
+    def test_one_exercise_failure_does_not_stop_others(self, application):
+        with application.app_context():
+            from app import sync_exercise_videos
+
+            def side_effect(name):
+                if name == "Bad Exercise":
+                    raise RuntimeError("search failed")
+                return "https://ok.example.com"
+
+            with patch("ai.find_exercise_video", side_effect=side_effect), \
+                 patch("app._video_url_resolves", return_value=True):
+                result = sync_exercise_videos(["Bad Exercise", "Good Exercise"])
+            bad = ExerciseLibrary.query.filter_by(name="Bad Exercise").first()
+            good = ExerciseLibrary.query.filter_by(name="Good Exercise").first()
+            assert bad is not None and bad.video_url is None
+            assert good is not None and good.video_url == "https://ok.example.com"
+            assert result == {"found": 1, "checked": 2}
+
+    def test_progress_key_tracks_current_exercise(self, application):
+        with application.app_context():
+            from app import sync_exercise_videos, _video_sync_progress
+            snapshots = []
+
+            def side_effect(name):
+                snapshots.append(dict(_video_sync_progress.get("test-progress-key", {})))
+                return "https://ok.example.com"
+
+            with patch("ai.find_exercise_video", side_effect=side_effect), \
+                 patch("app._video_url_resolves", return_value=True):
+                sync_exercise_videos(["Exercise A", "Exercise B"], progress_key="test-progress-key")
+
+            assert snapshots[0] == {"current": "Exercise A", "index": 1, "total": 2, "done": False}
+            assert snapshots[1] == {"current": "Exercise B", "index": 2, "total": 2, "done": False}
+            final = _video_sync_progress["test-progress-key"]
+            assert final["done"] is True
+
+    def test_no_progress_key_does_not_touch_progress_dict(self, application):
+        with application.app_context():
+            from app import sync_exercise_videos, _video_sync_progress
+            _video_sync_progress.clear()
+            with patch("ai.find_exercise_video", return_value="https://ok.example.com"), \
+                 patch("app._video_url_resolves", return_value=True):
+                sync_exercise_videos(["Exercise A"])
+            assert _video_sync_progress == {}
+
+
+class TestPlanConfirmVideoSync:
+    def test_confirm_plan_populates_video_url(self, client, application, profile):
+        plan_json = json.dumps({
+            "plan_name": "Plan", "description": "", "days_per_week": 3,
+            "total_weeks": 12, "phases": [],
+            "workouts": [{"day": "Workout A", "name": "Upper", "exercises": [
+                {"name": "Bench Press", "type": "main", "sets": 3, "reps": "8",
+                 "rest_seconds": 90, "notes": "", "form_cues": ""}
+            ]}]
+        })
+        with application.app_context():
+            p = UserProfile.query.get(profile)
+            pending = WorkoutPlan(
+                user_id=p.id, name="Plan", description="", days_per_week=3,
+                plan_json=plan_json, status="pending", total_weeks=12,
+            )
+            db.session.add(pending)
+            db.session.commit()
+
+        with patch("ai.find_exercise_video", return_value="https://example.com/bench-press"), \
+             patch("app._video_url_resolves", return_value=True):
+            client.post("/generate-plan/confirm")
+
+        with application.app_context():
+            lib = ExerciseLibrary.query.filter_by(name="Bench Press").first()
+            assert lib is not None
+            assert lib.video_url == "https://example.com/bench-press"
+            pe = PlannedExercise.query.filter_by(exercise_name="Bench Press").first()
+            assert pe.exercise_library_id == lib.id
 
 
 # ---------------------------------------------------------------------------
