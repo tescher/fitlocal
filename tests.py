@@ -908,6 +908,29 @@ class TestExerciseHistory:
             assert len(result) == 2
             assert result[0]["date"] < result[1]["date"]
 
+    def test_null_weight_uses_multiplier_of_one_for_bodyweight_exercises(self, application, profile, active_plan):
+        with application.app_context():
+            pw = PlannedWorkout.query.filter_by(day_of_week="Workout A").first()
+            ws = WorkoutSession(user_id=profile, planned_workout_id=pw.id,
+                                 date=date.today(), overall_feeling=4)
+            db.session.add(ws)
+            db.session.flush()
+            # Bodyweight set: no weight logged at all (weight_lbs is None)
+            db.session.add(LoggedSet(session_id=ws.id, exercise_name="Pull-Ups",
+                                     set_number=1, weight_lbs=None, reps_completed=12, rpe=7))
+            # Weighted set with a bodyweight drop set (weight_b is None)
+            db.session.add(LoggedSet(session_id=ws.id, exercise_name="Pull-Ups",
+                                     set_number=2, weight_lbs=25.0, reps_completed=6,
+                                     weight_b=None, reps_b=5, rpe=8))
+            db.session.commit()
+
+        with application.app_context():
+            from app import get_exercise_history
+            result = get_exercise_history(profile, "Pull-Ups")
+            assert len(result) == 1
+            # (1 * 12) + (25.0 * 6) + (1 * 5) -- null weight treated as bodyweight (multiplier 1)
+            assert result[0]["volume"] == 12 + 150.0 + 5
+
     def test_ignores_other_exercises_and_incomplete_sessions(self, application, profile, active_plan):
         with application.app_context():
             pw = PlannedWorkout.query.filter_by(day_of_week="Workout A").first()
