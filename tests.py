@@ -537,6 +537,39 @@ class TestSyncExerciseVideos:
                 sync_exercise_videos(["Exercise A"])
             assert _video_sync_progress == {}
 
+    def test_cancel_stops_processing_remaining_exercises(self, application):
+        with application.app_context():
+            from app import sync_exercise_videos, _video_sync_cancel_requested
+
+            def side_effect(name):
+                if name == "Exercise A":
+                    _video_sync_cancel_requested.add("cancel-key")
+                return "https://ok.example.com"
+
+            with patch("ai.find_exercise_video", side_effect=side_effect), \
+                 patch("app._video_url_resolves", return_value=True):
+                result = sync_exercise_videos(
+                    ["Exercise A", "Exercise B", "Exercise C"], progress_key="cancel-key",
+                )
+
+            a = ExerciseLibrary.query.filter_by(name="Exercise A").first()
+            b = ExerciseLibrary.query.filter_by(name="Exercise B").first()
+            c = ExerciseLibrary.query.filter_by(name="Exercise C").first()
+            assert a is not None and a.video_url == "https://ok.example.com"
+            assert b is None
+            assert c is None
+            assert result == {"found": 1, "checked": 1}
+            assert "cancel-key" not in _video_sync_cancel_requested
+
+    def test_stale_cancel_flag_is_cleared_at_start_of_new_run(self, application):
+        with application.app_context():
+            from app import sync_exercise_videos, _video_sync_cancel_requested
+            _video_sync_cancel_requested.add("stale-key")
+            with patch("ai.find_exercise_video", return_value="https://ok.example.com"), \
+                 patch("app._video_url_resolves", return_value=True):
+                result = sync_exercise_videos(["Exercise A"], progress_key="stale-key")
+            assert result == {"found": 1, "checked": 1}
+
 
 class TestPlanConfirmVideoSync:
     def test_confirm_plan_populates_video_url(self, client, application, profile):

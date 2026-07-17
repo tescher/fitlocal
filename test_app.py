@@ -2445,6 +2445,14 @@ check("Progress response has current/index/total/done keys",
 r_progress_anon = anon_client.get("/api/video-sync-progress", follow_redirects=False)
 check("GET /api/video-sync-progress unauthenticated redirects", r_progress_anon.status_code == 302)
 
+# Cancel endpoint
+r = client.post("/api/video-sync-cancel")
+check("POST /api/video-sync-cancel returns 200", r.status_code == 200)
+check("POST /api/video-sync-cancel returns ok", r.get_json() == {"ok": True})
+
+r_cancel_anon = anon_client.post("/api/video-sync-cancel", follow_redirects=False)
+check("POST /api/video-sync-cancel unauthenticated redirects", r_cancel_anon.status_code == 302)
+
 # Summary
 print(f"\n{'='*50}")
 print(f"Results: {passed} passed, {failed} failed out of {passed + failed} tests")
