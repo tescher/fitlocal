@@ -1033,6 +1033,12 @@ def sync_exercise_videos(exercise_names, force=False, progress_key=None):
         if url and _video_url_resolves(url):
             lib.video_url = url
             found += 1
+        # Commit after each exercise rather than once at the very end, so a
+        # found video is durably saved immediately instead of surviving only
+        # in an open transaction — a mid-run process kill (a deploy/restart)
+        # would otherwise discard everything found in the run, not just the
+        # exercise that was in flight when it died.
+        db.session.commit()
     if progress_key is not None:
         _video_sync_progress[progress_key] = _video_progress(index=last_index, total=total, done=True)
         _video_sync_cancel_requested.discard(progress_key)
