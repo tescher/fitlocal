@@ -40,7 +40,7 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 from models import (  # noqa: E402
     db, Account, UserProfile, WorkoutPlan, PlannedWorkout, PlannedExercise,
     WorkoutSession, LoggedSet, AIReview, FitnessTest, TrainingPhase, ExerciseLibrary,
-    NextWorkoutNote,
+    NextWorkoutNote, VideoSyncProgress,
 )
 from extensions import login_manager, bcrypt, csrf, limiter, oauth_client  # noqa: E402
 
@@ -967,34 +967,96 @@ def _video_url_resolves(url):
         return False
 
 
-# In-memory live-progress tracker for exercise video sync, keyed by an
-# arbitrary caller-supplied key (profile.id in practice). Single-process app,
-# so plain dict/set are enough — no need for cross-process/shared storage.
-_video_sync_progress = {}
-_video_sync_cancel_requested = set()
-
-
 def _video_progress(current=None, index=0, total=0, done=False, error=False):
-    """Build a _video_sync_progress entry. Centralizes the dict shape so
-    every writer (the sync loop, its background wrappers, and the routes
-    that seed initial state before spawning a thread) stays in sync."""
+    """Build a video-sync progress dict in the JSON shape returned by
+    /api/video-sync-progress."""
     return {"current": current, "index": index, "total": total, "done": done, "error": error}
 
 
-def sync_exercise_videos(exercise_names, force=False, progress_key=None):
+def _video_progress_key(progress_key):
+    return str(progress_key)
+
+
+def _set_video_progress(progress_key, current=None, index=0, total=0, done=False, error=False, reset_cancel=False):
+    """Persist sync progress to the DB rather than an in-memory dict, so
+    every gunicorn worker process sees the same state — a POST that starts
+    a sync and a later GET poll for its progress can land on different
+    worker processes, and an in-memory dict is scoped to whichever one
+    happened to handle the POST.
+
+    Called from within sync_exercise_videos's own loop, right after that
+    loop's own per-exercise commit ended the previous transaction — so this
+    read is already fresh without needing an explicit rollback()/expire
+    here first. Forcing one anyway would be actively wrong: it would also
+    discard any of the *caller's* other pending, not-yet-committed work on
+    this same session (e.g. a just-flushed new ExerciseLibrary row for the
+    exercise currently being processed)."""
+    key = _video_progress_key(progress_key)
+    row = VideoSyncProgress.query.get(key)
+    if row is None:
+        row = VideoSyncProgress(key=key)
+        db.session.add(row)
+    row.current = current
+    row.index = index
+    row.total = total
+    row.done = done
+    row.error = error
+    if reset_cancel:
+        row.cancel_requested = False
+    db.session.commit()
+
+
+def _get_video_progress(progress_key):
+    """Read current progress. Unlike the other helpers here, this one is
+    called repeatedly by a dedicated polling session/thread that has
+    nothing else pending — a stale already-open transaction is the actual
+    risk here, not caller state, so an explicit rollback() (a no-op if
+    nothing's pending) to force a truly fresh read is safe: Query.get()
+    returns a cached in-session object without hitting the DB if it's
+    already been loaded once, and even a fresh query within an
+    already-open transaction can still miss a commit made by another
+    session (a different thread, or a different worker process) after
+    that transaction began."""
+    db.session.rollback()
+    row = VideoSyncProgress.query.get(_video_progress_key(progress_key))
+    if row is None:
+        return _video_progress(done=True)
+    return _video_progress(current=row.current, index=row.index, total=row.total, done=row.done, error=row.error)
+
+
+def _request_video_cancel(progress_key):
+    row = VideoSyncProgress.query.get(_video_progress_key(progress_key))
+    if row is not None:
+        row.cancel_requested = True
+        db.session.commit()
+
+
+def _is_video_cancel_requested(progress_key):
+    row = VideoSyncProgress.query.get(_video_progress_key(progress_key))
+    return bool(row and row.cancel_requested)
+
+
+def sync_exercise_videos(exercise_names, force=False, progress_key=None, mark_done=True):
     """Ensure each exercise name has an ExerciseLibrary row and a video_url.
 
     force=True re-fetches even if a video_url is already set (used by the
     Settings backfill action). Each exercise is looked up/created and
     searched independently so one bad search doesn't block the rest.
 
-    progress_key, if given, is updated in _video_sync_progress as each
-    exercise is processed, so a concurrent request (e.g. UI polling) can
+    progress_key, if given, is tracked in the DB-backed VideoSyncProgress
+    table as each exercise is processed, so a concurrent request (e.g. UI
+    polling, possibly served by a different gunicorn worker process) can
     show live status. It also gates cancellation: whatever has already been
     saved stays saved (nothing here is rolled back), and a caller can cancel
     the rest via /api/video-sync-cancel, checked between exercises — the
     exercise currently in flight still finishes since the search itself
     isn't interruptible mid-call. Returns {"found": int, "checked": int}.
+
+    mark_done=False lets a caller (the background-thread wrapper) do
+    further work of its own — the post-sync FK backfill — before flipping
+    progress to done itself. Otherwise a poller could see done=True and act
+    on it (e.g. a test asserting the FK is now set) before that follow-up
+    work has actually run.
     """
     from ai import find_exercise_video
 
@@ -1005,14 +1067,14 @@ def sync_exercise_videos(exercise_names, force=False, progress_key=None):
     last_index = 0
 
     if progress_key is not None:
-        _video_sync_cancel_requested.discard(progress_key)
+        _set_video_progress(progress_key, total=total, reset_cancel=True)
 
     for i, name in enumerate(names):
-        if progress_key is not None and progress_key in _video_sync_cancel_requested:
+        if progress_key is not None and _is_video_cancel_requested(progress_key):
             break
         last_index = i + 1
         if progress_key is not None:
-            _video_sync_progress[progress_key] = _video_progress(current=name, index=last_index, total=total)
+            _set_video_progress(progress_key, current=name, index=last_index, total=total)
         lib = ExerciseLibrary.query.filter(db.func.lower(ExerciseLibrary.name) == name.lower()).first()
         if lib is None:
             lib = ExerciseLibrary(name=name)
@@ -1033,9 +1095,14 @@ def sync_exercise_videos(exercise_names, force=False, progress_key=None):
         if url and _video_url_resolves(url):
             lib.video_url = url
             found += 1
+        # Commit after each exercise rather than once at the very end, so a
+        # found video is durably saved immediately instead of surviving only
+        # in an open transaction — a mid-run process kill (a deploy/restart)
+        # would otherwise discard everything found in the run, not just the
+        # exercise that was in flight when it died.
+        db.session.commit()
     if progress_key is not None:
-        _video_sync_progress[progress_key] = _video_progress(index=last_index, total=total, done=True)
-        _video_sync_cancel_requested.discard(progress_key)
+        _set_video_progress(progress_key, index=last_index, total=total, done=mark_done, reset_cancel=True)
     db.session.commit()
     return {"found": found, "checked": checked}
 
@@ -1079,21 +1146,27 @@ def _run_video_sync_background(app_obj, exercise_names, progress_key, force, pla
     so each call site captures what it needs (a profile_id or plan_id) in a
     closure and re-queries fresh here.
 
-    Every exit path must leave _video_sync_progress[progress_key] `done`,
+    Every exit path must leave the progress row for progress_key `done`,
     including an unexpected exception — otherwise a crash here leaves any
     poller (the page overlay, or the persistent base.html indicator) waiting
-    forever with no sign anything went wrong.
+    forever with no sign anything went wrong. done isn't set until the FK
+    backfill below has also finished, not just the search — otherwise a
+    poller could see done=True and act on it (e.g. checking the FK) before
+    that follow-up work has actually run.
     """
     with app_obj.app_context():
         try:
-            sync_exercise_videos(exercise_names, force=force, progress_key=progress_key)
+            sync_exercise_videos(exercise_names, force=force, progress_key=progress_key, mark_done=False)
             plan = plan_lookup()
             if plan:
                 _backfill_exercise_library_fks(plan)
                 db.session.commit()
+            if progress_key is not None:
+                progress = _get_video_progress(progress_key)
+                _set_video_progress(progress_key, index=progress["index"], total=progress["total"], done=True)
         except Exception:
             app_obj.logger.exception("Background video sync failed")
-            _video_sync_progress[progress_key] = _video_progress(done=True, error=True)
+            _set_video_progress(progress_key, done=True, error=True)
 
 
 @app.route("/generate-plan/confirm", methods=["POST"])
@@ -1185,12 +1258,13 @@ def confirm_plan():
         # Set before spawning so the frontend's first poll (which can arrive
         # within milliseconds of this response) never reads a stale
         # done:true left over from a previous run.
-        _video_sync_progress[profile.id] = _video_progress(total=len(exercise_names))
+        _set_video_progress(profile.id, total=len(exercise_names))
         new_plan_id = plan.id
         threading.Thread(
             target=_run_video_sync_background,
             args=(app, exercise_names, profile.id, False, lambda: WorkoutPlan.query.get(new_plan_id)),
             daemon=True,
+            name="video-sync-worker",
         ).start()
 
     flash("Workout plan activated!", "success")
@@ -2144,11 +2218,12 @@ def backfill_videos():
             for pe in pw.planned_exercises
         }
         if names:
-            _video_sync_progress[profile.id] = _video_progress(total=len(names))
+            _set_video_progress(profile.id, total=len(names))
             threading.Thread(
                 target=_run_video_sync_background,
                 args=(app, names, profile.id, True, lambda: get_active_plan(profile.id)),
                 daemon=True,
+                name="video-sync-worker",
             ).start()
             flash(f"Refreshing videos for {len(names)} exercises — watch progress on this page, or leave; it keeps running.", "success")
         else:
@@ -2191,10 +2266,9 @@ def relink_videos():
 @login_required
 def api_video_sync_progress():
     profile = get_profile()
-    default = {"current": None, "index": 0, "total": 0, "done": True, "error": False}
     if not profile:
-        return jsonify(default)
-    return jsonify(_video_sync_progress.get(profile.id, default))
+        return jsonify(_video_progress(done=True))
+    return jsonify(_get_video_progress(profile.id))
 
 
 @app.route("/api/video-sync-cancel", methods=["POST"])
@@ -2203,7 +2277,7 @@ def api_video_sync_progress():
 def api_video_sync_cancel():
     profile = get_profile()
     if profile:
-        _video_sync_cancel_requested.add(profile.id)
+        _request_video_cancel(profile.id)
     return jsonify({"ok": True})
 
 

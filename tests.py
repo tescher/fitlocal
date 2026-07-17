@@ -5,11 +5,12 @@ AI calls are mocked throughout.
 """
 import json
 import os
+import sqlite3
 import threading
 import time
+import uuid
 import pytest
 import sqlalchemy as sa
-from sqlalchemy.pool import StaticPool
 from datetime import date, timedelta
 from unittest.mock import patch, MagicMock
 from werkzeug.datastructures import MultiDict
@@ -29,18 +30,51 @@ from extensions import bcrypt
 # Fixtures
 # ---------------------------------------------------------------------------
 
+def _join_video_sync_workers(timeout=5):
+    """Wait for any background video-sync threads to fully finish. Each
+    test gets its own in-memory SQLite engine swapped into
+    db._app_engines — a still-running thread from a previous test that
+    hasn't finished yet would otherwise end up talking to whatever engine
+    is current *right now* (possibly a different test's, or a disposed
+    one), which corrupts or crashes rather than just failing cleanly."""
+    for t in threading.enumerate():
+        if t.name == "video-sync-worker":
+            t.join(timeout=timeout)
+
+
 @pytest.fixture
 def application():
+    # Guard against a straggler from the *previous* test still running when
+    # this test's engine gets swapped in below.
+    _join_video_sync_workers()
+
     flask_app.app.config["TESTING"] = True
     flask_app.app.config["WTF_CSRF_ENABLED"] = False
 
     # Flask-SQLAlchemy bakes the engine URI at init_app() time, so we must
     # directly swap the cached engine with an in-memory one.
-    # StaticPool ensures all pool connections share the same in-memory DB.
+    #
+    # A plain "sqlite:///:memory:" + StaticPool forces every thread through
+    # one single shared sqlite3.Connection object -- fine when only the
+    # main thread ever touched the DB, but the video-sync background
+    # thread and the test's own polling loop now both issue real SQL
+    # concurrently, and two threads driving one raw connection object is
+    # unsafe regardless of how carefully transactions are managed (it
+    # produced actual session corruption/crashes, not just flakiness).
+    #
+    # A named shared-cache in-memory DB gives each thread its own real
+    # connection while all of them still see the same in-memory data --
+    # much closer to how separate gunicorn worker processes each have
+    # their own connection to the same on-disk DB in production. Shared-
+    # cache memory DBs only persist while at least one connection to them
+    # is open, so a dedicated keepalive connection (outside the pool,
+    # never closed until teardown) keeps the data alive even while the
+    # pool's own connections come and go.
+    db_uri = f"file:test_{uuid.uuid4().hex}?mode=memory&cache=shared"
+    keepalive_conn = sqlite3.connect(db_uri, uri=True)
     mem_engine = sa.create_engine(
-        "sqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
+        f"sqlite:///{db_uri}",
+        connect_args={"check_same_thread": False, "uri": True},
     )
     original_engines = db._app_engines.get(flask_app.app)
     db._app_engines[flask_app.app] = {None: mem_engine}
@@ -48,10 +82,14 @@ def application():
     with flask_app.app.app_context():
         db.create_all()
         yield flask_app.app
+        # And guard against this test's own thread still running when the
+        # engine below gets disposed.
+        _join_video_sync_workers()
         db.session.remove()
         db.drop_all()
 
     mem_engine.dispose()
+    keepalive_conn.close()
     # Restore so the real app still works after tests
     if original_engines is not None:
         db._app_engines[flask_app.app] = original_engines
@@ -189,14 +227,15 @@ def log_session(application, profile_id, planned_workout_id, exercises, delta_da
 
 
 def _wait_for_video_sync_done(profile_id, timeout=5):
-    """Poll app._video_sync_progress the same way the frontend does, since
-    the video sync now runs in a background thread instead of blocking the
-    request. Returns the final progress dict, or fails the test on timeout."""
-    from app import _video_sync_progress
+    """Poll the DB-backed video-sync progress the same way the frontend
+    does, since the video sync now runs in a background thread instead of
+    blocking the request. Returns the final progress dict, or fails the
+    test on timeout."""
+    from app import _get_video_progress
     deadline = time.time() + timeout
     while time.time() < deadline:
-        progress = _video_sync_progress.get(profile_id)
-        if progress and progress.get("done"):
+        progress = _get_video_progress(profile_id)
+        if progress.get("done"):
             return progress
         time.sleep(0.02)
     raise AssertionError(f"video sync for profile {profile_id} did not finish within {timeout}s")
@@ -574,12 +613,16 @@ class TestSyncExerciseVideos:
             assert "Bench Press" in logged_args
 
     def test_progress_key_tracks_current_exercise(self, application):
+        """Progress must be readable via a plain DB query -- not a
+        process-local dict -- since gunicorn runs multiple worker
+        processes and the POST that starts a sync can land on a different
+        one than a later GET poll for its progress."""
         with application.app_context():
-            from app import sync_exercise_videos, _video_sync_progress
+            from app import sync_exercise_videos, _get_video_progress
             snapshots = []
 
             def side_effect(name):
-                snapshots.append(dict(_video_sync_progress.get("test-progress-key", {})))
+                snapshots.append(_get_video_progress("test-progress-key"))
                 return "https://ok.example.com"
 
             with patch("ai.find_exercise_video", side_effect=side_effect), \
@@ -588,25 +631,25 @@ class TestSyncExerciseVideos:
 
             assert snapshots[0] == {"current": "Exercise A", "index": 1, "total": 2, "done": False, "error": False}
             assert snapshots[1] == {"current": "Exercise B", "index": 2, "total": 2, "done": False, "error": False}
-            final = _video_sync_progress["test-progress-key"]
+            final = _get_video_progress("test-progress-key")
             assert final["done"] is True
 
-    def test_no_progress_key_does_not_touch_progress_dict(self, application):
+    def test_no_progress_key_does_not_touch_progress_table(self, application):
         with application.app_context():
-            from app import sync_exercise_videos, _video_sync_progress
-            _video_sync_progress.clear()
+            from app import sync_exercise_videos
+            from models import VideoSyncProgress
             with patch("ai.find_exercise_video", return_value="https://ok.example.com"), \
                  patch("app._video_url_resolves", return_value=True):
                 sync_exercise_videos(["Exercise A"])
-            assert _video_sync_progress == {}
+            assert VideoSyncProgress.query.count() == 0
 
     def test_cancel_stops_processing_remaining_exercises(self, application):
         with application.app_context():
-            from app import sync_exercise_videos, _video_sync_cancel_requested
+            from app import sync_exercise_videos, _request_video_cancel, _is_video_cancel_requested
 
             def side_effect(name):
                 if name == "Exercise A":
-                    _video_sync_cancel_requested.add("cancel-key")
+                    _request_video_cancel("cancel-key")
                 return "https://ok.example.com"
 
             with patch("ai.find_exercise_video", side_effect=side_effect), \
@@ -622,12 +665,15 @@ class TestSyncExerciseVideos:
             assert b is None
             assert c is None
             assert result == {"found": 1, "checked": 1}
-            assert "cancel-key" not in _video_sync_cancel_requested
+            assert not _is_video_cancel_requested("cancel-key")
 
     def test_stale_cancel_flag_is_cleared_at_start_of_new_run(self, application):
         with application.app_context():
-            from app import sync_exercise_videos, _video_sync_cancel_requested
-            _video_sync_cancel_requested.add("stale-key")
+            from app import sync_exercise_videos, _set_video_progress, _request_video_cancel
+            # A row must already exist to attach a stale cancel flag to --
+            # simulates a previous run for this key leaving one behind.
+            _set_video_progress("stale-key", done=True)
+            _request_video_cancel("stale-key")
             with patch("ai.find_exercise_video", return_value="https://ok.example.com"), \
                  patch("app._video_url_resolves", return_value=True):
                 result = sync_exercise_videos(["Exercise A"], progress_key="stale-key")

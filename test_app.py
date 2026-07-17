@@ -41,14 +41,16 @@ def check(label, condition):
         failed += 1
 
 def wait_for_video_sync_done(profile_id, timeout=5):
-    """Video sync runs in a background thread now — poll the same progress
-    dict the frontend polls instead of asserting DB state right after the
+    """Video sync runs in a background thread now — poll the DB-backed
+    progress (not an in-memory dict, so it's visible across gunicorn
+    worker processes too) instead of asserting DB state right after the
     (now-fast) POST response."""
-    from app import _video_sync_progress
+    from app import _get_video_progress
     deadline = time.time() + timeout
     while time.time() < deadline:
-        progress = _video_sync_progress.get(profile_id)
-        if progress and progress.get("done"):
+        with app.app_context():
+            progress = _get_video_progress(profile_id)
+        if progress.get("done"):
             return progress
         time.sleep(0.02)
     raise AssertionError(f"video sync for profile {profile_id} did not finish within {timeout}s")
