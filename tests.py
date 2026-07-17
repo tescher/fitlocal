@@ -472,6 +472,39 @@ class TestSyncExerciseVideos:
             assert lib.video_url == "https://example.com/video"
             assert result == {"found": 1, "checked": 1}
 
+    def test_saves_each_video_immediately_not_only_at_the_end(self, application):
+        """A found video must be durably committed to the DB as soon as it's
+        found, not batched into a single commit after the whole loop
+        finishes -- otherwise an abrupt mid-run process kill (e.g. a
+        deploy/restart, exactly what happened in production) silently
+        discards every video found in that run, not just the one search
+        that was in flight when it died."""
+        with application.app_context():
+            from app import sync_exercise_videos
+
+            calls = {"count": 0}
+
+            def resolve_then_crash(url):
+                calls["count"] += 1
+                if calls["count"] == 1:
+                    return True
+                raise RuntimeError("simulated mid-run crash")
+
+            with patch("ai.find_exercise_video", return_value="https://example.com/video"), \
+                 patch("app._video_url_resolves", side_effect=resolve_then_crash):
+                with pytest.raises(RuntimeError):
+                    sync_exercise_videos(["Exercise A", "Exercise B"])
+
+            # Roll back to discard anything that was only flushed (sent to
+            # the DB within the still-open transaction) but never committed
+            # -- this is what actually happens when the process dies, and
+            # is the only way to distinguish "durably saved" from "merely
+            # visible to this same still-open session."
+            db.session.rollback()
+            a = ExerciseLibrary.query.filter_by(name="Exercise A").first()
+            assert a is not None
+            assert a.video_url == "https://example.com/video"
+
     def test_skips_exercise_with_existing_video_when_not_forced(self, application):
         with application.app_context():
             from app import sync_exercise_videos
