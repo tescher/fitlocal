@@ -5,11 +5,12 @@ AI calls are mocked throughout.
 """
 import json
 import os
+import sqlite3
 import threading
 import time
+import uuid
 import pytest
 import sqlalchemy as sa
-from sqlalchemy.pool import StaticPool
 from datetime import date, timedelta
 from unittest.mock import patch, MagicMock
 from werkzeug.datastructures import MultiDict
@@ -29,18 +30,51 @@ from extensions import bcrypt
 # Fixtures
 # ---------------------------------------------------------------------------
 
+def _join_video_sync_workers(timeout=5):
+    """Wait for any background video-sync threads to fully finish. Each
+    test gets its own in-memory SQLite engine swapped into
+    db._app_engines — a still-running thread from a previous test that
+    hasn't finished yet would otherwise end up talking to whatever engine
+    is current *right now* (possibly a different test's, or a disposed
+    one), which corrupts or crashes rather than just failing cleanly."""
+    for t in threading.enumerate():
+        if t.name == "video-sync-worker":
+            t.join(timeout=timeout)
+
+
 @pytest.fixture
 def application():
+    # Guard against a straggler from the *previous* test still running when
+    # this test's engine gets swapped in below.
+    _join_video_sync_workers()
+
     flask_app.app.config["TESTING"] = True
     flask_app.app.config["WTF_CSRF_ENABLED"] = False
 
     # Flask-SQLAlchemy bakes the engine URI at init_app() time, so we must
     # directly swap the cached engine with an in-memory one.
-    # StaticPool ensures all pool connections share the same in-memory DB.
+    #
+    # A plain "sqlite:///:memory:" + StaticPool forces every thread through
+    # one single shared sqlite3.Connection object -- fine when only the
+    # main thread ever touched the DB, but the video-sync background
+    # thread and the test's own polling loop now both issue real SQL
+    # concurrently, and two threads driving one raw connection object is
+    # unsafe regardless of how carefully transactions are managed (it
+    # produced actual session corruption/crashes, not just flakiness).
+    #
+    # A named shared-cache in-memory DB gives each thread its own real
+    # connection while all of them still see the same in-memory data --
+    # much closer to how separate gunicorn worker processes each have
+    # their own connection to the same on-disk DB in production. Shared-
+    # cache memory DBs only persist while at least one connection to them
+    # is open, so a dedicated keepalive connection (outside the pool,
+    # never closed until teardown) keeps the data alive even while the
+    # pool's own connections come and go.
+    db_uri = f"file:test_{uuid.uuid4().hex}?mode=memory&cache=shared"
+    keepalive_conn = sqlite3.connect(db_uri, uri=True)
     mem_engine = sa.create_engine(
-        "sqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
+        f"sqlite:///{db_uri}",
+        connect_args={"check_same_thread": False, "uri": True},
     )
     original_engines = db._app_engines.get(flask_app.app)
     db._app_engines[flask_app.app] = {None: mem_engine}
@@ -48,10 +82,14 @@ def application():
     with flask_app.app.app_context():
         db.create_all()
         yield flask_app.app
+        # And guard against this test's own thread still running when the
+        # engine below gets disposed.
+        _join_video_sync_workers()
         db.session.remove()
         db.drop_all()
 
     mem_engine.dispose()
+    keepalive_conn.close()
     # Restore so the real app still works after tests
     if original_engines is not None:
         db._app_engines[flask_app.app] = original_engines

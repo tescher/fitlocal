@@ -185,3 +185,19 @@ class ExerciseLibrary(db.Model):
     form_cues = db.Column(db.Text)
     difficulty = db.Column(db.String(20))
     video_url = db.Column(db.String(500))
+
+
+class VideoSyncProgress(db.Model):
+    """Exercise-video-search progress, keyed by an arbitrary caller-supplied
+    key (profile.id in practice). Lives in the DB rather than an in-memory
+    dict so every gunicorn worker process sees the same state — a POST that
+    starts a sync and a later GET poll for its progress can land on
+    different worker processes."""
+    __tablename__ = "video_sync_progress"
+    key = db.Column(db.String(64), primary_key=True)
+    current = db.Column(db.String(255))
+    index = db.Column(db.Integer, nullable=False, default=0)
+    total = db.Column(db.Integer, nullable=False, default=0)
+    done = db.Column(db.Boolean, nullable=False, default=True)
+    error = db.Column(db.Boolean, nullable=False, default=False)
+    cancel_requested = db.Column(db.Boolean, nullable=False, default=False)
