@@ -9,6 +9,7 @@
         <div class="loading-spinner"></div>
         <h2 id="loadingTitle">Refreshing Exercise Videos</h2>
         <p class="text-muted" id="loadingMessage">Searching for a form video for each exercise in your current plan — this can take a few minutes.</p>
+        <p class="text-muted" id="loadingStatus" style="font-style:italic;"></p>
         <p class="loading-timer" id="loadingTimer">0s</p>
     </div>
 </div>
@@ -24,6 +25,19 @@
 </div>
 
 <script>
+function pollVideoSyncProgress() {
+    setInterval(function() {
+        fetch('/api/video-sync-progress').then(function(r) { return r.json(); }).then(function(p) {
+            var el = document.getElementById('loadingStatus');
+            if (p.current) {
+                el.textContent = 'Searching for video for ' + p.current + '… (' + p.index + ' of ' + p.total + ')';
+            } else if (!p.done) {
+                el.textContent = '';
+            }
+        }).catch(function() {});
+    }, 700);
+}
+
 function showLoading(title, message) {
     document.getElementById('loadingTitle').textContent = title;
     document.getElementById('loadingMessage').textContent = message;
@@ -33,6 +47,7 @@ function showLoading(title, message) {
         var elapsed = Math.floor((Date.now() - start) / 1000);
         document.getElementById('loadingTimer').textContent = elapsed + 's';
     }, 1000);
+    pollVideoSyncProgress();
 }
 </script>
 {% endblock %}

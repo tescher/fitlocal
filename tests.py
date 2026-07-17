@@ -510,6 +510,33 @@ class TestSyncExerciseVideos:
             assert good is not None and good.video_url == "https://ok.example.com"
             assert result == {"found": 1, "checked": 2}
 
+    def test_progress_key_tracks_current_exercise(self, application):
+        with application.app_context():
+            from app import sync_exercise_videos, _video_sync_progress
+            snapshots = []
+
+            def side_effect(name):
+                snapshots.append(dict(_video_sync_progress.get("test-progress-key", {})))
+                return "https://ok.example.com"
+
+            with patch("ai.find_exercise_video", side_effect=side_effect), \
+                 patch("app._video_url_resolves", return_value=True):
+                sync_exercise_videos(["Exercise A", "Exercise B"], progress_key="test-progress-key")
+
+            assert snapshots[0] == {"current": "Exercise A", "index": 1, "total": 2, "done": False}
+            assert snapshots[1] == {"current": "Exercise B", "index": 2, "total": 2, "done": False}
+            final = _video_sync_progress["test-progress-key"]
+            assert final["done"] is True
+
+    def test_no_progress_key_does_not_touch_progress_dict(self, application):
+        with application.app_context():
+            from app import sync_exercise_videos, _video_sync_progress
+            _video_sync_progress.clear()
+            with patch("ai.find_exercise_video", return_value="https://ok.example.com"), \
+                 patch("app._video_url_resolves", return_value=True):
+                sync_exercise_videos(["Exercise A"])
+            assert _video_sync_progress == {}
+
 
 class TestPlanConfirmVideoSync:
     def test_confirm_plan_populates_video_url(self, client, application, profile):

@@ -966,19 +966,34 @@ def _video_url_resolves(url):
         return False
 
 
-def sync_exercise_videos(exercise_names, force=False):
+# In-memory live-progress tracker for exercise video sync, keyed by an
+# arbitrary caller-supplied key (profile.id in practice). Single-process app,
+# so a plain dict is enough — no need for cross-process/shared storage.
+_video_sync_progress = {}
+
+
+def sync_exercise_videos(exercise_names, force=False, progress_key=None):
     """Ensure each exercise name has an ExerciseLibrary row and a video_url.
 
     force=True re-fetches even if a video_url is already set (used by the
     Settings backfill action). Each exercise is looked up/created and
     searched independently so one bad search doesn't block the rest.
-    Returns {"found": int, "checked": int}.
+
+    progress_key, if given, is updated in _video_sync_progress as each
+    exercise is processed, so a concurrent request (e.g. UI polling) can
+    show live status. Returns {"found": int, "checked": int}.
     """
     from ai import find_exercise_video
 
+    names = list(exercise_names)
+    total = len(names)
     found = 0
     checked = 0
-    for name in exercise_names:
+    for i, name in enumerate(names):
+        if progress_key is not None:
+            _video_sync_progress[progress_key] = {
+                "current": name, "index": i + 1, "total": total, "done": False,
+            }
         lib = ExerciseLibrary.query.filter(db.func.lower(ExerciseLibrary.name) == name.lower()).first()
         if lib is None:
             lib = ExerciseLibrary(name=name)
@@ -996,6 +1011,10 @@ def sync_exercise_videos(exercise_names, force=False):
             found += 1
         elif force:
             lib.video_url = None
+    if progress_key is not None:
+        _video_sync_progress[progress_key] = {
+            "current": None, "index": total, "total": total, "done": True,
+        }
     db.session.commit()
     return {"found": found, "checked": checked}
 
@@ -1085,7 +1104,7 @@ def confirm_plan():
         for workout_data in pending_plan.get("workouts", [])
         for exercise_data in workout_data.get("exercises", [])
     }
-    sync_exercise_videos(exercise_names)
+    sync_exercise_videos(exercise_names, progress_key=profile.id)
 
     # sync_exercise_videos may have just created library entries for names
     # that didn't exist yet at the lookup above (line ~1021) — backfill the FK.
@@ -2049,11 +2068,21 @@ def backfill_videos():
             for pw in active.planned_workouts
             for pe in pw.planned_exercises
         }
-        result = sync_exercise_videos(names, force=True)
+        result = sync_exercise_videos(names, force=True, progress_key=profile.id)
         flash(f"Found videos for {result['found']} of {result['checked']} exercises.", "success")
         return redirect(url_for("settings"))
 
     return render_template("backfill_videos.html", profile=profile)
+
+
+@app.route("/api/video-sync-progress")
+@login_required
+def api_video_sync_progress():
+    profile = get_profile()
+    default = {"current": None, "index": 0, "total": 0, "done": True}
+    if not profile:
+        return jsonify(default)
+    return jsonify(_video_sync_progress.get(profile.id, default))
 
 
 # --- Fitness Test Routes ---
@@ -2181,4 +2210,6 @@ def nutrition():
 if __name__ == "__main__":
     debug = os.environ.get("FLASK_DEBUG", "false").lower() == "true"
     port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=debug)
+    # threaded=True so the video-sync progress poll (/api/video-sync-progress)
+    # gets served while a long-running confirm/backfill POST is in flight.
+    app.run(host="0.0.0.0", port=port, debug=debug, threaded=True)

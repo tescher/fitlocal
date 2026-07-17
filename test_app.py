@@ -2433,6 +2433,18 @@ with app.app_context():
 r_bf_anon = anon_client.get("/settings/backfill-videos", follow_redirects=False)
 check("GET /settings/backfill-videos unauthenticated redirects", r_bf_anon.status_code == 302)
 
+# Live progress endpoint
+print("\n--- Exercise Video Sync Progress ---")
+
+r = client.get("/api/video-sync-progress")
+check("GET /api/video-sync-progress returns 200", r.status_code == 200)
+_progress_json = r.get_json()
+check("Progress response has current/index/total/done keys",
+      _progress_json is not None and set(_progress_json.keys()) == {"current", "index", "total", "done"})
+
+r_progress_anon = anon_client.get("/api/video-sync-progress", follow_redirects=False)
+check("GET /api/video-sync-progress unauthenticated redirects", r_progress_anon.status_code == 302)
+
 # Summary
 print(f"\n{'='*50}")
 print(f"Results: {passed} passed, {failed} failed out of {passed + failed} tests")
