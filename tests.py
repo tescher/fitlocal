@@ -3,6 +3,7 @@ FitLocal pytest test suite.
 Uses an in-memory SQLite database — never touches the production DB.
 AI calls are mocked throughout.
 """
+import io
 import json
 import os
 import pytest
@@ -422,6 +423,149 @@ class TestExerciseLibraryFK:
             ls = LoggedSet.query.filter_by(exercise_name="Bench Press").first()
             assert ls is not None
             assert ls.exercise_library_id == lib_id
+
+
+class TestExerciseVideoCsvExport:
+    def test_export_returns_csv_of_active_plan_names(self, client, application, profile, active_plan):
+        r = client.get("/settings/export-exercises")
+        assert r.status_code == 200
+        assert "text/csv" in r.content_type
+        body = r.data.decode("utf-8")
+        for name in ["Bench Press", "Pull-Ups", "Squats", "Burpees"]:
+            assert name in body
+
+    def test_export_dedups_exercise_names_across_days(self, client, application, profile):
+        plan_data = {
+            "plan_name": "Plan", "description": "", "days_per_week": 2, "total_weeks": 12, "phases": [],
+            "workouts": [
+                {"day": "Mon", "name": "A", "exercises": [
+                    {"name": "Squats", "type": "main", "sets": 3, "reps": "8", "rest_seconds": 90, "notes": "", "form_cues": ""},
+                ]},
+                {"day": "Wed", "name": "B", "exercises": [
+                    {"name": "Squats", "type": "main", "sets": 3, "reps": "8", "rest_seconds": 90, "notes": "", "form_cues": ""},
+                ]},
+            ],
+        }
+        with application.app_context():
+            p = UserProfile.query.get(profile)
+            plan = WorkoutPlan(
+                user_id=p.id, name="Plan", description="", days_per_week=2,
+                plan_json=json.dumps(plan_data), status="active", total_weeks=12,
+            )
+            db.session.add(plan)
+            db.session.flush()
+            for i, wd in enumerate(plan_data["workouts"]):
+                pw = PlannedWorkout(plan_id=plan.id, day_of_week=wd["day"], workout_name=wd["name"], order_index=i)
+                db.session.add(pw)
+                db.session.flush()
+                for ex in wd["exercises"]:
+                    pe = PlannedExercise(
+                        planned_workout_id=pw.id, exercise_name=ex["name"],
+                        sets_prescribed=ex["sets"], reps_prescribed=ex["reps"],
+                        rest_seconds=ex["rest_seconds"], notes=ex["notes"],
+                        exercise_type=ex["type"], form_cues=ex["form_cues"],
+                    )
+                    db.session.add(pe)
+            db.session.commit()
+
+        r = client.get("/settings/export-exercises")
+        body = r.data.decode("utf-8")
+        assert body.count("Squats") == 1
+
+    def test_export_no_active_plan_flashes_error(self, client, profile):
+        r = client.get("/settings/export-exercises", follow_redirects=True)
+        assert b"No active plan" in r.data
+
+
+class TestExerciseVideoCsvImport:
+    def _upload(self, client, csv_text, filename="exercises.csv"):
+        data = {"csv_file": (io.BytesIO(csv_text.encode("utf-8")), filename)}
+        return client.post("/settings/import-exercise-videos", data=data, content_type="multipart/form-data")
+
+    def test_import_creates_library_entries_and_sets_video_url(self, client, application, profile):
+        csv_text = "Bench Press,https://example.com/bench\nSquats,https://example.com/squats\n"
+        r = self._upload(client, csv_text)
+        assert r.status_code == 302
+        with application.app_context():
+            bench = ExerciseLibrary.query.filter_by(name="Bench Press").first()
+            squats = ExerciseLibrary.query.filter_by(name="Squats").first()
+            assert bench is not None and bench.video_url == "https://example.com/bench"
+            assert squats is not None and squats.video_url == "https://example.com/squats"
+
+    def test_import_backfills_planned_exercise_fk_across_plans(self, client, application, profile):
+        """Two plans (only one active) each have an unlinked 'Squats' exercise.
+        Import must link both, not just the active plan's -- this is the exact
+        gap the earlier (reverted) feature's own bug report was about."""
+        with application.app_context():
+            p = UserProfile.query.get(profile)
+            for status, plan_name in [("active", "Active Plan"), ("inactive", "Old Plan")]:
+                plan = WorkoutPlan(
+                    user_id=p.id, name=plan_name, description="", days_per_week=1,
+                    plan_json="{}", status=status, total_weeks=12,
+                )
+                db.session.add(plan)
+                db.session.flush()
+                pw = PlannedWorkout(plan_id=plan.id, day_of_week="Mon", workout_name="A", order_index=0)
+                db.session.add(pw)
+                db.session.flush()
+                pe = PlannedExercise(
+                    planned_workout_id=pw.id, exercise_name="Squats",
+                    sets_prescribed=3, reps_prescribed="8", rest_seconds=90,
+                    notes="", exercise_type="main", form_cues="",
+                )
+                db.session.add(pe)
+            db.session.commit()
+
+        self._upload(client, "Squats,https://example.com/squats\n")
+
+        with application.app_context():
+            exercises = PlannedExercise.query.filter_by(exercise_name="Squats").all()
+            assert len(exercises) == 2
+            assert all(pe.exercise_library_id is not None for pe in exercises)
+
+    def test_import_skips_malformed_rows(self, client, application, profile):
+        csv_text = "Bench Press,https://example.com/bench\nMissing URL Row\nSquats,https://example.com/squats\n"
+        r = self._upload(client, csv_text)
+        assert r.status_code == 302
+        with application.app_context():
+            assert ExerciseLibrary.query.filter_by(name="Bench Press").first() is not None
+            assert ExerciseLibrary.query.filter_by(name="Squats").first() is not None
+            assert ExerciseLibrary.query.filter_by(name="Missing URL Row").first() is None
+
+    def test_import_no_file_flashes_error(self, client, profile):
+        r = client.post(
+            "/settings/import-exercise-videos", data={}, content_type="multipart/form-data",
+            follow_redirects=True,
+        )
+        assert b"Please choose a CSV file" in r.data
+
+    def test_import_does_not_call_any_network_request(self, client, profile):
+        """Import must be pure local CSV parsing + DB writes -- no outbound
+        network calls, guarding against ever reintroducing the kind of
+        request-blocking call that made the earlier feature need
+        background threading in the first place."""
+        with patch("requests.get", side_effect=AssertionError("import must not make network requests")):
+            r = self._upload(client, "Bench Press,https://example.com/bench\n")
+        assert r.status_code == 302
+
+
+class TestWorkoutTodayVideoLink:
+    def test_shows_watch_video_link_when_library_has_video_url(self, client, application, profile, active_plan):
+        with application.app_context():
+            lib = ExerciseLibrary(name="Bench Press", video_url="https://example.com/bench")
+            db.session.add(lib)
+            db.session.commit()
+            pe = PlannedExercise.query.filter_by(exercise_name="Bench Press").first()
+            pe.exercise_library_id = lib.id
+            db.session.commit()
+
+        r = client.get("/workout/today")
+        assert b"Watch form video" in r.data
+        assert b"https://example.com/bench" in r.data
+
+    def test_no_video_link_when_not_linked(self, client, application, profile, active_plan):
+        r = client.get("/workout/today")
+        assert b"Watch form video" not in r.data
 
 
 # ---------------------------------------------------------------------------
