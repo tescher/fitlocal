@@ -1034,12 +1034,41 @@ def sync_exercise_videos(exercise_names, force=False, progress_key=None):
     return {"found": found, "checked": checked}
 
 
-def _run_video_sync(app_obj, exercise_names, force, progress_key):
+def _backfill_exercise_library_fks(plan):
+    """Set PlannedExercise.exercise_library_id for any exercise in this plan
+    whose library entry exists but isn't linked yet.
+
+    sync_exercise_videos() only ever touches ExerciseLibrary — it has no idea
+    which PlannedExercise rows (across however many plans) share that name.
+    Without this step, a plan confirmed before the exercise-video-links
+    feature existed (or any exercise whose FK just never got set) keeps a
+    null exercise_library_id forever, even after ExerciseLibrary.video_url is
+    populated — and the workout page's `exercise.exercise_library.video_url`
+    lookup silently finds nothing, so no link renders despite the sync
+    reporting done/success. Caller commits.
+    """
+    for pw in plan.planned_workouts:
+        for pe in pw.planned_exercises:
+            if pe.exercise_library_id is None:
+                lib_entry = ExerciseLibrary.query.filter(
+                    db.func.lower(ExerciseLibrary.name) == pe.exercise_name.lower()
+                ).first()
+                if lib_entry:
+                    pe.exercise_library_id = lib_entry.id
+
+
+def _run_backfill_video_sync(app_obj, profile_id, exercise_names, progress_key):
     """Background-thread target for the Settings video refresh. Runs the
     (potentially long, real-API) search off the request thread so the HTTP
     response returns immediately — see the exercise-video-links PR for why
     a synchronous multi-minute request is unsafe (gunicorn's 120s worker
     timeout, and idle-connection drops on the home-network path).
+
+    Re-queries the active plan by profile_id (not passed as an ORM instance —
+    unusable once the request's session is torn down) to run the same FK
+    backfill confirm_plan already does, so exercises from plans confirmed
+    before this feature existed actually get linked, not just their shared
+    ExerciseLibrary row.
 
     Every exit path must leave _video_sync_progress[progress_key] `done`,
     including an unexpected exception — otherwise a crash here leaves any
@@ -1048,7 +1077,11 @@ def _run_video_sync(app_obj, exercise_names, force, progress_key):
     """
     with app_obj.app_context():
         try:
-            sync_exercise_videos(exercise_names, force=force, progress_key=progress_key)
+            sync_exercise_videos(exercise_names, force=True, progress_key=progress_key)
+            active = get_active_plan(profile_id)
+            if active:
+                _backfill_exercise_library_fks(active)
+                db.session.commit()
         except Exception:
             app_obj.logger.exception("Background video sync failed")
             _video_sync_progress[progress_key] = {
@@ -1060,21 +1093,14 @@ def _run_confirm_plan_video_sync(app_obj, plan_id, exercise_names, progress_key)
     """Background-thread target for the post-plan-confirmation video sync.
     Re-queries the plan by id — ORM instances from the request's session
     aren't usable once that session is torn down, so only primitives are
-    passed across the thread boundary. See _run_video_sync for why this
-    can't run on the request thread."""
+    passed across the thread boundary. See _run_backfill_video_sync for why
+    this can't run on the request thread."""
     with app_obj.app_context():
         try:
             sync_exercise_videos(exercise_names, progress_key=progress_key)
             plan = WorkoutPlan.query.get(plan_id)
             if plan:
-                for pw in plan.planned_workouts:
-                    for pe in pw.planned_exercises:
-                        if pe.exercise_library_id is None:
-                            lib_entry = ExerciseLibrary.query.filter(
-                                db.func.lower(ExerciseLibrary.name) == pe.exercise_name.lower()
-                            ).first()
-                            if lib_entry:
-                                pe.exercise_library_id = lib_entry.id
+                _backfill_exercise_library_fks(plan)
                 db.session.commit()
         except Exception:
             app_obj.logger.exception("Background video sync failed")
@@ -2136,8 +2162,8 @@ def backfill_videos():
                 "current": None, "index": 0, "total": len(names), "done": False, "error": False,
             }
             threading.Thread(
-                target=_run_video_sync,
-                args=(app, names, True, profile.id),
+                target=_run_backfill_video_sync,
+                args=(app, profile.id, names, profile.id),
                 daemon=True,
             ).start()
             flash(f"Refreshing videos for {len(names)} exercises — watch progress on this page, or leave; it keeps running.", "success")
