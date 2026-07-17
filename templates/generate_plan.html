@@ -15,8 +15,8 @@
 <div id="loadingOverlay" class="loading-overlay" style="display:none;">
     <div class="loading-card">
         <div class="loading-spinner"></div>
-        <h2>Building Your Plan</h2>
-        <p class="text-muted">Generating your plan with AI — this usually takes 3-5 minutes.</p>
+        <h2 id="loadingTitle">Building Your Plan</h2>
+        <p class="text-muted" id="loadingMessage">Generating your plan with AI — this usually takes 3-5 minutes.</p>
         <p class="loading-timer" id="loadingTimer">0s</p>
     </div>
 </div>
@@ -71,7 +71,7 @@
         {% endfor %}
 
         <div class="mt-2">
-            <form method="POST" action="{{ url_for('confirm_plan') }}">
+            <form method="POST" action="{{ url_for('confirm_plan') }}" onsubmit="showLoading('Activating Your Plan', 'Finding form videos for each exercise — this may take a few minutes the first time.')">
                 <div class="form-group mb-1">
                     <label for="start_workout"><strong>Start from:</strong></label>
                     <select name="start_workout_index" id="start_workout"
@@ -182,7 +182,9 @@
 {% endif %}
 
 <script>
-function showLoading() {
+function showLoading(title, message) {
+    document.getElementById('loadingTitle').textContent = title || 'Building Your Plan';
+    document.getElementById('loadingMessage').textContent = message || 'Generating your plan with AI — this usually takes 3-5 minutes.';
     document.getElementById('loadingOverlay').style.display = 'flex';
     var start = Date.now();
     setInterval(function() {

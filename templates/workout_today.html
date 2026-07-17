@@ -93,10 +93,15 @@
             {% if exercise.rest_seconds %} | Rest: {{ exercise.rest_seconds }}s{% endif %}
             {% if exercise.notes %} | {{ exercise.notes }}{% endif %}
         </div>
-        {% if exercise.form_cues %}
+        {% if exercise.form_cues or (exercise.exercise_library and exercise.exercise_library.video_url) %}
         <details class="form-cues">
             <summary>Form Cues</summary>
-            <p>{{ exercise.form_cues }}</p>
+            {% if exercise.form_cues %}<p>{{ exercise.form_cues }}</p>{% endif %}
+            {% if exercise.exercise_library and exercise.exercise_library.video_url %}
+            <p style="margin-top:0.4rem;">
+                <a href="{{ exercise.exercise_library.video_url }}" target="_blank" rel="noopener noreferrer">Watch form video &#8599;</a>
+            </p>
+            {% endif %}
         </details>
         {% endif %}
         <table class="log-table">
@@ -200,10 +205,15 @@
             {% if exercise.rest_seconds %} | Rest: {{ exercise.rest_seconds }}s{% endif %}
             {% if exercise.notes %} | {{ exercise.notes }}{% endif %}
         </div>
-        {% if exercise.form_cues %}
+        {% if exercise.form_cues or (exercise.exercise_library and exercise.exercise_library.video_url) %}
         <details class="form-cues">
             <summary>Form Cues</summary>
-            <p>{{ exercise.form_cues }}</p>
+            {% if exercise.form_cues %}<p>{{ exercise.form_cues }}</p>{% endif %}
+            {% if exercise.exercise_library and exercise.exercise_library.video_url %}
+            <p style="margin-top:0.4rem;">
+                <a href="{{ exercise.exercise_library.video_url }}" target="_blank" rel="noopener noreferrer">Watch form video &#8599;</a>
+            </p>
+            {% endif %}
         </details>
         {% endif %}
         <table class="log-table">
@@ -307,10 +317,15 @@
             {% if exercise.rest_seconds %} | Rest: {{ exercise.rest_seconds }}s{% endif %}
             {% if exercise.notes %} | {{ exercise.notes }}{% endif %}
         </div>
-        {% if exercise.form_cues %}
+        {% if exercise.form_cues or (exercise.exercise_library and exercise.exercise_library.video_url) %}
         <details class="form-cues">
             <summary>Form Cues</summary>
-            <p>{{ exercise.form_cues }}</p>
+            {% if exercise.form_cues %}<p>{{ exercise.form_cues }}</p>{% endif %}
+            {% if exercise.exercise_library and exercise.exercise_library.video_url %}
+            <p style="margin-top:0.4rem;">
+                <a href="{{ exercise.exercise_library.video_url }}" target="_blank" rel="noopener noreferrer">Watch form video &#8599;</a>
+            </p>
+            {% endif %}
         </details>
         {% endif %}
         <table class="log-table">

@@ -3,6 +3,7 @@ import os
 import calendar as cal_module
 from datetime import datetime, date, timedelta, timezone
 
+import requests
 from dotenv import load_dotenv
 from flask import Flask, render_template, request, redirect, url_for, flash, send_file, jsonify
 from flask_login import login_required, current_user
@@ -956,6 +957,49 @@ def generate_plan_api():
     return redirect(url_for("generate_plan"))
 
 
+def _video_url_resolves(url):
+    """Cheap check that a video URL isn't dead/malformed before we store it."""
+    try:
+        r = requests.get(url, timeout=5, headers={"User-Agent": "Mozilla/5.0"}, allow_redirects=True)
+        return r.status_code < 400
+    except requests.RequestException:
+        return False
+
+
+def sync_exercise_videos(exercise_names, force=False):
+    """Ensure each exercise name has an ExerciseLibrary row and a video_url.
+
+    force=True re-fetches even if a video_url is already set (used by the
+    Settings backfill action). Each exercise is looked up/created and
+    searched independently so one bad search doesn't block the rest.
+    Returns {"found": int, "checked": int}.
+    """
+    from ai import find_exercise_video
+
+    found = 0
+    checked = 0
+    for name in exercise_names:
+        lib = ExerciseLibrary.query.filter(db.func.lower(ExerciseLibrary.name) == name.lower()).first()
+        if lib is None:
+            lib = ExerciseLibrary(name=name)
+            db.session.add(lib)
+            db.session.flush()
+        if lib.video_url and not force:
+            continue
+        checked += 1
+        try:
+            url = find_exercise_video(name)
+        except Exception:
+            url = None
+        if url and _video_url_resolves(url):
+            lib.video_url = url
+            found += 1
+        elif force:
+            lib.video_url = None
+    db.session.commit()
+    return {"found": found, "checked": checked}
+
+
 @app.route("/generate-plan/confirm", methods=["POST"])
 @login_required
 def confirm_plan():
@@ -1035,6 +1079,26 @@ def confirm_plan():
             db.session.add(pe)
 
     db.session.commit()
+
+    exercise_names = {
+        exercise_data["name"]
+        for workout_data in pending_plan.get("workouts", [])
+        for exercise_data in workout_data.get("exercises", [])
+    }
+    sync_exercise_videos(exercise_names)
+
+    # sync_exercise_videos may have just created library entries for names
+    # that didn't exist yet at the lookup above (line ~1021) — backfill the FK.
+    for pw in plan.planned_workouts:
+        for pe in pw.planned_exercises:
+            if pe.exercise_library_id is None:
+                lib_entry = ExerciseLibrary.query.filter(
+                    db.func.lower(ExerciseLibrary.name) == pe.exercise_name.lower()
+                ).first()
+                if lib_entry:
+                    pe.exercise_library_id = lib_entry.id
+    db.session.commit()
+
     flash("Workout plan activated!", "success")
     return redirect(url_for("index"))
 
@@ -1966,6 +2030,30 @@ def api_exercise_history():
 def settings():
     profile = get_profile()
     return render_template("settings.html", profile=profile, account=current_user)
+
+
+@app.route("/settings/backfill-videos", methods=["GET", "POST"])
+@login_required
+def backfill_videos():
+    profile = get_profile()
+    if not profile:
+        return redirect(url_for("setup"))
+
+    if request.method == "POST":
+        active = get_active_plan(profile.id)
+        if not active:
+            flash("No active plan.", "error")
+            return redirect(url_for("backfill_videos"))
+        names = {
+            pe.exercise_name
+            for pw in active.planned_workouts
+            for pe in pw.planned_exercises
+        }
+        result = sync_exercise_videos(names, force=True)
+        flash(f"Found videos for {result['found']} of {result['checked']} exercises.", "success")
+        return redirect(url_for("settings"))
+
+    return render_template("backfill_videos.html", profile=profile)
 
 
 # --- Fitness Test Routes ---
