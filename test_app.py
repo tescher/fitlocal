@@ -2394,6 +2394,14 @@ r_anon = anon_client.get("/api/exercise/history", query_string={"name": "History
 check("GET /api/exercise/history unauthenticated returns 401 or redirect",
       r_anon.status_code in (401, 302))
 
+# Info icon + popup chart also available on the session detail (History) page
+r = client.get(f"/history/{_hist_session_id}")
+check("GET /history/<id> returns 200", r.status_code == 200)
+check("Session detail page has an info icon for the logged exercise",
+      b'btn-info-icon' in r.data and b'data-exercise-name="History Chart Exercise"' in r.data)
+check("Session detail page wires up the shared exercise history modal",
+      b'id="exerciseHistoryModal"' in r.data and b'function openExerciseHistory' in r.data)
+
 # ── CSV Export/Import for Exercise Videos ───────────────────────────────────
 print("\n--- CSV Export/Import for Exercise Videos ---")
 import io
