@@ -527,6 +527,52 @@ class TestSyncExerciseVideos:
             assert good is not None and good.video_url == "https://ok.example.com"
             assert result == {"found": 1, "checked": 2}
 
+    def test_force_refresh_failure_does_not_wipe_existing_video(self, application):
+        """A force=True refresh (e.g. Settings > Refresh Videos) that fails to
+        find a new video — because the search call raised, e.g. an API quota
+        error — must never destroy an already-good, working video_url. Only a
+        genuine new success should overwrite it."""
+        with application.app_context():
+            from app import sync_exercise_videos
+            lib = ExerciseLibrary(name="Bench Press", video_url="https://already-good.example.com")
+            db.session.add(lib)
+            db.session.commit()
+            with patch("ai.find_exercise_video", side_effect=RuntimeError("quota exceeded")):
+                result = sync_exercise_videos(["Bench Press"], force=True)
+            refreshed = ExerciseLibrary.query.filter_by(name="Bench Press").first()
+            assert refreshed.video_url == "https://already-good.example.com"
+            assert result == {"found": 0, "checked": 1}
+
+    def test_force_refresh_unresolvable_url_does_not_wipe_existing_video(self, application):
+        """Same as above, but the search returns a URL that fails the
+        resolve-check rather than raising outright — should also leave the
+        existing good video_url untouched."""
+        with application.app_context():
+            from app import sync_exercise_videos
+            lib = ExerciseLibrary(name="Bench Press", video_url="https://already-good.example.com")
+            db.session.add(lib)
+            db.session.commit()
+            with patch("ai.find_exercise_video", return_value="https://dead-link.example.com"), \
+                 patch("app._video_url_resolves", return_value=False):
+                result = sync_exercise_videos(["Bench Press"], force=True)
+            refreshed = ExerciseLibrary.query.filter_by(name="Bench Press").first()
+            assert refreshed.video_url == "https://already-good.example.com"
+            assert result == {"found": 0, "checked": 1}
+
+    def test_search_exception_is_logged(self, application):
+        """Individual search failures were previously swallowed with no
+        record anywhere, which made a total outage (e.g. the account hitting
+        its API usage limit) indistinguishable from "nothing needed a video"
+        in the UI. Each failure must now be logged."""
+        with application.app_context():
+            from app import sync_exercise_videos
+            with patch("ai.find_exercise_video", side_effect=RuntimeError("quota exceeded")), \
+                 patch.object(flask_app.app.logger, "exception") as mock_log:
+                sync_exercise_videos(["Bench Press"])
+            assert mock_log.called
+            logged_args = str(mock_log.call_args)
+            assert "Bench Press" in logged_args
+
     def test_progress_key_tracks_current_exercise(self, application):
         with application.app_context():
             from app import sync_exercise_videos, _video_sync_progress
