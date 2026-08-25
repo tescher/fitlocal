@@ -1386,8 +1386,14 @@ class TestReactivatePlan:
         with application.app_context():
             assert WorkoutPlan.query.get(active_id).status == "active"
 
-    def test_reactivate_rejects_another_users_plan(self, client, application, account):
-        """A plan belonging to a different profile must not be reactivatable."""
+    def test_reactivate_rejects_another_users_plan(self, client, application, two_plans):
+        """A plan belonging to a different profile must not be reactivatable.
+
+        two_plans is required so the caller actually has a profile and an
+        active plan of their own -- without it the route short-circuits on
+        `if not profile` and the ownership check is never reached.
+        """
+        caller_active_id, _ = two_plans
         with application.app_context():
             other_acc = Account(email="other@example.com", password_hash="x", email_claimed=True)
             db.session.add(other_acc)
@@ -1402,7 +1408,10 @@ class TestReactivatePlan:
         r = client.post("/plan/%d/reactivate" % foreign_id, follow_redirects=True)
         assert r.status_code in (200, 302, 404)
         with application.app_context():
+            # The foreign plan stays inactive AND the caller's own active plan
+            # must not be demoted as a side effect.
             assert WorkoutPlan.query.get(foreign_id).status == "inactive"
+            assert WorkoutPlan.query.get(caller_active_id).status == "active"
 
     def test_reactivate_missing_plan_404s(self, client, profile):
         r = client.post("/plan/999999/reactivate")
