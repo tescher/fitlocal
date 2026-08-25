@@ -1287,3 +1287,174 @@ class TestMiniCalendar:
             days = get_mini_calendar(profile)
             today_entry = next(d for d in days if d["is_today"])
             assert today_entry["completed"] is True
+
+
+# ---------------------------------------------------------------------------
+# Reactivating a previous plan
+# ---------------------------------------------------------------------------
+
+def _make_plan(profile_id, name, status, workout_days, start_date=None):
+    """Create a WorkoutPlan (+ PlannedWorkouts/Exercises) and return its id.
+
+    Name-agnostic: workout_days drives both the plan_json and the
+    PlannedWorkout rows, so tests never assume a particular workout name.
+    """
+    plan_data = {
+        "plan_name": name, "description": name + " desc",
+        "days_per_week": len(workout_days), "total_weeks": 12,
+        "phases": [],
+        "workouts": [
+            {"day": d, "name": d + " Session", "exercises": [
+                {"name": "Bench Press", "type": "main", "sets": 3, "reps": "8-10",
+                 "rest_seconds": 90, "notes": "", "form_cues": ""},
+            ]}
+            for d in workout_days
+        ],
+    }
+    plan = WorkoutPlan(
+        user_id=profile_id, name=name, description=name + " desc",
+        days_per_week=len(workout_days), plan_json=json.dumps(plan_data),
+        status=status, total_weeks=12, current_week=1,
+        start_date=start_date or (date.today() - timedelta(days=200)),
+    )
+    db.session.add(plan)
+    db.session.flush()
+    for i, d in enumerate(workout_days):
+        pw = PlannedWorkout(
+            plan_id=plan.id, day_of_week=d,
+            workout_name=d + " Session", order_index=i,
+        )
+        db.session.add(pw)
+        db.session.flush()
+        db.session.add(PlannedExercise(
+            planned_workout_id=pw.id, exercise_name="Bench Press",
+            sets_prescribed=3, reps_prescribed="8-10", rest_seconds=90,
+            exercise_type="main", order_index=0,
+        ))
+    db.session.commit()
+    return plan.id
+
+
+@pytest.fixture
+def two_plans(application, profile):
+    """An active plan and an older inactive plan for the same user.
+
+    Returns (active_plan_id, inactive_plan_id).
+    """
+    with application.app_context():
+        old_id = _make_plan(profile, "Old Plan", "inactive", ["Workout A", "Workout B"])
+        new_id = _make_plan(profile, "Current Plan", "active",
+                            ["Workout A", "Workout B", "Workout C"])
+        return new_id, old_id
+
+
+class TestReactivatePlan:
+    def test_reactivate_promotes_old_plan_and_demotes_current(self, client, application, two_plans):
+        active_id, inactive_id = two_plans
+        r = client.post("/plan/%d/reactivate" % inactive_id, follow_redirects=True)
+        assert r.status_code == 200
+        with application.app_context():
+            assert WorkoutPlan.query.get(inactive_id).status == "active"
+            assert WorkoutPlan.query.get(active_id).status == "inactive"
+
+    def test_reactivate_resets_start_date_to_today(self, client, application, two_plans):
+        _, inactive_id = two_plans
+        client.post("/plan/%d/reactivate" % inactive_id, follow_redirects=True)
+        with application.app_context():
+            assert WorkoutPlan.query.get(inactive_id).start_date == date.today()
+
+    def test_reactivate_leaves_pending_plan_untouched(self, client, application, profile, two_plans):
+        _, inactive_id = two_plans
+        with application.app_context():
+            pending_id = _make_plan(profile, "Pending Plan", "pending", ["Workout A"])
+        client.post("/plan/%d/reactivate" % inactive_id, follow_redirects=True)
+        with application.app_context():
+            assert WorkoutPlan.query.get(pending_id).status == "pending"
+
+    def test_cannot_reactivate_a_pending_plan(self, client, application, profile, two_plans):
+        active_id, _ = two_plans
+        with application.app_context():
+            pending_id = _make_plan(profile, "Pending Plan", "pending", ["Workout A"])
+        client.post("/plan/%d/reactivate" % pending_id, follow_redirects=True)
+        with application.app_context():
+            assert WorkoutPlan.query.get(pending_id).status == "pending"
+            assert WorkoutPlan.query.get(active_id).status == "active"
+
+    def test_reactivating_the_active_plan_is_a_noop(self, client, application, two_plans):
+        active_id, _ = two_plans
+        client.post("/plan/%d/reactivate" % active_id, follow_redirects=True)
+        with application.app_context():
+            assert WorkoutPlan.query.get(active_id).status == "active"
+
+    def test_reactivate_rejects_another_users_plan(self, client, application, account):
+        """A plan belonging to a different profile must not be reactivatable."""
+        with application.app_context():
+            other_acc = Account(email="other@example.com", password_hash="x", email_claimed=True)
+            db.session.add(other_acc)
+            db.session.flush()
+            other = UserProfile(
+                account_id=other_acc.id, name="Other", age=40, sex="Female",
+                fitness_level="Beginner", goals="Get fit",
+            )
+            db.session.add(other)
+            db.session.flush()
+            foreign_id = _make_plan(other.id, "Foreign Plan", "inactive", ["Workout A"])
+        r = client.post("/plan/%d/reactivate" % foreign_id, follow_redirects=True)
+        assert r.status_code in (200, 302, 404)
+        with application.app_context():
+            assert WorkoutPlan.query.get(foreign_id).status == "inactive"
+
+    def test_reactivate_missing_plan_404s(self, client, profile):
+        r = client.post("/plan/999999/reactivate")
+        assert r.status_code == 404
+
+    def test_reactivate_requires_login(self, application, two_plans):
+        _, inactive_id = two_plans
+        anon = application.test_client()
+        r = anon.post("/plan/%d/reactivate" % inactive_id)
+        assert r.status_code == 302
+        with application.app_context():
+            assert WorkoutPlan.query.get(inactive_id).status == "inactive"
+
+    def test_reactivate_blocked_while_a_session_is_paused(self, client, application, profile, two_plans):
+        """A paused session hijacks /workout/today, so reactivation must be
+        blocked until it is resolved rather than silently switching plans."""
+        active_id, inactive_id = two_plans
+        with application.app_context():
+            pw = (PlannedWorkout.query.filter_by(plan_id=active_id)
+                  .order_by(PlannedWorkout.order_index).first())
+            db.session.add(WorkoutSession(
+                user_id=profile, planned_workout_id=pw.id, date=date.today(),
+                status="paused",
+            ))
+            db.session.commit()
+        client.post("/plan/%d/reactivate" % inactive_id, follow_redirects=True)
+        with application.app_context():
+            assert WorkoutPlan.query.get(inactive_id).status == "inactive"
+            assert WorkoutPlan.query.get(active_id).status == "active"
+
+    def test_position_resumes_from_the_reactivated_plans_own_history(
+        self, client, application, profile, two_plans
+    ):
+        """Sessions logged under the old plan still drive its position, so
+        reactivating resumes where that plan left off."""
+        active_id, inactive_id = two_plans
+        with application.app_context():
+            old_workouts = (PlannedWorkout.query.filter_by(plan_id=inactive_id)
+                            .order_by(PlannedWorkout.order_index).all())
+            first_id, second_id = old_workouts[0].id, old_workouts[1].id
+        log_session(application, profile, first_id, [("Bench Press", 3)])
+
+        client.post("/plan/%d/reactivate" % inactive_id, follow_redirects=True)
+
+        with application.app_context():
+            from app import get_active_plan, get_next_workout
+            plan = get_active_plan(profile)
+            assert plan.id == inactive_id
+            nxt = get_next_workout(profile, plan)
+            assert nxt.id == second_id
+
+    def test_plan_history_offers_a_reactivate_control(self, client, two_plans):
+        r = client.get("/plan/history")
+        assert r.status_code == 200
+        assert b"reactivate" in r.data.lower()
