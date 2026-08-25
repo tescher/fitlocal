@@ -20,6 +20,11 @@
                 <span class="text-muted" style="font-size: 0.85rem;">
                     Started {{ p.start_date.strftime('%b %d, %Y') if p.start_date else p.created_at.strftime('%b %d, %Y') }}
                 </span>
+                <form method="POST" action="{{ url_for('reactivate_plan', plan_id=p.id) }}"
+                      style="margin-top: 0.5rem;"
+                      onsubmit="return confirm('Make &quot;{{ p.name }}&quot; your active plan? Your current plan will be moved to history.')">
+                    <button type="submit" class="btn btn-sm btn-primary">Reactivate</button>
+                </form>
             </div>
         </div>
 

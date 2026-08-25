@@ -1766,6 +1766,55 @@ def plan_history():
     return render_template("plan_history.html", plans_data=plans_data)
 
 
+@app.route("/plan/<int:plan_id>/reactivate", methods=["POST"])
+@login_required
+def reactivate_plan(plan_id):
+    """Make a previously-used plan the active one again.
+
+    This is only a status flip: sessions reach their plan through
+    planned_workout_id, so the reactivated plan's own logged history still
+    resolves its position. Nothing about where the user left off is stored or
+    restored — resolve_plan_position() derives it as it always does.
+    """
+    profile = get_profile()
+    if not profile:
+        return redirect(url_for("setup"))
+
+    plan = WorkoutPlan.query.get_or_404(plan_id)
+    if plan.user_id != profile.id:
+        return redirect(url_for("plan_history"))
+
+    if plan.status == "active":
+        flash("That plan is already active.", "success")
+        return redirect(url_for("plan_view"))
+
+    if plan.status != "inactive":
+        flash("Only a previous plan can be reactivated.", "error")
+        return redirect(url_for("plan_history"))
+
+    # A paused session sends /workout/today straight to that workout, which may
+    # belong to the plan being replaced. Make the user resolve it first rather
+    # than switching plans underneath a half-finished workout.
+    if get_paused_session(profile.id):
+        flash(
+            "Finish or discard your paused workout before switching plans.",
+            "error",
+        )
+        return redirect(url_for("plan_history"))
+
+    WorkoutPlan.query.filter_by(
+        status="active", user_id=profile.id
+    ).update({"status": "inactive"})
+    plan.status = "active"
+    # Purely cosmetic: start_date only feeds the "Week N" label via
+    # update_plan_week(). Left stale, a resumed plan reads as finished.
+    plan.start_date = date.today()
+    db.session.commit()
+
+    flash(f'"{plan.name}" is now your active plan.', "success")
+    return redirect(url_for("plan_view"))
+
+
 # --- Plan Edit API ---
 
 def _get_planned_exercise_for_user(exercise_id, profile_id):
