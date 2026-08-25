@@ -7,3 +7,7 @@ instance/
 # Runtime artifacts
 *.log
 session_*.json
+
+# Stray SQLite file at repo root — the real DB lives in instance/ (Flask
+# resolves the relative sqlite:/// URI to the instance folder)
+/fitlocal.db
