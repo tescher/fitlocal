@@ -1071,7 +1071,7 @@ def reversed_order_plan(application, profile):
         plan = WorkoutPlan(
             user_id=p.id, name="Order Test Plan", description="desc",
             days_per_week=1, plan_json=json.dumps(plan_data),
-            is_active=True, total_weeks=4, current_week=1,
+            status="active", total_weeks=4, current_week=1,
             start_date=date.today(),
         )
         db.session.add(plan)
