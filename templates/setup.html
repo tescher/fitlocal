@@ -11,18 +11,25 @@
 
     <div class="form-row">
         <div class="form-group">
-            <label for="age">Age</label>
-            <input type="number" id="age" name="age" required min="10" max="120" value="{{ profile.age if profile else '' }}">
+            <label for="birthdate">Birthdate <span class="text-muted">(optional)</span></label>
+            <input type="date" id="birthdate" name="birthdate"
+                   value="{{ profile.birthdate.isoformat() if profile and profile.birthdate else '' }}">
         </div>
         <div class="form-group">
-            <label for="sex">Sex</label>
-            <select id="sex" name="sex" required>
-                <option value="">Select...</option>
-                <option value="Male" {{ 'selected' if profile and profile.sex == 'Male' }}>Male</option>
-                <option value="Female" {{ 'selected' if profile and profile.sex == 'Female' }}>Female</option>
-                <option value="Other" {{ 'selected' if profile and profile.sex == 'Other' }}>Other</option>
-            </select>
+            <label for="age">Age</label>
+            <input type="number" id="age" name="age" required min="10" max="120" value="{{ profile.current_age if profile else '' }}">
         </div>
+    </div>
+    <p class="text-muted mb-2" style="font-size:0.85rem; margin-top:-0.5rem;">Enter a birthdate and your age stays up to date automatically.</p>
+
+    <div class="form-group">
+        <label for="sex">Sex</label>
+        <select id="sex" name="sex" required>
+            <option value="">Select...</option>
+            <option value="Male" {{ 'selected' if profile and profile.sex == 'Male' }}>Male</option>
+            <option value="Female" {{ 'selected' if profile and profile.sex == 'Female' }}>Female</option>
+            <option value="Other" {{ 'selected' if profile and profile.sex == 'Other' }}>Other</option>
+        </select>
     </div>
 
     <div class="form-group">
@@ -42,4 +49,36 @@
 
     <button type="submit" class="btn btn-primary">{{ 'Update Profile' if profile else 'Save & Continue' }}</button>
 </form>
+
+<script>
+// When a birthdate is entered, it drives the age: fill it in and lock the field.
+(function() {
+    var birthdate = document.getElementById('birthdate');
+    var age = document.getElementById('age');
+    var manualAge = age.value;
+
+    function sync() {
+        if (!birthdate.value) {
+            if (age.readOnly) age.value = manualAge;
+            age.readOnly = false;
+            age.required = true;
+            return;
+        }
+        if (!age.readOnly) manualAge = age.value;
+        var bd = new Date(birthdate.value + 'T00:00:00');
+        var today = new Date();
+        var years = today.getFullYear() - bd.getFullYear();
+        if (today.getMonth() < bd.getMonth() ||
+            (today.getMonth() === bd.getMonth() && today.getDate() < bd.getDate())) {
+            years--;
+        }
+        age.value = isNaN(years) ? '' : years;
+        age.readOnly = true;
+        age.required = false;
+    }
+
+    birthdate.addEventListener('input', sync);
+    sync();
+})();
+</script>
 {% endblock %}

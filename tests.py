@@ -245,6 +245,143 @@ class TestProfileSetup:
 
 
 # ---------------------------------------------------------------------------
+# Birthdate / computed age
+# ---------------------------------------------------------------------------
+
+def _setup_form(**overrides):
+    data = {
+        "name": "Tim", "age": "35", "birthdate": "", "sex": "Male",
+        "fitness_level": "Intermediate", "goals": "Build muscle",
+    }
+    data.update(overrides)
+    return data
+
+
+def _mock_ai_client(response_json):
+    """Mock Anthropic client whose messages.create returns response_json as text."""
+    client = MagicMock()
+    client.messages.create.return_value.content = [MagicMock(text=json.dumps(response_json))]
+    return client
+
+
+class TestBirthdate:
+    def test_calculate_age_before_and_after_birthday(self):
+        from models import calculate_age
+        bd = date(1980, 6, 15)
+        assert calculate_age(bd, date(2026, 6, 14)) == 45
+        assert calculate_age(bd, date(2026, 6, 15)) == 46
+        assert calculate_age(bd, date(2026, 12, 31)) == 46
+
+    def test_calculate_age_leap_day_birthdate(self):
+        from models import calculate_age
+        bd = date(2000, 2, 29)
+        assert calculate_age(bd, date(2025, 2, 28)) == 24
+        assert calculate_age(bd, date(2025, 3, 1)) == 25
+        assert calculate_age(bd, date(2028, 2, 29)) == 28
+
+    def test_current_age_uses_birthdate(self, application, profile):
+        with application.app_context():
+            p = UserProfile.query.get(profile)
+            p.birthdate = date(date.today().year - 40, 1, 1)
+            db.session.commit()
+            assert p.current_age == 40
+
+    def test_current_age_falls_back_to_manual_age(self, application, profile):
+        with application.app_context():
+            p = UserProfile.query.get(profile)
+            assert p.birthdate is None
+            assert p.current_age == 35
+
+    def test_setup_with_birthdate_saves_it_and_computes_age(self, client, application):
+        bd = date(date.today().year - 40, 1, 1)
+        r = client.post("/setup", data=_setup_form(age="", birthdate=bd.isoformat()))
+        assert r.status_code == 302
+        with application.app_context():
+            p = UserProfile.query.first()
+            assert p.birthdate == bd
+            assert p.age == 40
+            assert p.current_age == 40
+
+    def test_birthdate_overrides_submitted_age(self, client, application):
+        bd = date(date.today().year - 40, 1, 1)
+        client.post("/setup", data=_setup_form(age="99", birthdate=bd.isoformat()))
+        with application.app_context():
+            assert UserProfile.query.first().age == 40
+
+    def test_clearing_birthdate_reverts_to_manual_age(self, client, application):
+        bd = date(date.today().year - 40, 1, 1)
+        client.post("/setup", data=_setup_form(birthdate=bd.isoformat()))
+        client.post("/setup", data=_setup_form(age="37", birthdate=""))
+        with application.app_context():
+            p = UserProfile.query.first()
+            assert p.birthdate is None
+            assert p.age == 37
+            assert p.current_age == 37
+
+    def test_neither_age_nor_birthdate_rejected(self, client, application):
+        r = client.post("/setup", data=_setup_form(age="", birthdate=""))
+        assert r.status_code == 200
+        assert b"age or birthdate" in r.data
+        with application.app_context():
+            assert UserProfile.query.count() == 0
+
+    def test_future_birthdate_rejected(self, client, application):
+        future = date.today() + timedelta(days=30)
+        r = client.post("/setup", data=_setup_form(birthdate=future.isoformat()))
+        assert r.status_code == 200
+        with application.app_context():
+            assert UserProfile.query.count() == 0
+
+    def test_invalid_birthdate_rejected_without_changing_profile(self, client, application, profile):
+        r = client.post("/setup", data=_setup_form(age="50", birthdate="not-a-date"))
+        assert r.status_code == 200
+        with application.app_context():
+            p = UserProfile.query.get(profile)
+            assert p.age == 35
+            assert p.birthdate is None
+
+    def test_setup_form_shows_saved_birthdate(self, client, application, profile):
+        with application.app_context():
+            p = UserProfile.query.get(profile)
+            p.birthdate = date(1985, 3, 7)
+            db.session.commit()
+        r = client.get("/setup")
+        assert b'name="birthdate"' in r.data
+        assert b'value="1985-03-07"' in r.data
+
+    def test_generate_plan_page_shows_computed_age(self, client, application, profile):
+        with application.app_context():
+            p = UserProfile.query.get(profile)
+            p.birthdate = date(date.today().year - 40, 1, 1)
+            db.session.commit()
+        r = client.get("/generate-plan")
+        assert b"<strong>Age:</strong> 40" in r.data
+
+    def test_plan_prompt_uses_computed_age(self, application, profile):
+        import ai
+        with application.app_context():
+            p = UserProfile.query.get(profile)
+            p.birthdate = date(date.today().year - 40, 1, 1)
+            mock_client = _mock_ai_client({"plan_name": "X", "workouts": []})
+            with patch("ai.get_client", return_value=mock_client):
+                ai.generate_workout_plan(p)
+        prompt = mock_client.messages.create.call_args.kwargs["messages"][0]["content"]
+        assert "Age: 40," in prompt
+
+    def test_review_prompt_uses_computed_age(self, application, profile):
+        import ai
+        with application.app_context():
+            p = UserProfile.query.get(profile)
+            p.birthdate = date(date.today().year - 40, 1, 1)
+            mock_client = _mock_ai_client({"whats_working": "", "watch_out_for": "",
+                                           "suggestions": [], "overall_assessment": ""})
+            with patch("ai.get_client", return_value=mock_client):
+                ai.generate_progress_review(p, [], plan_name="Plan")
+        prompt = mock_client.messages.create.call_args.kwargs["messages"][0]["content"]
+        assert "Age: 40," in prompt
+
+
+# ---------------------------------------------------------------------------
 # Dashboard
 # ---------------------------------------------------------------------------
 

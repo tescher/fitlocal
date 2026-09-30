@@ -69,7 +69,7 @@ Additional context from the user (treat this as high-priority input when buildin
 
     prompt = f"""You are a certified personal trainer inspired by Tony Horton's P90X methodology. Create a detailed 12-week periodized workout plan for the following person:
 
-Age: {profile.age}, Sex: {profile.sex}, Fitness Level: {profile.fitness_level}, Goals: {profile.goals}.
+Age: {profile.current_age}, Sex: {profile.sex}, Fitness Level: {profile.fitness_level}, Goals: {profile.goals}.
 {fitness_test_section}{prior_review_section}{extra_context_section}
 Requirements:
 - Create 3 workouts per cycle labeled "Workout A", "Workout B", "Workout C"
@@ -144,7 +144,7 @@ def generate_progress_review(profile, sessions_data, plan_name=None):
 - Keep it personal and energetic — like you're right there in the room
 - Reference specific exercises and numbers from their data
 
-Client: {profile.name}, Age: {profile.age}, Sex: {profile.sex}, Fitness Level: {profile.fitness_level}, Goals: {profile.goals}.
+Client: {profile.name}, Age: {profile.current_age}, Sex: {profile.sex}, Fitness Level: {profile.fitness_level}, Goals: {profile.goals}.
 
 Here is a summary of {sessions_label}:
 {json.dumps(sessions_data, indent=2)}
