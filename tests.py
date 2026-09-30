@@ -1844,3 +1844,99 @@ class TestReactivatePlan:
         r = client.get("/plan/history")
         assert r.status_code == 200
         assert b"reactivate" in r.data.lower()
+
+
+# ---------------------------------------------------------------------------
+# Test runs must never open the real database (instance/fitlocal.db)
+# ---------------------------------------------------------------------------
+
+import subprocess
+import sys
+import textwrap
+
+_APP_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Runs in a subprocess: makes any sqlite connection to the real database fail,
+# then executes the given code. Prints "ok" if nothing tried to open it.
+_REAL_DB_GUARD = textwrap.dedent('''
+    import os, sys, sqlite3
+    app_dir = sys.argv[1]
+    real_db = os.path.normcase(os.path.abspath(os.path.join(app_dir, "instance", "fitlocal.db")))
+
+    def guard(orig):
+        def connect(database, *args, **kwargs):
+            path = str(database)
+            if path.startswith("file:"):
+                path = path[len("file:"):].split("?")[0]
+            if path != ":memory:" and os.path.normcase(os.path.abspath(path)) == real_db:
+                raise RuntimeError("opened the real database: " + path)
+            return orig(database, *args, **kwargs)
+        return connect
+
+    sqlite3.connect = guard(sqlite3.connect)
+    sqlite3.dbapi2.connect = guard(sqlite3.dbapi2.connect)
+    sys.path.insert(0, app_dir)
+    os.chdir(app_dir)
+''')
+
+
+def _run_isolated(code, env_overrides=None):
+    env = {k: v for k, v in os.environ.items() if k != "DATABASE_URL"}
+    env.update(env_overrides or {})
+    return subprocess.run(
+        [sys.executable, "-c", _REAL_DB_GUARD + textwrap.dedent(code), _APP_DIR],
+        capture_output=True, text=True, env=env, timeout=120,
+    )
+
+
+class TestDatabaseIsolation:
+    def test_importing_tests_module_never_opens_real_db(self):
+        result = _run_isolated('''
+            import tests
+            print("ok")
+        ''')
+        assert result.returncode == 0, result.stderr[-2000:]
+        assert "ok" in result.stdout
+
+    def test_migrate_uses_given_db_path(self, tmp_path):
+        import migrate
+        db_file = tmp_path / "old.db"
+        engine = sa.create_engine(f"sqlite:///{db_file}")
+        db.metadata.create_all(engine)
+        with engine.begin() as conn:
+            conn.execute(sa.text("ALTER TABLE exercise_library DROP COLUMN video_url"))
+        engine.dispose()
+
+        migrate.migrate(str(db_file))
+
+        engine = sa.create_engine(f"sqlite:///{db_file}")
+        cols = [c["name"] for c in sa.inspect(engine).get_columns("exercise_library")]
+        engine.dispose()
+        assert "video_url" in cols
+
+    def test_app_startup_migrates_the_configured_db(self, tmp_path):
+        db_file = tmp_path / "configured.db"
+        result = _run_isolated('''
+            import json, migrate
+            calls = []
+            migrate.migrate = lambda *a, **k: calls.append([list(a), k])
+            import app
+            print("CALLS=" + json.dumps(calls))
+        ''', {"DATABASE_URL": f"sqlite:///{db_file}"})
+        assert result.returncode == 0, result.stderr[-2000:]
+        calls = json.loads(result.stdout.split("CALLS=")[1])
+        assert len(calls) == 1
+        args, kwargs = calls[0]
+        called_path = (args + list(kwargs.values()))[0]
+        assert os.path.normcase(os.path.abspath(called_path)) == os.path.normcase(str(db_file))
+
+    def test_app_startup_skips_file_migration_for_in_memory_db(self):
+        result = _run_isolated('''
+            import json, migrate
+            calls = []
+            migrate.migrate = lambda *a, **k: calls.append([list(a), k])
+            import app
+            print("CALLS=" + json.dumps(calls))
+        ''', {"DATABASE_URL": "sqlite:///:memory:"})
+        assert result.returncode == 0, result.stderr[-2000:]
+        assert json.loads(result.stdout.split("CALLS=")[1]) == []
