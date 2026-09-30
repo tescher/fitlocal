@@ -6,8 +6,10 @@ Since FitLocal is in early development, the simplest approach is to
 delete the database and let it recreate. But if you want to preserve
 existing data, run this script first.
 
+The app runs this on startup against its configured database (DATABASE_URL).
+
 Usage:
-    python migrate.py
+    python migrate.py            # migrates instance/fitlocal.db
 """
 import sqlite3
 import os
@@ -16,11 +18,11 @@ import sys
 DB_PATH = os.path.join(os.path.dirname(__file__), "instance", "fitlocal.db")
 
 
-def migrate():
-    if not os.path.exists(DB_PATH):
+def migrate(db_path=DB_PATH):
+    if not os.path.exists(db_path):
         return  # Fresh install: db.create_all() in app.py handles table creation
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
     # Helper to check if a column exists
