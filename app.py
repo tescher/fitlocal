@@ -216,8 +216,36 @@ def get_active_plan(user_id):
     return WorkoutPlan.query.filter_by(status="active", user_id=user_id).first()
 
 
-def _get_review_sessions(user_id, plan_id):
-    """Return completed WorkoutSessions that belong to the given plan, newest first."""
+# Review ranges: key -> (display label, lookback days or None for the whole current plan,
+# phrase used in the AI prompt or None for the plan wording).
+REVIEW_RANGES = {
+    "1m": ("Last 1 month", 30, "the last month"),
+    "3m": ("Last 3 months", 90, "the last 3 months"),
+    "plan": ("Entire plan", None, None),
+}
+DEFAULT_REVIEW_RANGE = "plan"
+
+
+def _get_review_sessions(user_id, plan_id, review_range=DEFAULT_REVIEW_RANGE):
+    """Return completed WorkoutSessions for a progress review, newest first.
+
+    "plan" returns the given plan's sessions. The time-based ranges return every
+    completed session in the window, whichever plan (if any) it belonged to.
+    """
+    days = REVIEW_RANGES[review_range][1]
+    if days is not None:
+        cutoff = date.today() - timedelta(days=days)
+        return (
+            WorkoutSession.query
+            .filter(
+                WorkoutSession.user_id == user_id,
+                WorkoutSession.date >= cutoff,
+                WorkoutSession.status == SESSION_STATUS_COMPLETED,
+            )
+            .order_by(WorkoutSession.date.desc())
+            .all()
+        )
+
     pw_ids = [
         w.id for w in PlannedWorkout.query.filter_by(plan_id=plan_id).all()
     ]
@@ -1630,7 +1658,14 @@ def review():
         return redirect(url_for("setup"))
 
     active_plan = get_active_plan(profile.id)
-    active_plan_session_count = len(_get_review_sessions(profile.id, active_plan.id)) if active_plan else 0
+    range_options = [
+        {
+            "key": key,
+            "label": label,
+            "count": len(_get_review_sessions(profile.id, active_plan.id, key)) if active_plan else 0,
+        }
+        for key, (label, _days, _phrase) in REVIEW_RANGES.items()
+    ]
 
     last_review = (
         AIReview.query
@@ -1647,8 +1682,26 @@ def review():
             pass
 
     return render_template("review.html", last_review=last_review, review_data=review_data,
-                           active_plan_session_count=active_plan_session_count,
+                           range_options=range_options, default_range=DEFAULT_REVIEW_RANGE,
+                           last_review_coverage=_review_coverage(last_review),
                            active_plan=active_plan)
+
+
+def _review_coverage(ai_review):
+    """Describe what a saved review covered, e.g. "Last 3 months · 14 sessions".
+    Older reviews may lack a range, or have a non-JSON data_summary."""
+    if not ai_review or not ai_review.data_summary:
+        return None
+    try:
+        summary = json.loads(ai_review.data_summary)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(summary, dict) or "sessions_count" not in summary:
+        return None
+    count = summary["sessions_count"]
+    sessions = f"{count} session{'s' if count != 1 else ''}"
+    label = REVIEW_RANGES.get(summary.get("range"), (None,))[0]
+    return f"{label} · {sessions}" if label else sessions
 
 
 @app.route("/review/generate", methods=["POST"])
@@ -1663,10 +1716,18 @@ def generate_review():
         flash("No active plan to review.", "info")
         return redirect(url_for("review"))
 
-    sessions = _get_review_sessions(profile.id, active_plan.id)
+    review_range = request.form.get("range", DEFAULT_REVIEW_RANGE)
+    if review_range not in REVIEW_RANGES:
+        review_range = DEFAULT_REVIEW_RANGE
+    range_label, _days, range_phrase = REVIEW_RANGES[review_range]
+
+    sessions = _get_review_sessions(profile.id, active_plan.id, review_range)
 
     if not sessions:
-        flash("No completed sessions on your current plan yet!", "info")
+        if review_range == DEFAULT_REVIEW_RANGE:
+            flash("No completed sessions on your current plan yet!", "info")
+        else:
+            flash(f"No completed sessions in that range ({range_label.lower()}).", "info")
         return redirect(url_for("review"))
 
     sessions_data = []
@@ -1682,6 +1743,7 @@ def generate_review():
             })
         sessions_data.append({
             "date": s.date.isoformat() if s.date else None,
+            "plan": s.planned_workout.plan.name if s.planned_workout else None,
             "workout_name": s.planned_workout.workout_name if s.planned_workout else "Unplanned",
             "phase": s.phase_name,
             "feeling": s.overall_feeling,
@@ -1691,13 +1753,14 @@ def generate_review():
 
     from ai import generate_progress_review
     try:
-        review_result = generate_progress_review(profile, sessions_data, plan_name=active_plan.name)
+        review_result = generate_progress_review(profile, sessions_data, plan_name=active_plan.name,
+                                                 range_label=range_phrase)
 
         ai_review = AIReview(
             user_id=profile.id,
             review_text=review_result.get("overall_assessment", ""),
             suggestions_json=json.dumps(review_result),
-            data_summary=json.dumps({"sessions_count": len(sessions_data)}),
+            data_summary=json.dumps({"sessions_count": len(sessions_data), "range": review_range}),
         )
         db.session.add(ai_review)
         db.session.commit()

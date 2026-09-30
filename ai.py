@@ -131,11 +131,20 @@ Return only valid JSON, no commentary."""
     return _extract_json(message.content[0].text)
 
 
-def generate_progress_review(profile, sessions_data, plan_name=None):
+def generate_progress_review(profile, sessions_data, plan_name=None, range_label=None):
+    """range_label (e.g. "the last 3 months") reviews a time window that may span
+    several plans; without it, the sessions are all from the current plan."""
     client = get_client()
 
     plan_label = f'"{plan_name}"' if plan_name else "their current"
-    sessions_label = f"all {len(sessions_data)} completed sessions from their {plan_label} plan"
+    if range_label:
+        sessions_label = (
+            f"{len(sessions_data)} completed sessions from {range_label} "
+            f"(their current plan is {plan_label}; each session is tagged with the plan it belonged to, "
+            f"so focus your plan-adjustment suggestions on the current plan)"
+        )
+    else:
+        sessions_label = f"all {len(sessions_data)} completed sessions from their {plan_label} plan"
 
     prompt = f"""You are Tony Horton — legendary fitness trainer, creator of P90X. You're reviewing one of your people's workout data. Be DIRECT, MOTIVATIONAL, and use your signature style:
 
