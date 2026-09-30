@@ -1350,6 +1350,186 @@ class TestReview:
 
 
 # ---------------------------------------------------------------------------
+# Review range (1 month / 3 months / entire plan) and progress overlay
+# ---------------------------------------------------------------------------
+
+_MOCK_REVIEW = {
+    "whats_working": "Good", "watch_out_for": "Form",
+    "suggestions": ["More sleep"], "overall_assessment": "Bring it!",
+}
+
+
+@pytest.fixture
+def range_sessions(application, profile, active_plan):
+    """Sessions spread across time and plans. Returns dict of label -> session id.
+
+    current plan: 10, 60, 120 days ago
+    old plan:     20 days ago
+    unplanned:    5 days ago
+    """
+    with application.app_context():
+        old = WorkoutPlan(
+            user_id=profile, name="Old Plan", description="", days_per_week=3,
+            plan_json="{}", status="inactive", total_weeks=12,
+        )
+        db.session.add(old)
+        db.session.flush()
+        old_pw = PlannedWorkout(plan_id=old.id, day_of_week="Workout A",
+                                workout_name="Old Upper", order_index=0)
+        db.session.add(old_pw)
+        db.session.commit()
+        old_pw_id = old_pw.id
+        cur_pw_id = PlannedWorkout.query.filter_by(plan_id=active_plan).first().id
+
+    ids = {}
+    for label, pw_id, days in [("cur_10", cur_pw_id, 10), ("cur_60", cur_pw_id, 60),
+                               ("cur_120", cur_pw_id, 120), ("old_20", old_pw_id, 20),
+                               ("unplanned_5", None, 5)]:
+        log_session(application, profile, pw_id, [("Bench Press", 1)], delta_days=days)
+        with application.app_context():
+            ids[label] = WorkoutSession.query.order_by(WorkoutSession.id.desc()).first().id
+    return ids
+
+
+def _ids(sessions):
+    return {s.id for s in sessions}
+
+
+class TestReviewRange:
+    def test_entire_plan_range_is_current_plan_only(self, application, profile, active_plan, range_sessions):
+        with application.app_context():
+            got = _ids(flask_app._get_review_sessions(profile, active_plan, "plan"))
+        assert got == {range_sessions[k] for k in ("cur_10", "cur_60", "cur_120")}
+
+    def test_default_range_is_entire_plan(self, application, profile, active_plan, range_sessions):
+        with application.app_context():
+            assert (_ids(flask_app._get_review_sessions(profile, active_plan))
+                    == _ids(flask_app._get_review_sessions(profile, active_plan, "plan")))
+
+    def test_one_month_spans_all_plans_within_30_days(self, application, profile, active_plan, range_sessions):
+        with application.app_context():
+            got = _ids(flask_app._get_review_sessions(profile, active_plan, "1m"))
+        assert got == {range_sessions[k] for k in ("cur_10", "old_20", "unplanned_5")}
+
+    def test_three_months_spans_all_plans_within_90_days(self, application, profile, active_plan, range_sessions):
+        with application.app_context():
+            got = _ids(flask_app._get_review_sessions(profile, active_plan, "3m"))
+        assert got == {range_sessions[k] for k in ("cur_10", "cur_60", "old_20", "unplanned_5")}
+
+    def test_one_month_boundary_is_30_days(self, application, profile, active_plan):
+        with application.app_context():
+            pw_id = PlannedWorkout.query.filter_by(plan_id=active_plan).first().id
+        log_session(application, profile, pw_id, [("Bench Press", 1)], delta_days=30)
+        log_session(application, profile, pw_id, [("Bench Press", 1)], delta_days=31)
+        with application.app_context():
+            dates = [s.date for s in flask_app._get_review_sessions(profile, active_plan, "1m")]
+        assert dates == [date.today() - timedelta(days=30)]
+
+    def test_generate_review_sends_only_sessions_in_range(self, client, application, range_sessions):
+        with patch("ai.generate_progress_review", return_value=_MOCK_REVIEW) as mock_review:
+            client.post("/review/generate", data={"range": "1m"})
+        sessions_data = mock_review.call_args.args[1]
+        assert len(sessions_data) == 3
+        cutoff = (date.today() - timedelta(days=30)).isoformat()
+        assert all(s["date"] >= cutoff for s in sessions_data)
+        assert mock_review.call_args.kwargs["range_label"] == "the last month"
+
+    def test_generate_review_tags_sessions_with_plan_name(self, client, application, range_sessions):
+        with patch("ai.generate_progress_review", return_value=_MOCK_REVIEW) as mock_review:
+            client.post("/review/generate", data={"range": "3m"})
+        plans = sorted(str(s["plan"]) for s in mock_review.call_args.args[1])
+        assert plans == ["None", "Old Plan", "Test Plan", "Test Plan"]
+
+    def test_generate_review_records_range_in_data_summary(self, client, application, range_sessions):
+        with patch("ai.generate_progress_review", return_value=_MOCK_REVIEW):
+            client.post("/review/generate", data={"range": "3m"})
+        with application.app_context():
+            summary = json.loads(AIReview.query.first().data_summary)
+        assert summary == {"sessions_count": 4, "range": "3m"}
+
+    def test_generate_review_invalid_range_falls_back_to_plan(self, client, application, range_sessions):
+        with patch("ai.generate_progress_review", return_value=_MOCK_REVIEW) as mock_review:
+            client.post("/review/generate", data={"range": "bogus"})
+        assert len(mock_review.call_args.args[1]) == 3
+        assert mock_review.call_args.kwargs["range_label"] is None
+        with application.app_context():
+            assert json.loads(AIReview.query.first().data_summary)["range"] == "plan"
+
+    def test_generate_review_empty_range_creates_no_review(self, client, application, profile, active_plan):
+        with application.app_context():
+            pw_id = PlannedWorkout.query.filter_by(plan_id=active_plan).first().id
+        log_session(application, profile, pw_id, [("Bench Press", 1)], delta_days=45)
+        with patch("ai.generate_progress_review", return_value=_MOCK_REVIEW) as mock_review:
+            r = client.post("/review/generate", data={"range": "1m"}, follow_redirects=True)
+        mock_review.assert_not_called()
+        assert b"No completed sessions" in r.data
+        with application.app_context():
+            assert AIReview.query.count() == 0
+
+    def test_review_page_shows_range_selector_with_counts(self, client, range_sessions):
+        r = client.get("/review")
+        html = r.data.decode()
+        assert 'name="range"' in html
+        assert 'value="1m" data-count="3"' in html
+        assert 'value="3m" data-count="4"' in html
+        assert 'value="plan" data-count="3" selected' in html
+        assert "Last 1 month" in html and "Last 3 months" in html and "Entire plan" in html
+
+    def test_review_page_shows_last_review_coverage(self, client, application, profile):
+        with application.app_context():
+            db.session.add(AIReview(user_id=profile, review_text="x",
+                                    suggestions_json=json.dumps(_MOCK_REVIEW),
+                                    data_summary=json.dumps({"sessions_count": 14, "range": "3m"})))
+            db.session.commit()
+        html = client.get("/review").data.decode()
+        assert "Last 3 months · 14 sessions" in html
+
+    def test_review_page_handles_legacy_data_summary(self, client, application, profile):
+        with application.app_context():
+            db.session.add(AIReview(user_id=profile, review_text="x",
+                                    suggestions_json=json.dumps(_MOCK_REVIEW),
+                                    data_summary=json.dumps({"sessions_count": 36})))
+            db.session.commit()
+        r = client.get("/review")
+        assert r.status_code == 200
+        assert "36 sessions" in r.data.decode()
+
+    def test_review_prompt_describes_selected_range(self, application, profile):
+        import ai
+        with application.app_context():
+            p = UserProfile.query.get(profile)
+            mock_client = _mock_ai_client(_MOCK_REVIEW)
+            with patch("ai.get_client", return_value=mock_client):
+                ai.generate_progress_review(p, [{}, {}], plan_name="Test Plan",
+                                            range_label="the last 3 months")
+        prompt = mock_client.messages.create.call_args.kwargs["messages"][0]["content"]
+        assert "2 completed sessions from the last 3 months" in prompt
+        assert 'current plan is "Test Plan"' in prompt
+
+    def test_review_prompt_without_range_describes_plan(self, application, profile):
+        import ai
+        with application.app_context():
+            p = UserProfile.query.get(profile)
+            mock_client = _mock_ai_client(_MOCK_REVIEW)
+            with patch("ai.get_client", return_value=mock_client):
+                ai.generate_progress_review(p, [{}, {}], plan_name="Test Plan")
+        prompt = mock_client.messages.create.call_args.kwargs["messages"][0]["content"]
+        assert 'all 2 completed sessions from their "Test Plan" plan' in prompt
+
+    def test_review_page_has_progress_overlay(self, client, range_sessions):
+        html = client.get("/review").data.decode()
+        assert 'id="loadingOverlay"' in html
+        assert "Reviewing Your Progress" in html
+        assert 'onsubmit="showLoading(this)"' in html
+
+    def test_generate_plan_page_still_has_progress_overlay(self, client, profile):
+        html = client.get("/generate-plan").data.decode()
+        assert 'id="loadingOverlay"' in html
+        assert "Building Your Plan" in html
+        assert 'onsubmit="showLoading(this)"' in html
+
+
+# ---------------------------------------------------------------------------
 # Export
 # ---------------------------------------------------------------------------
 
