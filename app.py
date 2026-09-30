@@ -40,7 +40,7 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 from models import (  # noqa: E402
     db, Account, UserProfile, WorkoutPlan, PlannedWorkout, PlannedExercise,
     WorkoutSession, LoggedSet, AIReview, FitnessTest, TrainingPhase, ExerciseLibrary,
-    NextWorkoutNote,
+    NextWorkoutNote, calculate_age,
 )
 from extensions import login_manager, bcrypt, csrf, limiter, oauth_client  # noqa: E402
 
@@ -98,6 +98,9 @@ with app.app_context():
                 conn.execute(text(
                     "ALTER TABLE user_profile ADD COLUMN account_id INTEGER REFERENCES account(id)"
                 ))
+                conn.commit()
+            if "birthdate" not in cols:
+                conn.execute(text("ALTER TABLE user_profile ADD COLUMN birthdate DATE"))
                 conn.commit()
 
         # Add status column to workout_plan if it doesn't exist, backfilling from is_active + notes
@@ -813,14 +816,44 @@ def index():
     )
 
 
+def _parse_age_fields(form):
+    """Return (age, birthdate) from the profile form. A birthdate, when given,
+    determines the age. Raises ValueError with a user-facing message."""
+    raw_birthdate = form.get("birthdate", "").strip()
+    raw_age = form.get("age", "").strip()
+    if raw_birthdate:
+        try:
+            birthdate = date.fromisoformat(raw_birthdate)
+        except ValueError:
+            raise ValueError("Birthdate is not a valid date.")
+        age = calculate_age(birthdate)
+    elif raw_age:
+        birthdate = None
+        try:
+            age = int(raw_age)
+        except ValueError:
+            raise ValueError("Age must be a whole number.")
+    else:
+        raise ValueError("Please enter your age or birthdate.")
+    if not 10 <= age <= 120:
+        raise ValueError("Age must be between 10 and 120.")
+    return age, birthdate
+
+
 @app.route("/setup", methods=["GET", "POST"])
 @login_required
 def setup():
     profile = get_profile()
     if request.method == "POST":
+        try:
+            age, birthdate = _parse_age_fields(request.form)
+        except ValueError as e:
+            flash(str(e), "error")
+            return render_template("setup.html", profile=profile)
         if profile:
             profile.name = request.form["name"]
-            profile.age = int(request.form["age"])
+            profile.age = age
+            profile.birthdate = birthdate
             profile.sex = request.form["sex"]
             profile.fitness_level = request.form["fitness_level"]
             profile.goals = request.form["goals"]
@@ -829,7 +862,8 @@ def setup():
             profile = UserProfile(
                 account_id=current_user.id,
                 name=request.form["name"],
-                age=int(request.form["age"]),
+                age=age,
+                birthdate=birthdate,
                 sex=request.form["sex"],
                 fitness_level=request.form["fitness_level"],
                 goals=request.form["goals"],

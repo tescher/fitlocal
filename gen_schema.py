@@ -94,6 +94,7 @@ draw_table(ax, 0.25, TOP, 3.65, 'UserProfile', [
     ('PK', 'id',               'int'),
     ('',   'name',             'str'),
     ('',   'age',              'int'),
+    ('',   'birthdate',        'date'),
     ('',   'sex',              'str'),
     ('',   'fitness_level',    'str'),
     ('',   'goals',            'text'),

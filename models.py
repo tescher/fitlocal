@@ -5,6 +5,13 @@ from datetime import datetime, date, timezone
 db = SQLAlchemy()
 
 
+def calculate_age(birthdate, today=None):
+    """Whole years between birthdate and today. A Feb 29 birthdate ages up on Mar 1 in non-leap years."""
+    today = today or date.today()
+    had_birthday = (today.month, today.day) >= (birthdate.month, birthdate.day)
+    return today.year - birthdate.year - (0 if had_birthday else 1)
+
+
 class Account(db.Model, UserMixin):
     __tablename__ = "account"
     id = db.Column(db.Integer, primary_key=True)
@@ -24,7 +31,8 @@ class UserProfile(db.Model):
     account_id = db.Column(db.Integer, db.ForeignKey("account.id"), nullable=True)
     account = db.relationship("Account", back_populates="profile")
     name = db.Column(db.String(100), nullable=False)
-    age = db.Column(db.Integer, nullable=False)
+    age = db.Column(db.Integer, nullable=False)  # manual entry, or last age computed from birthdate
+    birthdate = db.Column(db.Date, nullable=True)
     sex = db.Column(db.String(20), nullable=False)
     fitness_level = db.Column(db.String(20), nullable=False)
     goals = db.Column(db.Text, nullable=False)
@@ -38,6 +46,13 @@ class UserProfile(db.Model):
     current_streak = db.Column(db.Integer, default=0)
     longest_streak = db.Column(db.Integer, default=0)
     last_workout_date = db.Column(db.Date, nullable=True)
+
+    @property
+    def current_age(self):
+        """Age from birthdate when set, otherwise the manually entered age."""
+        if self.birthdate:
+            return calculate_age(self.birthdate)
+        return self.age
 
 
 class WorkoutPlan(db.Model):
