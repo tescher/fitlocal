@@ -170,8 +170,11 @@ with app.app_context():
 
     db.create_all()
 
+    # migrate.py works on a SQLite file; run it against the configured database only.
     from migrate import migrate as _run_migrations
-    _run_migrations()
+    db_url = db.engine.url
+    if db_url.get_backend_name() == "sqlite" and db_url.database not in (None, "", ":memory:"):
+        _run_migrations(db_url.database)
 
     # One-time migration: link an existing UserProfile to a new Account
     # so legacy data is not lost when auth is first enabled.

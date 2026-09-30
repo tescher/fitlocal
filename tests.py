@@ -15,6 +15,9 @@ from werkzeug.datastructures import MultiDict
 
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
 os.environ.setdefault("SECRET_KEY", "test-secret-key")
+# Must be set before importing app: its startup code creates tables and runs
+# migrations against DATABASE_URL, which otherwise defaults to instance/fitlocal.db.
+os.environ["DATABASE_URL"] = "sqlite:///:memory:"
 
 import app as flask_app
 from models import (
