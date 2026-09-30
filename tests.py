@@ -1530,6 +1530,66 @@ class TestReviewRange:
 
 
 # ---------------------------------------------------------------------------
+# Stored UTC timestamps are shown in the viewer's local time
+# ---------------------------------------------------------------------------
+
+class TestLocalTimes:
+    """created_at columns hold naive UTC. Templates emit them via the local_time
+    filter as <time datetime="...Z">, which base.html converts in the browser."""
+
+    def test_filter_marks_naive_datetime_as_utc(self, application):
+        from datetime import datetime
+        out = str(flask_app.local_time(datetime(2026, 9, 30, 0, 23), "datetime"))
+        assert 'class="local-time"' in out
+        assert 'datetime="2026-09-30T00:23:00Z"' in out
+        assert 'data-format="datetime"' in out
+        assert "September 30, 2026 at 12:23 AM UTC" in out  # no-JS fallback
+
+    def test_filter_accepts_aware_utc_datetime(self, application):
+        from datetime import datetime, timezone
+        out = str(flask_app.local_time(datetime(2026, 9, 30, 0, 23, tzinfo=timezone.utc), "date"))
+        assert 'datetime="2026-09-30T00:23:00Z"' in out
+        assert 'data-format="date"' in out
+        assert "Sep 30, 2026" in out
+
+    def test_filter_handles_none(self, application):
+        assert str(flask_app.local_time(None)) == ""
+
+    def test_base_template_converts_local_times(self, client, profile):
+        html = client.get("/review").data.decode()
+        assert "document.querySelectorAll('time.local-time')" in html
+
+    def _add_review(self, application, profile):
+        from datetime import datetime
+        with application.app_context():
+            db.session.add(AIReview(user_id=profile, review_text="x",
+                                    suggestions_json=json.dumps(_MOCK_REVIEW),
+                                    data_summary=json.dumps({"sessions_count": 1, "range": "plan"}),
+                                    created_at=datetime(2026, 9, 30, 0, 23)))
+            db.session.commit()
+
+    def test_review_page_last_review_time_is_local(self, client, application, profile):
+        self._add_review(application, profile)
+        html = client.get("/review").data.decode()
+        assert '<time class="local-time" datetime="2026-09-30T00:23:00Z" data-format="datetime">' in html
+
+    def test_generate_plan_last_review_date_is_local(self, client, application, profile):
+        self._add_review(application, profile)
+        html = client.get("/generate-plan").data.decode()
+        assert '<time class="local-time" datetime="2026-09-30T00:23:00Z" data-format="date">' in html
+
+    def test_plan_history_created_at_fallback_is_local(self, client, application, profile):
+        from datetime import datetime
+        with application.app_context():
+            db.session.add(WorkoutPlan(user_id=profile, name="Old", description="", days_per_week=3,
+                                       plan_json="{}", status="inactive", total_weeks=12,
+                                       start_date=None, created_at=datetime(2026, 9, 30, 0, 23)))
+            db.session.commit()
+        html = client.get("/plan/history").data.decode()
+        assert '<time class="local-time" datetime="2026-09-30T00:23:00Z" data-format="date">' in html
+
+
+# ---------------------------------------------------------------------------
 # Export
 # ---------------------------------------------------------------------------
 
