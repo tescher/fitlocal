@@ -95,7 +95,7 @@
                         Include prior plan review
                     </label>
                     <p class="text-muted" style="font-size:0.75rem; margin:0.2rem 0 0 1.4rem;">
-                        Last review: {{ latest_review.created_at.strftime('%b %d, %Y') }}
+                        Last review: {{ latest_review.created_at | local_time('date') }}
                     </p>
                 </div>
                 {% endif %}
@@ -119,7 +119,7 @@
                 Include prior plan review in new plan context
             </label>
             <p class="text-muted" style="font-size:0.75rem; margin:0.2rem 0 0 1.4rem;">
-                Last review: {{ latest_review.created_at.strftime('%b %d, %Y') }} — helps the AI build on what worked and address what didn't.
+                Last review: {{ latest_review.created_at | local_time('date') }} — helps the AI build on what worked and address what didn't.
             </p>
         </div>
         {% endif %}

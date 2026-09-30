@@ -18,7 +18,7 @@
             </div>
             <div style="text-align: right; flex-shrink: 0; margin-left: 1rem;">
                 <span class="text-muted" style="font-size: 0.85rem;">
-                    Started {{ p.start_date.strftime('%b %d, %Y') if p.start_date else p.created_at.strftime('%b %d, %Y') }}
+                    Started {{ p.start_date.strftime('%b %d, %Y') if p.start_date else p.created_at | local_time('date') }}
                 </span>
                 <form method="POST" action="{{ url_for('reactivate_plan', plan_id=p.id) }}"
                       style="margin-top: 0.5rem;"

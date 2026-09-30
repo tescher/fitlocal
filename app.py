@@ -8,6 +8,7 @@ from datetime import datetime, date, timedelta, timezone
 from dotenv import load_dotenv
 from flask import Flask, render_template, request, redirect, url_for, flash, send_file, jsonify
 from flask_login import login_required, current_user
+from markupsafe import Markup
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 load_dotenv()
@@ -198,6 +199,26 @@ def redirect_unclaimed_account():
     unclaimed = Account.query.filter_by(email_claimed=False).first()
     if unclaimed:
         return redirect(url_for("auth.claim_account"))
+
+
+_LOCAL_TIME_FALLBACK_FORMATS = {
+    "datetime": "%B %d, %Y at %I:%M %p UTC",
+    "date": "%b %d, %Y",
+}
+
+
+@app.template_filter("local_time")
+def local_time(dt, fmt="datetime"):
+    """Render a stored UTC datetime as <time> for base.html to show in the viewer's
+    local timezone. created_at-style columns hold naive UTC; the text inside is the
+    UTC fallback if JavaScript doesn't run. fmt is "datetime" or "date"."""
+    if dt is None:
+        return Markup("")
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return Markup('<time class="local-time" datetime="{}Z" data-format="{}">{}</time>').format(
+        dt.isoformat(timespec="seconds"), fmt, dt.strftime(_LOCAL_TIME_FALLBACK_FORMATS[fmt])
+    )
 
 
 DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]

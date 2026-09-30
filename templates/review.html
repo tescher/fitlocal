@@ -6,7 +6,7 @@
 {% if last_review %}
 <div class="card mb-2">
     <p class="text-muted mb-2">
-        Last review: {{ last_review.created_at.strftime('%B %d, %Y at %I:%M %p') }}
+        Last review: {{ last_review.created_at | local_time }}
         {% if last_review_coverage %}<br>Covered: {{ last_review_coverage }}{% endif %}
     </p>
 
