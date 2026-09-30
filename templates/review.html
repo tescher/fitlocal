@@ -5,7 +5,10 @@
 
 {% if last_review %}
 <div class="card mb-2">
-    <p class="text-muted mb-2">Last review: {{ last_review.created_at.strftime('%B %d, %Y at %I:%M %p') }}</p>
+    <p class="text-muted mb-2">
+        Last review: {{ last_review.created_at | local_time }}
+        {% if last_review_coverage %}<br>Covered: {{ last_review_coverage }}{% endif %}
+    </p>
 
     {% if review_data %}
         <div class="review-section">
@@ -41,20 +44,49 @@
 </div>
 {% endif %}
 
-<div class="card mb-2" style="padding: 0.75rem 1rem;">
+{% with overlay_title="Reviewing Your Progress",
+         overlay_message="Analyzing your sessions with AI — this usually takes about a minute." %}
+    {% include "_loading_overlay.html" %}
+{% endwith %}
+
+<form method="POST" action="{{ url_for('generate_review') }}" onsubmit="showLoading(this)" class="card mb-2">
     {% if active_plan %}
-        <p class="text-muted" style="margin: 0;">
-            Review will cover <strong>{{ active_plan_session_count }} session{{ 's' if active_plan_session_count != 1 else '' }}</strong>
-            from your current plan: <strong>{{ active_plan.name }}</strong>.
+        {% set selected = range_options | selectattr("key", "equalto", default_range) | first %}
+        <div class="form-group">
+            <label for="review_range">Review sessions from</label>
+            <select id="review_range" name="range">
+                {% for opt in range_options %}
+                <option value="{{ opt.key }}" data-count="{{ opt.count }}"{% if opt.key == default_range %} selected{% endif %}>
+                    {{ opt.label }} ({{ opt.count }} session{{ 's' if opt.count != 1 else '' }})
+                </option>
+                {% endfor %}
+            </select>
+        </div>
+        <p class="text-muted mb-2">
+            Review will cover <strong id="reviewSessionCount">{{ selected.count }} session{{ 's' if selected.count != 1 else '' }}</strong>.
+            Your current plan is <strong>{{ active_plan.name }}</strong>; the 1-month and 3-month ranges also include sessions from earlier plans.
         </p>
     {% else %}
-        <p class="text-muted" style="margin: 0;">No active plan. Generate a plan first to enable reviews.</p>
+        <p class="text-muted mb-2">No active plan. Generate a plan first to enable reviews.</p>
     {% endif %}
-</div>
 
-<form method="POST" action="{{ url_for('generate_review') }}">
-    <button type="submit" class="btn btn-primary"{% if not active_plan or active_plan_session_count == 0 %} disabled{% endif %}>
+    <button type="submit" id="generateReviewBtn" class="btn btn-primary"{% if not active_plan or selected.count == 0 %} disabled{% endif %}>
         Generate New Review
     </button>
 </form>
+
+{% if active_plan %}
+<script>
+(function() {
+    var select = document.getElementById('review_range');
+    var countEl = document.getElementById('reviewSessionCount');
+    var btn = document.getElementById('generateReviewBtn');
+    select.addEventListener('change', function() {
+        var count = parseInt(select.options[select.selectedIndex].dataset.count, 10);
+        countEl.textContent = count + ' session' + (count === 1 ? '' : 's');
+        btn.disabled = count === 0;
+    });
+})();
+</script>
+{% endif %}
 {% endblock %}

@@ -57,6 +57,19 @@
       }
     });
   });
+
+  // Show stored UTC timestamps (rendered by the local_time filter) in the viewer's timezone
+  document.querySelectorAll('time.local-time').forEach(function (el) {
+    var d = new Date(el.getAttribute('datetime'));
+    if (isNaN(d)) return;
+    var date = d.toLocaleDateString('en-US', el.dataset.format === 'date'
+      ? { month: 'short', day: 'numeric', year: 'numeric' }
+      : { month: 'long', day: 'numeric', year: 'numeric' });
+    el.textContent = el.dataset.format === 'date'
+      ? date
+      : date + ' at ' + d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+    el.title = d.toString();
+  });
 </script>
 </body>
 </html>
