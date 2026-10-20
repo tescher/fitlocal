@@ -260,11 +260,26 @@ def _setup_form(**overrides):
     return data
 
 
-def _mock_ai_client(response_json):
-    """Mock Anthropic client whose messages.create returns response_json as text."""
+def _mock_ai_message(text, stop_reason="end_turn", thinking_first=False):
+    """A fake Messages API response: optional empty thinking block, then text."""
+    blocks = []
+    if thinking_first:
+        blocks.append(MagicMock(type="thinking", thinking=""))
+    blocks.append(MagicMock(type="text", text=text))
+    return MagicMock(content=blocks, stop_reason=stop_reason)
+
+
+def _mock_ai_client(response_json, **message_kwargs):
+    """Mock Anthropic client whose beta.messages.stream returns response_json as text."""
     client = MagicMock()
-    client.messages.create.return_value.content = [MagicMock(text=json.dumps(response_json))]
+    stream = client.beta.messages.stream.return_value.__enter__.return_value
+    stream.get_final_message.return_value = _mock_ai_message(json.dumps(response_json), **message_kwargs)
     return client
+
+
+def _ai_call_kwargs(mock_client):
+    """Keyword arguments of the last Claude request made through the mock client."""
+    return mock_client.beta.messages.stream.call_args.kwargs
 
 
 class TestBirthdate:
@@ -368,7 +383,7 @@ class TestBirthdate:
             mock_client = _mock_ai_client({"plan_name": "X", "workouts": []})
             with patch("ai.get_client", return_value=mock_client):
                 ai.generate_workout_plan(p)
-        prompt = mock_client.messages.create.call_args.kwargs["messages"][0]["content"]
+        prompt = _ai_call_kwargs(mock_client)["messages"][0]["content"]
         assert "Age: 40," in prompt
 
     def test_review_prompt_uses_computed_age(self, application, profile):
@@ -380,7 +395,7 @@ class TestBirthdate:
                                            "suggestions": [], "overall_assessment": ""})
             with patch("ai.get_client", return_value=mock_client):
                 ai.generate_progress_review(p, [], plan_name="Plan")
-        prompt = mock_client.messages.create.call_args.kwargs["messages"][0]["content"]
+        prompt = _ai_call_kwargs(mock_client)["messages"][0]["content"]
         assert "Age: 40," in prompt
 
 
@@ -1505,7 +1520,7 @@ class TestReviewRange:
             with patch("ai.get_client", return_value=mock_client):
                 ai.generate_progress_review(p, [{}, {}], plan_name="Test Plan",
                                             range_label="the last 3 months")
-        prompt = mock_client.messages.create.call_args.kwargs["messages"][0]["content"]
+        prompt = _ai_call_kwargs(mock_client)["messages"][0]["content"]
         assert "2 completed sessions from the last 3 months" in prompt
         assert 'current plan is "Test Plan"' in prompt
 
@@ -1516,7 +1531,7 @@ class TestReviewRange:
             mock_client = _mock_ai_client(_MOCK_REVIEW)
             with patch("ai.get_client", return_value=mock_client):
                 ai.generate_progress_review(p, [{}, {}], plan_name="Test Plan")
-        prompt = mock_client.messages.create.call_args.kwargs["messages"][0]["content"]
+        prompt = _ai_call_kwargs(mock_client)["messages"][0]["content"]
         assert 'all 2 completed sessions from their "Test Plan" plan' in prompt
 
     def test_review_page_has_progress_overlay(self, client, range_sessions):
@@ -1530,6 +1545,82 @@ class TestReviewRange:
         assert 'id="loadingOverlay"' in html
         assert "Building Your Plan" in html
         assert 'onsubmit="showLoading(this)"' in html
+
+
+# ---------------------------------------------------------------------------
+# Claude models: Opus 5.5 with streaming, effort, and refusal fallbacks
+# ---------------------------------------------------------------------------
+
+_MOCK_PLAN = {"plan_name": "X", "workouts": []}
+
+
+class TestClaudeModels:
+    def _generate_plan(self, application, profile, mock_client):
+        import ai
+        with application.app_context():
+            p = UserProfile.query.get(profile)
+            with patch("ai.get_client", return_value=mock_client):
+                return ai.generate_workout_plan(p)
+
+    def _generate_review(self, application, profile, mock_client):
+        import ai
+        with application.app_context():
+            p = UserProfile.query.get(profile)
+            with patch("ai.get_client", return_value=mock_client):
+                return ai.generate_progress_review(p, [], plan_name="Plan")
+
+    def test_model_constants_are_opus_5_5(self):
+        import ai
+        assert ai.MODEL_PLAN == "claude-opus-5-5"
+        assert ai.MODEL_REVIEW == "claude-opus-5-5"
+
+    def test_plan_generation_request(self, application, profile):
+        mock_client = _mock_ai_client(_MOCK_PLAN)
+        self._generate_plan(application, profile, mock_client)
+        kwargs = _ai_call_kwargs(mock_client)
+        assert kwargs["model"] == "claude-opus-5-5"
+        assert kwargs["output_config"] == {"effort": "high"}
+        assert kwargs["max_tokens"] >= 64000  # thinking counts toward max_tokens
+        assert kwargs["fallbacks"] == "default"
+        assert "server-side-fallback-2026-07-01" in kwargs["betas"]
+
+    def test_review_request(self, application, profile):
+        mock_client = _mock_ai_client(_MOCK_REVIEW)
+        self._generate_review(application, profile, mock_client)
+        kwargs = _ai_call_kwargs(mock_client)
+        assert kwargs["model"] == "claude-opus-5-5"
+        assert kwargs["output_config"] == {"effort": "high"}
+        assert kwargs["max_tokens"] >= 16000
+        assert kwargs["fallbacks"] == "default"
+        assert "server-side-fallback-2026-07-01" in kwargs["betas"]
+
+    def test_requests_send_no_sampling_parameters(self, application, profile):
+        # Opus 5.5 rejects temperature/top_p/top_k with a 400.
+        mock_client = _mock_ai_client(_MOCK_PLAN)
+        self._generate_plan(application, profile, mock_client)
+        kwargs = _ai_call_kwargs(mock_client)
+        assert not {"temperature", "top_p", "top_k", "thinking"} & kwargs.keys()
+
+    def test_plan_reads_text_after_thinking_block(self, application, profile):
+        mock_client = _mock_ai_client(_MOCK_PLAN, thinking_first=True)
+        assert self._generate_plan(application, profile, mock_client)["plan_name"] == "X"
+
+    def test_review_reads_text_after_thinking_block(self, application, profile):
+        mock_client = _mock_ai_client(_MOCK_REVIEW, thinking_first=True)
+        assert self._generate_review(application, profile, mock_client) == _MOCK_REVIEW
+
+    def test_refusal_raises_clear_error(self, application, profile):
+        import ai
+        mock_client = _mock_ai_client(_MOCK_PLAN, stop_reason="refusal")
+        with pytest.raises(ai.AIRefusalError, match="declined"):
+            self._generate_plan(application, profile, mock_client)
+
+    def test_plan_route_flashes_refusal(self, client, profile):
+        mock_client = _mock_ai_client(_MOCK_PLAN, stop_reason="refusal")
+        with patch("ai.get_client", return_value=mock_client):
+            r = client.post("/generate-plan/generate", follow_redirects=True)
+        assert "declined" in r.data.decode()
+        assert "Plan generated" not in r.data.decode()
 
 
 # ---------------------------------------------------------------------------
