@@ -3,9 +3,43 @@ import os
 import re
 import anthropic
 
+MODEL_PLAN = "claude-opus-5-5"
+MODEL_REVIEW = "claude-opus-5-5"
+
+# Server-side refusal fallback: if a safety classifier declines a request, the
+# API re-runs it on Anthropic's recommended fallback model in the same call.
+FALLBACK_BETA = "server-side-fallback-2026-07-01"
+
+
+class AIRefusalError(Exception):
+    """Claude declined the request (stop_reason "refusal")."""
+
 
 def get_client():
     return anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+
+
+def _ask_claude(model, prompt, max_tokens, effort):
+    """Send a single-prompt request and return the reply text.
+
+    Streams so long replies don't hit HTTP timeouts. Thinking is always on for
+    Opus 5.5, so max_tokens covers thinking plus the reply, and the reply text
+    is read from the text blocks rather than content[0].
+    """
+    client = get_client()
+    with client.beta.messages.stream(
+        model=model,
+        max_tokens=max_tokens,
+        output_config={"effort": effort},
+        betas=[FALLBACK_BETA],
+        fallbacks="default",
+        messages=[{"role": "user", "content": prompt}],
+    ) as stream:
+        message = stream.get_final_message()
+
+    if message.stop_reason == "refusal":
+        raise AIRefusalError("Claude declined this request. Try rewording your goals or notes.")
+    return "".join(block.text for block in message.content if block.type == "text")
 
 
 def _extract_json(text):
@@ -33,8 +67,6 @@ def _extract_json(text):
 
 
 def generate_workout_plan(profile, fitness_test=None, prior_review=None, extra_context=None):
-    client = get_client()
-
     fitness_test_section = ""
     if fitness_test:
         fitness_test_section = f"""
@@ -122,20 +154,12 @@ Return a JSON object with this structure:
 
 Return only valid JSON, no commentary."""
 
-    message = client.messages.create(
-        model="claude-opus-4-6",
-        max_tokens=32000,
-        messages=[{"role": "user", "content": prompt}],
-    )
-
-    return _extract_json(message.content[0].text)
+    return _extract_json(_ask_claude(MODEL_PLAN, prompt, max_tokens=64000, effort="high"))
 
 
 def generate_progress_review(profile, sessions_data, plan_name=None, range_label=None):
     """range_label (e.g. "the last 3 months") reviews a time window that may span
     several plans; without it, the sessions are all from the current plan."""
-    client = get_client()
-
     plan_label = f'"{plan_name}"' if plan_name else "their current"
     if range_label:
         sessions_label = (
@@ -170,10 +194,4 @@ Return your review as JSON with these keys:
 
 Return only valid JSON, no commentary."""
 
-    message = client.messages.create(
-        model="claude-opus-4-6",
-        max_tokens=4096,
-        messages=[{"role": "user", "content": prompt}],
-    )
-
-    return _extract_json(message.content[0].text)
+    return _extract_json(_ask_claude(MODEL_REVIEW, prompt, max_tokens=16000, effort="high"))

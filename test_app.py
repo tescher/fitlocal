@@ -2239,15 +2239,16 @@ _stub_plan = json.dumps({
 })
 try:
     with _mock.patch("ai.get_client") as _mock_client:
-        _msg = _mock.MagicMock()
-        _msg.content = [_mock.MagicMock(text=_stub_plan)]
-        _mock_client.return_value.messages.create.return_value = _msg
+        _msg = _mock.MagicMock(stop_reason="end_turn")
+        _msg.content = [_mock.MagicMock(type="text", text=_stub_plan)]
+        _stream = _mock_client.return_value.beta.messages.stream.return_value.__enter__.return_value
+        _stream.get_final_message.return_value = _msg
         with app.app_context():
             from ai import generate_workout_plan
             _profile = UserProfile.query.first()
             _extra = "Add more variety, I was getting bored at the end of the last 12 weeks"
             generate_workout_plan(_profile, extra_context=_extra)
-            _call = _mock_client.return_value.messages.create.call_args
+            _call = _mock_client.return_value.beta.messages.stream.call_args
             _prompt = _call.kwargs["messages"][0]["content"]
             check("extra_context text appears in plan generation prompt", _extra in _prompt)
 except Exception as _e:
