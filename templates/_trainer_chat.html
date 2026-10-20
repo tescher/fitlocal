@@ -1,0 +1,190 @@
+<!-- Trainer chat panel (included by workout_today.html). Needs chat_key, chat_messages,
+     chat_usage and workout in the context, and a #workoutForm on the page. -->
+<button type="button" id="coachFab" class="coach-fab" onclick="toggleCoach(true)"
+        aria-controls="coachPanel" aria-expanded="false">&#128172; Coach</button>
+
+<div id="coachPanel" class="coach-panel" role="dialog" aria-label="Trainer chat" hidden>
+    <div class="coach-header">
+        <strong>Trainer</strong>
+        <div id="coachMeter" class="coach-meter" title="Estimated Claude cost for this workout, against your budget (set it in Settings)">
+            <div class="coach-meter-bar"><div class="coach-meter-fill" id="coachMeterFill"></div></div>
+            <span id="coachMeterText" class="coach-meter-text"></span>
+        </div>
+        <button type="button" class="coach-close" onclick="toggleCoach(false)" aria-label="Close trainer chat">&times;</button>
+    </div>
+
+    <div id="coachMessages" class="coach-messages" aria-live="polite">
+        {% if not chat_messages %}
+        <p class="coach-empty" id="coachEmpty">Ask about weights, form, rest, or how today is going. Your trainer sees what you've logged so far.</p>
+        {% endif %}
+        {% for m in chat_messages %}
+        <div class="coach-msg coach-msg-{{ m.role }}">{{ m.content }}</div>
+        {% endfor %}
+    </div>
+
+    <div class="coach-quick">
+        {% for text in ["This feels too heavy", "This feels too easy", "Something hurts", "Can I swap this exercise?", "How am I doing?"] %}
+        <button type="button" class="coach-chip" data-text="{{ text }}" onclick="sendCoachMessage(this.dataset.text)">{{ text }}</button>
+        {% endfor %}
+    </div>
+
+    <div id="coachError" class="coach-error" hidden></div>
+
+    <div class="coach-input-row">
+        <textarea id="coachInput" rows="2" maxlength="2000" placeholder="Message your trainer&hellip;" aria-label="Message your trainer"></textarea>
+        <button type="button" id="coachSend" class="btn btn-primary" onclick="sendCoachMessage()">Send</button>
+    </div>
+</div>
+
+<script>
+// --- In-workout trainer chat ---
+const COACH = {
+    key: {{ chat_key | tojson }},
+    plannedWorkoutId: {{ workout.id | tojson }},
+    url: {{ url_for('api_workout_chat') | tojson }},
+    busy: false,
+};
+
+function toggleCoach(open) {
+    const panel = document.getElementById('coachPanel');
+    const fab = document.getElementById('coachFab');
+    panel.hidden = !open;
+    fab.hidden = open;
+    fab.setAttribute('aria-expanded', String(open));
+    if (open) {
+        scrollCoachToEnd();
+        document.getElementById('coachInput').focus();
+    }
+}
+
+function scrollCoachToEnd() {
+    const list = document.getElementById('coachMessages');
+    list.scrollTop = list.scrollHeight;
+}
+
+function addCoachMessage(role, text) {
+    const empty = document.getElementById('coachEmpty');
+    if (empty) empty.remove();
+    const div = document.createElement('div');
+    div.className = 'coach-msg coach-msg-' + role;
+    div.textContent = text;
+    document.getElementById('coachMessages').appendChild(div);
+    scrollCoachToEnd();
+    return div;
+}
+
+function formatCoachCost(cost) {
+    if (cost > 0 && cost < 0.01) return '<$0.01';
+    return '$' + cost.toFixed(2);
+}
+
+function renderCoachMeter(usage) {
+    const meter = document.getElementById('coachMeter');
+    const ratio = usage.budget > 0 ? usage.cost / usage.budget : 0;
+    document.getElementById('coachMeterFill').style.width = (Math.min(ratio, 1) * 100) + '%';
+    meter.classList.toggle('coach-meter-warn', ratio >= 0.75 && ratio < 1);
+    meter.classList.toggle('coach-meter-over', ratio >= 1);
+    let text = usage.messages + (usage.messages === 1 ? ' message' : ' messages') + ' · '
+        + formatCoachCost(usage.cost) + ' of ' + formatCoachCost(usage.budget);
+    if (ratio >= 1) text += ' — over budget';
+    document.getElementById('coachMeterText').textContent = text;
+}
+
+// What the trainer sees: every set row on the page, plus the timers.
+function coachSnapshot() {
+    const exercises = [];
+    document.querySelectorAll('#workoutForm .exercise-block').forEach(function(block) {
+        const sets = [];
+        block.querySelectorAll('tbody tr').forEach(function(row) {
+            if (!row.querySelector('input[name="exercise_name"]')) return;  // "last time" rows
+            const val = function(name) {
+                const el = row.querySelector('[name="' + name + '"]');
+                return el ? el.value : '';
+            };
+            sets.push({
+                weight: val('weight'), reps: val('reps'),
+                weight_b: val('weight_b'), reps_b: val('reps_b'),
+                rpe: val('rpe'), notes: val('set_notes'),
+            });
+        });
+        exercises.push({ name: block.dataset.exerciseName, sets: sets });
+    });
+    return {
+        elapsed_seconds: typeof sessionStart !== 'undefined' ? Math.floor((Date.now() - sessionStart) / 1000) : null,
+        rest_remaining: typeof restInterval !== 'undefined' && restInterval ? restRemaining : 0,
+        exercises: exercises,
+    };
+}
+
+function showCoachError(message) {
+    const el = document.getElementById('coachError');
+    el.textContent = message;
+    el.hidden = !message;
+}
+
+function setCoachBusy(busy) {
+    COACH.busy = busy;
+    document.getElementById('coachSend').disabled = busy;
+    document.querySelectorAll('.coach-chip').forEach(function(b) { b.disabled = busy; });
+}
+
+async function sendCoachMessage(preset) {
+    if (COACH.busy) return;
+    const input = document.getElementById('coachInput');
+    const text = (preset || input.value).trim();
+    if (!text) return;
+
+    setCoachBusy(true);
+    showCoachError('');
+    const userMsg = addCoachMessage('user', text);
+    if (!preset) input.value = '';
+    const typing = addCoachMessage('typing', 'Coach is typing…');
+
+    let data = {};
+    let ok = false;
+    try {
+        const res = await fetch(COACH.url, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': document.querySelector('meta[name="csrf-token"]').content,
+            },
+            body: JSON.stringify({
+                chat_key: COACH.key,
+                planned_workout_id: COACH.plannedWorkoutId,
+                message: text,
+                snapshot: coachSnapshot(),
+            }),
+        });
+        try { data = await res.json(); } catch (e) { data = {}; }
+        ok = res.ok && typeof data.reply === 'string';
+        if (!ok && !data.error) {
+            data.error = res.ok ? 'Your login may have expired. Save & Pause, then log in again.'
+                                : 'Something went wrong. Try again.';
+        }
+    } catch (err) {
+        data = { error: 'Could not reach FitLocal. Check the connection and try again.' };
+    }
+
+    typing.remove();
+    if (ok) {
+        addCoachMessage('assistant', data.reply);
+    } else {
+        // The server saves nothing on failure, so take the message back.
+        userMsg.remove();
+        input.value = text;
+        showCoachError(data.error);
+    }
+    if (data.usage) renderCoachMeter(data.usage);
+    setCoachBusy(false);
+}
+
+document.getElementById('coachInput').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendCoachMessage();
+    }
+});
+
+renderCoachMeter({{ chat_usage | tojson }});
+</script>

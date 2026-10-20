@@ -2,6 +2,8 @@ import csv
 import io
 import json
 import os
+import re
+import uuid
 import calendar as cal_module
 from datetime import datetime, date, timedelta, timezone
 
@@ -41,7 +43,7 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 from models import (  # noqa: E402
     db, Account, UserProfile, WorkoutPlan, PlannedWorkout, PlannedExercise,
     WorkoutSession, LoggedSet, AIReview, FitnessTest, TrainingPhase, ExerciseLibrary,
-    NextWorkoutNote, calculate_age,
+    NextWorkoutNote, TrainerChatMessage, AIUsage, calculate_age,
 )
 from extensions import login_manager, bcrypt, csrf, limiter, oauth_client  # noqa: E402
 
@@ -103,6 +105,11 @@ with app.app_context():
             if "birthdate" not in cols:
                 conn.execute(text("ALTER TABLE user_profile ADD COLUMN birthdate DATE"))
                 conn.commit()
+            if "ai_budget_per_workout" not in cols:
+                conn.execute(text(
+                    "ALTER TABLE user_profile ADD COLUMN ai_budget_per_workout FLOAT DEFAULT 1.0"
+                ))
+                conn.commit()
 
         # Add status column to workout_plan if it doesn't exist, backfilling from is_active + notes
         if insp.has_table("workout_plan"):
@@ -142,6 +149,9 @@ with app.app_context():
                 conn.execute(text(
                     "ALTER TABLE workout_session ADD COLUMN phase_name VARCHAR(100)"
                 ))
+                conn.commit()
+            if "chat_key" not in ws_cols:
+                conn.execute(text("ALTER TABLE workout_session ADD COLUMN chat_key VARCHAR(32)"))
                 conn.commit()
 
         # Add order_index and is_superset_default to planned_exercise if missing
@@ -234,6 +244,132 @@ def get_profile():
     if not current_user.is_authenticated:
         return None
     return UserProfile.query.filter_by(account_id=current_user.id).first()
+
+
+# ---------------------------------------------------------------------------
+# AI usage tracking and the in-workout trainer chat
+# ---------------------------------------------------------------------------
+
+DEFAULT_AI_BUDGET = 1.0
+AI_BUDGET_RANGE = (0.05, 50.0)
+AI_FEATURE_LABELS = {"chat": "Trainer chat", "plan": "Plan generation", "review": "Progress reviews"}
+
+CHAT_KEY_RE = re.compile(r"[0-9a-f]{32}")
+CHAT_MESSAGE_MAX_CHARS = 2000
+CHAT_HISTORY_MAX_MESSAGES = 40  # even, so the replayed history starts on a user turn
+
+
+def record_ai_usage(profile_id, feature, chat_key=None):
+    """Return an on_usage callback for ai.* calls that saves tokens and cost.
+
+    Commits right away: the tokens were spent even if the caller later fails.
+    """
+    def _record(model, usage):
+        from ai import estimate_cost
+        db.session.add(AIUsage(
+            user_id=profile_id,
+            feature=feature,
+            model=model,
+            input_tokens=usage.input_tokens or 0,
+            output_tokens=usage.output_tokens or 0,
+            cache_read_tokens=usage.cache_read_input_tokens or 0,
+            cache_write_tokens=usage.cache_creation_input_tokens or 0,
+            cost_usd=estimate_cost(model, usage),
+            chat_key=chat_key,
+        ))
+        db.session.commit()
+    return _record
+
+
+def _chat_messages(profile_id, chat_key):
+    return (TrainerChatMessage.query
+            .filter_by(user_id=profile_id, chat_key=chat_key)
+            .order_by(TrainerChatMessage.id).all())
+
+
+def _chat_usage_summary(profile, chat_key):
+    """Data for the chat panel's usage meter: this workout's spend vs budget."""
+    cost = (db.session.query(db.func.coalesce(db.func.sum(AIUsage.cost_usd), 0.0))
+            .filter(AIUsage.user_id == profile.id, AIUsage.chat_key == chat_key).scalar())
+    messages = TrainerChatMessage.query.filter_by(
+        user_id=profile.id, chat_key=chat_key, role="user").count()
+    return {
+        "messages": messages,
+        "cost": round(cost, 4),
+        "budget": profile.ai_budget_per_workout or DEFAULT_AI_BUDGET,
+    }
+
+
+def _monthly_ai_usage(profile):
+    """This calendar month's (UTC) AI spend, total and per feature."""
+    month_start = datetime.now(timezone.utc).replace(
+        tzinfo=None, day=1, hour=0, minute=0, second=0, microsecond=0)
+    rows = (db.session.query(AIUsage.feature, db.func.count(AIUsage.id), db.func.sum(AIUsage.cost_usd))
+            .filter(AIUsage.user_id == profile.id, AIUsage.created_at >= month_start)
+            .group_by(AIUsage.feature).all())
+    features = [
+        {"label": AI_FEATURE_LABELS.get(feature, feature), "requests": count, "cost": cost or 0.0}
+        for feature, count, cost in sorted(rows, key=lambda r: -(r[2] or 0))
+    ]
+    return {"since": month_start.date(), "total": sum(f["cost"] for f in features), "features": features}
+
+
+def _format_recent_performance(recent):
+    """'Oct 17: 135 lbs x 10, 135 lbs x 9 @RPE 8; ...' for the trainer prompt."""
+    sessions = []
+    for sess in recent:
+        sets = []
+        for set_number in sorted(sess["sets"]):
+            s = sess["sets"][set_number]
+            text = (f"{s['weight']:g} lbs x {s['reps'] or 0}" if s["weight"]
+                    else f"bodyweight x {s['reps'] or 0}")
+            if s["rpe"]:
+                text += f" @RPE {s['rpe']}"
+            sets.append(text)
+        sessions.append(f"{sess['date'].strftime('%b %d')}: " + ", ".join(sets))
+    return "; ".join(sessions)
+
+
+def _latest_review_suggestions(profile_id, max_chars=1500):
+    latest = AIReview.query.filter_by(user_id=profile_id).order_by(AIReview.created_at.desc()).first()
+    if not latest or not latest.suggestions_json:
+        return ""
+    try:
+        suggestions = json.loads(latest.suggestions_json).get("suggestions") or []
+    except (ValueError, AttributeError):
+        return ""
+    if not isinstance(suggestions, list):
+        suggestions = [suggestions]
+    text = "; ".join(s if isinstance(s, str) else json.dumps(s) for s in suggestions)
+    return text[:max_chars]
+
+
+def build_trainer_context(profile, planned_workout):
+    """The parts of the trainer chat prompt that stay fixed for a workout."""
+    exercises = (PlannedExercise.query.filter_by(planned_workout_id=planned_workout.id)
+                 .order_by(PlannedExercise.order_index).all())
+    return {
+        "plan_name": planned_workout.plan.name if planned_workout.plan else None,
+        "workout_name": planned_workout.workout_name,
+        "exercises": [{
+            "name": ex.exercise_name,
+            "sets": ex.sets_prescribed,
+            "reps": ex.reps_prescribed,
+            "rest_seconds": ex.rest_seconds,
+            "notes": ex.notes,
+            "recent": _format_recent_performance(
+                get_recent_performance(profile.id, ex.exercise_name, limit=2)),
+        } for ex in exercises],
+        "review_suggestions": _latest_review_suggestions(profile.id),
+    }
+
+
+def _chat_api_message(chat_message):
+    """A stored chat turn in Messages API form. User turns are rebuilt exactly
+    as first sent (status block + text) so history replays unchanged."""
+    if chat_message.role == "user" and chat_message.context:
+        return {"role": "user", "content": f"{chat_message.context}\n\n{chat_message.content}"}
+    return {"role": chat_message.role, "content": chat_message.content}
 
 
 def get_active_plan(user_id):
@@ -1021,7 +1157,9 @@ def generate_plan_api():
 
     from ai import generate_workout_plan
     try:
-        plan_data = generate_workout_plan(profile, fitness_test=fitness_test, prior_review=prior_review, extra_context=extra_context)
+        plan_data = generate_workout_plan(profile, fitness_test=fitness_test, prior_review=prior_review,
+                                          extra_context=extra_context,
+                                          on_usage=record_ai_usage(profile.id, "plan"))
 
         # Remove any old pending plans
         WorkoutPlan.query.filter_by(user_id=profile.id, status="pending").delete()
@@ -1319,6 +1457,9 @@ def _upsert_workout_session(profile, status):
     resume_session_id = request.form.get("resume_session_id", type=int)
     superset_exercises = json.dumps(request.form.getlist("superset_exercise"))
     phase_name = request.form.get("phase_name") or None
+    chat_key = request.form.get("chat_key", "")
+    if not CHAT_KEY_RE.fullmatch(chat_key):
+        chat_key = None
 
     end_time = datetime.now(timezone.utc)
     start_time = end_time - timedelta(seconds=elapsed_seconds)
@@ -1336,6 +1477,8 @@ def _upsert_workout_session(profile, status):
         workout_session.elapsed_seconds = elapsed_seconds
         workout_session.superset_exercises = superset_exercises
         workout_session.phase_name = phase_name
+        if chat_key:
+            workout_session.chat_key = chat_key
         if planned_workout_id:
             workout_session.planned_workout_id = int(planned_workout_id)
     else:
@@ -1355,9 +1498,13 @@ def _upsert_workout_session(profile, status):
             elapsed_seconds=elapsed_seconds,
             superset_exercises=superset_exercises,
             phase_name=phase_name,
+            chat_key=chat_key,
         )
         db.session.add(workout_session)
     db.session.flush()
+    if chat_key:
+        TrainerChatMessage.query.filter_by(user_id=profile.id, chat_key=chat_key).update(
+            {"session_id": workout_session.id})
     return workout_session
 
 
@@ -1493,7 +1640,14 @@ def _build_workout_context(profile, planned_workout, active_plan, *, resume_sess
         profile.id, planned_workout.workout_name
     )
 
+    # A resumed workout keeps its chat; a new one gets a fresh key.
+    chat_key = (resume_session.chat_key if resume_session and resume_session.chat_key
+                else uuid.uuid4().hex)
+
     return dict(
+        chat_key=chat_key,
+        chat_messages=_chat_messages(profile.id, chat_key),
+        chat_usage=_chat_usage_summary(profile, chat_key),
         workout=planned_workout,
         warmup_exercises=warmup,
         main_exercises=main,
@@ -1650,6 +1804,7 @@ def delete_session(session_id):
     if workout_session.user_id != profile.id:
         return redirect(url_for("history"))
     LoggedSet.query.filter_by(session_id=session_id).delete()
+    TrainerChatMessage.query.filter_by(session_id=session_id).delete()
     db.session.delete(workout_session)
     db.session.commit()
     flash("Workout deleted.", "success")
@@ -1666,11 +1821,16 @@ def session_detail(session_id):
     for s in logged_sets:
         exercises.setdefault(s.exercise_name, []).append(s)
 
+    chat_messages = (TrainerChatMessage.query
+                     .filter_by(session_id=workout_session.id, user_id=workout_session.user_id)
+                     .order_by(TrainerChatMessage.id).all())
+
     return render_template(
         "session_detail.html",
         session_obj=workout_session,
         exercises=exercises,
         exercise_type_map=_exercise_type_map(workout_session),
+        chat_messages=chat_messages,
     )
 
 
@@ -1778,7 +1938,8 @@ def generate_review():
     from ai import generate_progress_review
     try:
         review_result = generate_progress_review(profile, sessions_data, plan_name=active_plan.name,
-                                                 range_label=range_phrase)
+                                                 range_label=range_phrase,
+                                                 on_usage=record_ai_usage(profile.id, "review"))
 
         ai_review = AIReview(
             user_id=profile.id,
@@ -2133,11 +2294,83 @@ def api_exercise_history():
     return jsonify(get_exercise_history(profile.id, exercise_name))
 
 
+@app.route("/api/workout/chat", methods=["POST"])
+@login_required
+@limiter.limit("20 per minute")
+def api_workout_chat():
+    """One turn of the in-workout trainer chat. Expects JSON with chat_key,
+    planned_workout_id, message, and snapshot (the page's logged sets/timers)."""
+    import ai
+
+    profile = get_profile()
+    if not profile:
+        return jsonify({"error": "Set up your profile first."}), 400
+
+    data = request.get_json(silent=True) or {}
+    chat_key = str(data.get("chat_key") or "")
+    message = str(data.get("message") or "").strip()
+    if not CHAT_KEY_RE.fullmatch(chat_key):
+        return jsonify({"error": "Invalid chat key."}), 400
+    if not message or len(message) > CHAT_MESSAGE_MAX_CHARS:
+        return jsonify({"error": f"Messages must be 1 to {CHAT_MESSAGE_MAX_CHARS} characters."}), 400
+    try:
+        planned_workout_id = int(data.get("planned_workout_id"))
+    except (TypeError, ValueError):
+        planned_workout_id = None
+    planned_workout = (_get_planned_workout_for_user(planned_workout_id, profile.id)
+                       if planned_workout_id else None)
+    if planned_workout is None:
+        return jsonify({"error": "Workout not found."}), 404
+
+    context = ai.format_live_snapshot(data.get("snapshot"))
+    history = _chat_messages(profile.id, chat_key)[-CHAT_HISTORY_MAX_MESSAGES:]
+    api_messages = [_chat_api_message(m) for m in history]
+    api_messages.append({"role": "user", "content": f"{context}\n\n{message}"})
+
+    try:
+        reply = ai.chat_with_trainer(
+            profile, build_trainer_context(profile, planned_workout), api_messages,
+            on_usage=record_ai_usage(profile.id, "chat", chat_key))
+    except ai.AIRefusalError as e:
+        return jsonify({"error": str(e), "usage": _chat_usage_summary(profile, chat_key)}), 502
+    except Exception:
+        app.logger.exception("Trainer chat request failed")
+        return jsonify({"error": "The trainer couldn't answer just now. Try again in a moment."}), 502
+    if not reply:
+        return jsonify({"error": "The trainer didn't reply. Try asking again."}), 502
+
+    db.session.add(TrainerChatMessage(user_id=profile.id, chat_key=chat_key, role="user",
+                                      content=message, context=context))
+    db.session.add(TrainerChatMessage(user_id=profile.id, chat_key=chat_key, role="assistant",
+                                      content=reply))
+    db.session.commit()
+    return jsonify({"reply": reply, "usage": _chat_usage_summary(profile, chat_key)})
+
+
 @app.route("/settings")
 @login_required
 def settings():
     profile = get_profile()
-    return render_template("settings.html", profile=profile, account=current_user)
+    ai_usage = _monthly_ai_usage(profile) if profile else None
+    return render_template("settings.html", profile=profile, account=current_user, ai_usage=ai_usage,
+                           ai_budget=(profile.ai_budget_per_workout or DEFAULT_AI_BUDGET) if profile else None)
+
+
+@app.route("/settings/ai-budget", methods=["POST"])
+@login_required
+def update_ai_budget():
+    profile = get_profile()
+    if not profile:
+        return redirect(url_for("setup"))
+    low, high = AI_BUDGET_RANGE
+    budget = request.form.get("budget", type=float)
+    if budget is None or not (low <= budget <= high):
+        flash(f"Budget must be between ${low:.2f} and ${high:.2f}.", "error")
+    else:
+        profile.ai_budget_per_workout = round(budget, 2)
+        db.session.commit()
+        flash("Trainer budget updated.", "success")
+    return redirect(url_for("settings"))
 
 
 @app.route("/settings/export-exercises")

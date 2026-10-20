@@ -58,6 +58,17 @@
 </div>
 {% endfor %}
 
+{% if chat_messages %}
+<div class="card">
+    <h2>Trainer Chat</h2>
+    <div class="coach-transcript">
+        {% for m in chat_messages %}
+        <div class="coach-msg coach-msg-{{ m.role }}">{{ m.content }}</div>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+
 <a href="{{ url_for('history') }}" class="btn btn-secondary">Back to History</a>
 
 {% include "_exercise_history_modal.html" %}

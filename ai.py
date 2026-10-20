@@ -5,10 +5,21 @@ import anthropic
 
 MODEL_PLAN = "claude-opus-5-5"
 MODEL_REVIEW = "claude-opus-5-5"
+MODEL_CHAT = "claude-sonnet-5-5"
 
 # Server-side refusal fallback: if a safety classifier declines a request, the
 # API re-runs it on Anthropic's recommended fallback model in the same call.
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
+
+# USD per million tokens: (input, output, cache read, 5-minute cache write).
+# List prices as of 2026-10; update when Anthropic's pricing page changes.
+PRICES = {
+    "claude-opus-5-5": (4.00, 20.00, 0.20, 5.00),
+    "claude-sonnet-5-5": (2.00, 10.00, 0.20, 2.50),
+    "claude-haiku-5-5": (0.10, 0.50, 0.01, 0.125),
+    "claude-opus-4-8": (5.00, 25.00, 0.50, 6.25),  # a possible refusal fallback
+}
+_UNKNOWN_MODEL_PRICE = PRICES["claude-opus-4-8"]  # err on the high side
 
 
 class AIRefusalError(Exception):
@@ -19,27 +30,55 @@ def get_client():
     return anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 
 
-def _ask_claude(model, prompt, max_tokens, effort):
-    """Send a single-prompt request and return the reply text.
+def estimate_cost(model, usage):
+    """Estimated USD cost of one response from its usage block.
+
+    input_tokens counts only uncached input; thinking is billed as output.
+    """
+    price_in, price_out, price_cache_read, price_cache_write = PRICES.get(model, _UNKNOWN_MODEL_PRICE)
+    return (
+        (usage.input_tokens or 0) * price_in
+        + (usage.output_tokens or 0) * price_out
+        + (usage.cache_read_input_tokens or 0) * price_cache_read
+        + (usage.cache_creation_input_tokens or 0) * price_cache_write
+    ) / 1_000_000
+
+
+def _send(model, messages, max_tokens, effort, system=None, on_usage=None):
+    """Send a request and return the reply text.
 
     Streams so long replies don't hit HTTP timeouts. Thinking is always on for
-    Opus 5.5, so max_tokens covers thinking plus the reply, and the reply text
-    is read from the text blocks rather than content[0].
+    the 5.5 models, so max_tokens covers thinking plus the reply, and the reply
+    text is read from the text blocks rather than content[0].
+
+    on_usage(model, usage) is called once the response arrives, before the
+    refusal check, so declined requests are still counted.
     """
-    client = get_client()
-    with client.beta.messages.stream(
+    request = dict(
         model=model,
         max_tokens=max_tokens,
         output_config={"effort": effort},
         betas=[FALLBACK_BETA],
         fallbacks="default",
-        messages=[{"role": "user", "content": prompt}],
-    ) as stream:
+        messages=messages,
+    )
+    if system is not None:
+        request["system"] = system
+
+    client = get_client()
+    with client.beta.messages.stream(**request) as stream:
         message = stream.get_final_message()
 
+    if on_usage:
+        on_usage(message.model, message.usage)
     if message.stop_reason == "refusal":
-        raise AIRefusalError("Claude declined this request. Try rewording your goals or notes.")
+        raise AIRefusalError("Claude declined this request. Try rewording it.")
     return "".join(block.text for block in message.content if block.type == "text")
+
+
+def _ask_claude(model, prompt, max_tokens, effort, on_usage=None):
+    """Send a single-prompt request and return the reply text."""
+    return _send(model, [{"role": "user", "content": prompt}], max_tokens, effort, on_usage=on_usage)
 
 
 def _extract_json(text):
@@ -66,7 +105,7 @@ def _extract_json(text):
         raise ValueError(f"Invalid JSON in response: {e}") from e
 
 
-def generate_workout_plan(profile, fitness_test=None, prior_review=None, extra_context=None):
+def generate_workout_plan(profile, fitness_test=None, prior_review=None, extra_context=None, on_usage=None):
     fitness_test_section = ""
     if fitness_test:
         fitness_test_section = f"""
@@ -154,10 +193,10 @@ Return a JSON object with this structure:
 
 Return only valid JSON, no commentary."""
 
-    return _extract_json(_ask_claude(MODEL_PLAN, prompt, max_tokens=64000, effort="high"))
+    return _extract_json(_ask_claude(MODEL_PLAN, prompt, max_tokens=64000, effort="high", on_usage=on_usage))
 
 
-def generate_progress_review(profile, sessions_data, plan_name=None, range_label=None):
+def generate_progress_review(profile, sessions_data, plan_name=None, range_label=None, on_usage=None):
     """range_label (e.g. "the last 3 months") reviews a time window that may span
     several plans; without it, the sessions are all from the current plan."""
     plan_label = f'"{plan_name}"' if plan_name else "their current"
@@ -194,4 +233,127 @@ Return your review as JSON with these keys:
 
 Return only valid JSON, no commentary."""
 
-    return _extract_json(_ask_claude(MODEL_REVIEW, prompt, max_tokens=16000, effort="high"))
+    return _extract_json(_ask_claude(MODEL_REVIEW, prompt, max_tokens=16000, effort="high", on_usage=on_usage))
+
+
+# ---------------------------------------------------------------------------
+# In-workout trainer chat
+# ---------------------------------------------------------------------------
+
+CHAT_MAX_TOKENS = 4000  # thinking (kept short at low effort) plus a short reply
+_SNAPSHOT_MAX_EXERCISES = 30
+_SNAPSHOT_MAX_SETS = 20
+
+
+def _number(value):
+    """A float from user-entered form text, or None when blank or invalid."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _fmt_number(value):
+    return f"{value:g}"
+
+
+def _format_logged_set(s):
+    weight, reps = _number(s.get("weight")), _number(s.get("reps"))
+    if reps is None and weight is None:
+        return "not logged yet"
+    parts = []
+    if weight is not None and weight > 0:
+        parts.append(f"{_fmt_number(weight)} lbs x {_fmt_number(reps or 0)} reps")
+    else:
+        parts.append(f"bodyweight x {_fmt_number(reps or 0)} reps")
+    weight_b, reps_b = _number(s.get("weight_b")), _number(s.get("reps_b"))
+    if reps_b is not None:
+        parts.append(f"superset B {_fmt_number(weight_b or 0)} lbs x {_fmt_number(reps_b)} reps")
+    rpe = _number(s.get("rpe"))
+    if rpe is not None:
+        parts.append(f"RPE {_fmt_number(rpe)}")
+    notes = str(s.get("notes") or "").strip()[:100]
+    if notes:
+        parts.append(f'note: "{notes}"')
+    return ", ".join(parts)
+
+
+def format_live_snapshot(snapshot):
+    """Text summary of the workout page's current state, sent ahead of each
+    user chat message. The snapshot comes from the browser, so every field is
+    treated as untrusted: unknown keys are ignored and sizes are capped."""
+    if not isinstance(snapshot, dict):
+        snapshot = {}
+    header = "[Live workout status"
+    elapsed = _number(snapshot.get("elapsed_seconds"))
+    if elapsed is not None:
+        header += f", {int(elapsed // 60)} min in"
+    rest = _number(snapshot.get("rest_remaining"))
+    if rest is not None and rest > 0:
+        header += f", rest timer: {int(rest)}s left"
+    lines = [header + "]"]
+
+    exercises = snapshot.get("exercises")
+    if not isinstance(exercises, list):
+        exercises = []
+    for ex in exercises[:_SNAPSHOT_MAX_EXERCISES]:
+        if not isinstance(ex, dict):
+            continue
+        name = str(ex.get("name") or "").strip()[:100]
+        sets = ex.get("sets") if isinstance(ex.get("sets"), list) else []
+        set_texts = [
+            f"set {i}: {_format_logged_set(s)}"
+            for i, s in enumerate(sets[:_SNAPSHOT_MAX_SETS], start=1)
+            if isinstance(s, dict)
+        ]
+        if name:
+            lines.append(f"{name}: " + ("; ".join(set_texts) or "no sets"))
+    return "\n".join(lines)
+
+
+def _trainer_system_prompt(profile, workout_context):
+    exercise_lines = []
+    for ex in workout_context.get("exercises", []):
+        line = f"- {ex['name']}: {ex['sets']} sets x {ex['reps']} reps"
+        if ex.get("rest_seconds"):
+            line += f", rest {ex['rest_seconds']}s"
+        if ex.get("notes"):
+            line += f". Notes: {ex['notes']}"
+        if ex.get("recent"):
+            line += f". Recent sessions: {ex['recent']}"
+        exercise_lines.append(line)
+
+    review = workout_context.get("review_suggestions") or "None yet."
+    return f"""You are a personal trainer coaching {profile.name} through a workout in real time, by text chat between sets.
+
+How to reply:
+- Keep it short: one to three sentences, since they are reading between sets. Use a short list only when they ask for steps.
+- Be specific. Use the numbers they have logged today and their recent sessions, not generic advice.
+- Be encouraging and practical, like a good in-person trainer. When something needs adjusting (weight, reps, rest, form, or swapping an exercise), give one clear next step.
+- If they describe pain beyond normal muscle effort (sharp or joint pain, chest pain, dizziness, numbness), tell them to stop that exercise rather than push through, and to get it checked if it persists.
+- Plain text only: no markdown headings, tables, or emojis.
+
+Athlete: Age {profile.current_age}, Sex {profile.sex}, Fitness level {profile.fitness_level}. Goals: {profile.goals}
+
+Plan: {workout_context.get('plan_name') or 'Unknown'}. Today's workout: {workout_context.get('workout_name') or 'Unknown'}.
+Planned exercises:
+{chr(10).join(exercise_lines) or '- None listed'}
+
+Latest progress review suggestions: {review}
+
+Each of their messages starts with a [Live workout status] block showing what they have logged so far today. Use it, but don't read it back to them."""
+
+
+def chat_with_trainer(profile, workout_context, messages, on_usage=None):
+    """Reply to the in-workout chat. messages is the full conversation in API
+    form (user turns already include their live status block), oldest first.
+
+    The system prompt is the same for the whole workout and carries a cache
+    breakpoint; history is append-only, so each turn reuses the cached prefix.
+    """
+    system = [{
+        "type": "text",
+        "text": _trainer_system_prompt(profile, workout_context),
+        "cache_control": {"type": "ephemeral"},
+    }]
+    return _send(MODEL_CHAT, messages, CHAT_MAX_TOKENS, "low", system=system, on_usage=on_usage).strip()

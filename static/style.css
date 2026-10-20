@@ -1460,3 +1460,199 @@ tr.hist-detail-row td {
     padding: 0.3rem 0.75rem;
     font-size: 0.85rem;
 }
+
+/* ---------------------------------------------------------------------------
+   In-workout trainer chat (templates/_trainer_chat.html)
+   --------------------------------------------------------------------------- */
+.coach-fab {
+    position: fixed;
+    right: 1rem;
+    bottom: 1rem;
+    z-index: 900;
+    background: var(--primary);
+    color: #fff;
+    border: none;
+    border-radius: 999px;
+    padding: 0.85rem 1.25rem;
+    font-size: 1.05rem;
+    font-weight: 600;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.25);
+    cursor: pointer;
+    min-height: 48px;
+}
+.coach-fab:hover { background: var(--primary-dark); }
+.coach-fab[hidden] { display: none; }
+
+.coach-panel {
+    position: fixed;
+    right: 1rem;
+    bottom: 1rem;
+    z-index: 900;
+    width: min(420px, calc(100vw - 2rem));
+    height: min(70vh, 600px);
+    display: flex;
+    flex-direction: column;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.25);
+    overflow: hidden;
+}
+.coach-panel[hidden] { display: none; }
+
+.coach-header {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.6rem 0.75rem;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg);
+}
+.coach-close {
+    margin-left: auto;
+    background: none;
+    border: none;
+    font-size: 1.75rem;
+    line-height: 1;
+    color: var(--text-muted);
+    cursor: pointer;
+    min-width: 44px;
+    min-height: 44px;
+}
+
+.coach-meter {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.coach-meter-bar {
+    height: 6px;
+    background: var(--border);
+    border-radius: 3px;
+    overflow: hidden;
+}
+.coach-meter-fill {
+    height: 100%;
+    width: 0;
+    background: var(--success);
+    transition: width 0.3s;
+}
+.coach-meter-text {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.coach-meter-warn .coach-meter-fill { background: var(--warning); }
+.coach-meter-over .coach-meter-fill { background: var(--danger); }
+.coach-meter-over .coach-meter-text { color: var(--danger); }
+
+.coach-messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 0.75rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+.coach-empty {
+    color: var(--text-muted);
+    font-size: 0.95rem;
+}
+.coach-msg {
+    max-width: 85%;
+    padding: 0.5rem 0.75rem;
+    border-radius: 12px;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    font-size: 1rem;
+}
+.coach-msg-user {
+    align-self: flex-end;
+    background: var(--primary);
+    color: #fff;
+    border-bottom-right-radius: 4px;
+}
+.coach-msg-assistant {
+    align-self: flex-start;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-bottom-left-radius: 4px;
+}
+.coach-msg-typing {
+    align-self: flex-start;
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+.coach-quick {
+    display: flex;
+    gap: 0.4rem;
+    overflow-x: auto;
+    scrollbar-width: thin;
+    padding: 0.4rem 0.75rem;
+    border-top: 1px solid var(--border);
+}
+.coach-chip {
+    flex: 0 0 auto;
+    background: var(--surface);
+    border: 1px solid var(--primary);
+    color: var(--primary);
+    border-radius: 999px;
+    padding: 0.4rem 0.8rem;
+    font-size: 0.9rem;
+    min-height: 40px;
+    cursor: pointer;
+}
+.coach-chip:disabled { opacity: 0.5; cursor: default; }
+
+.coach-error {
+    color: var(--danger);
+    font-size: 0.9rem;
+    padding: 0 0.75rem 0.25rem;
+}
+.coach-error[hidden] { display: none; }
+
+.coach-input-row {
+    display: flex;
+    gap: 0.5rem;
+    padding: 0.5rem 0.75rem 0.75rem;
+}
+.coach-input-row textarea {
+    flex: 1;
+    resize: none;
+    font: inherit;
+    font-size: 1rem;
+    padding: 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+.coach-input-row .btn { align-self: stretch; }
+
+/* Saved transcript on the session detail page */
+.coach-transcript {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+@media (max-width: 600px) {
+    .coach-panel {
+        right: 0;
+        bottom: 0;
+        width: 100vw;
+        height: 75vh;
+        border-radius: 12px 12px 0 0;
+    }
+}
+
+/* AI usage card on the settings page */
+.usage-table { width: 100%; margin: 0.5rem 0; border-collapse: collapse; }
+.usage-table th, .usage-table td { text-align: left; padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--border); }
+.budget-form { margin-top: 1rem; }
+.budget-form label { display: block; font-weight: 600; margin-bottom: 0.35rem; }
+.budget-row { display: flex; gap: 0.5rem; }
+.budget-row input { max-width: 8rem; padding: 0.5rem; font-size: 1rem; border: 1px solid var(--border); border-radius: var(--radius); }
