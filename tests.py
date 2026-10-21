@@ -9,7 +9,7 @@ import os
 import pytest
 import sqlalchemy as sa
 from sqlalchemy.pool import StaticPool
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from unittest.mock import patch, MagicMock
 from werkzeug.datastructures import MultiDict
 
@@ -23,6 +23,7 @@ import app as flask_app
 from models import (
     db, Account, UserProfile, WorkoutPlan, PlannedWorkout, PlannedExercise,
     WorkoutSession, LoggedSet, AIReview, FitnessTest, ExerciseLibrary,
+    TrainerChatMessage, AIUsage,
 )
 from extensions import bcrypt
 
@@ -260,13 +261,28 @@ def _setup_form(**overrides):
     return data
 
 
-def _mock_ai_message(text, stop_reason="end_turn", thinking_first=False):
+def _mock_usage(input_tokens=1000, output_tokens=200, cache_read=0, cache_write=0):
+    return MagicMock(input_tokens=input_tokens, output_tokens=output_tokens,
+                     cache_read_input_tokens=cache_read, cache_creation_input_tokens=cache_write)
+
+
+def _mock_ai_message(text, stop_reason="end_turn", thinking_first=False, model="claude-opus-5-5"):
     """A fake Messages API response: optional empty thinking block, then text."""
     blocks = []
     if thinking_first:
         blocks.append(MagicMock(type="thinking", thinking=""))
     blocks.append(MagicMock(type="text", text=text))
-    return MagicMock(content=blocks, stop_reason=stop_reason)
+    return MagicMock(content=blocks, stop_reason=stop_reason, model=model, usage=_mock_usage())
+
+
+def _mock_chat_client(*replies):
+    """Mock client whose successive stream calls return each reply as plain text."""
+    client = MagicMock()
+    stream = client.beta.messages.stream.return_value.__enter__.return_value
+    stream.get_final_message.side_effect = [
+        _mock_ai_message(r, model="claude-sonnet-5-5") for r in replies
+    ]
+    return client
 
 
 def _mock_ai_client(response_json, **message_kwargs):
@@ -1659,6 +1675,295 @@ class TestClaudeModels:
             r = client.post("/generate-plan/generate", follow_redirects=True)
         assert "declined" in r.data.decode()
         assert "Plan generated" not in r.data.decode()
+
+
+# ---------------------------------------------------------------------------
+# In-workout trainer chat
+# ---------------------------------------------------------------------------
+
+CHAT_KEY = "0123456789abcdef" * 2
+
+_SNAPSHOT = {
+    "elapsed_seconds": 1380,
+    "rest_remaining": 45,
+    "exercises": [{"name": "Bench Press", "sets": [
+        {"set": 1, "weight": "135", "reps": "10", "rpe": "8", "notes": ""},
+        {"set": 2, "weight": "", "reps": "", "rpe": "", "notes": ""},
+    ]}],
+}
+
+
+@pytest.fixture
+def upper_body(application, active_plan):
+    with application.app_context():
+        return PlannedWorkout.query.filter_by(workout_name="Upper Body").first().id
+
+
+def _chat(client, planned_workout_id, message="Should I add weight?", key=CHAT_KEY, snapshot=_SNAPSHOT):
+    return client.post("/api/workout/chat", json={
+        "chat_key": key, "planned_workout_id": planned_workout_id,
+        "message": message, "snapshot": snapshot,
+    })
+
+
+def _add_chat_messages(application, profile_id, key=CHAT_KEY):
+    with application.app_context():
+        db.session.add(TrainerChatMessage(user_id=profile_id, chat_key=key, role="user",
+                                          content="Is 135 too light?", context="[status]"))
+        db.session.add(TrainerChatMessage(user_id=profile_id, chat_key=key, role="assistant",
+                                          content="Go up to 145 next set."))
+        db.session.commit()
+
+
+class TestTrainerChatAI:
+    def _workout_context(self, application, upper_body):
+        with application.app_context():
+            return flask_app.build_trainer_context(
+                UserProfile.query.first(), PlannedWorkout.query.get(upper_body))
+
+    def test_chat_model_is_sonnet_5_5(self):
+        import ai
+        assert ai.MODEL_CHAT == "claude-sonnet-5-5"
+
+    def test_chat_request_uses_low_effort_and_fallbacks(self, application, profile, upper_body):
+        import ai
+        mock_client = _mock_chat_client("Add 5 lbs.")
+        ctx = self._workout_context(application, upper_body)
+        with application.app_context():
+            with patch("ai.get_client", return_value=mock_client):
+                reply = ai.chat_with_trainer(UserProfile.query.get(profile), ctx,
+                                             [{"role": "user", "content": "Hi"}])
+        assert reply == "Add 5 lbs."
+        kwargs = _ai_call_kwargs(mock_client)
+        assert kwargs["model"] == "claude-sonnet-5-5"
+        assert kwargs["output_config"] == {"effort": "low"}
+        assert kwargs["fallbacks"] == "default"
+
+    def test_system_prompt_has_profile_plan_and_cache_marker(self, application, profile, upper_body):
+        import ai
+        mock_client = _mock_chat_client("ok")
+        ctx = self._workout_context(application, upper_body)
+        with application.app_context():
+            with patch("ai.get_client", return_value=mock_client):
+                ai.chat_with_trainer(UserProfile.query.get(profile), ctx,
+                                     [{"role": "user", "content": "Hi"}])
+        system = _ai_call_kwargs(mock_client)["system"]
+        assert system[0]["cache_control"] == {"type": "ephemeral"}
+        text = system[0]["text"]
+        assert "Build muscle" in text
+        assert "Upper Body" in text
+        assert "Bench Press: 3 sets x 8-10 reps, rest 90s" in text
+
+    def test_system_prompt_includes_recent_history(self, application, profile, upper_body):
+        log_session(application, profile, upper_body, [("Bench Press", 2)], delta_days=3)
+        ctx = self._workout_context(application, upper_body)
+        assert "135 lbs x 10" in ctx["exercises"][0]["recent"]
+
+    def test_format_live_snapshot(self):
+        import ai
+        text = ai.format_live_snapshot(_SNAPSHOT)
+        assert "23 min in" in text
+        assert "rest timer: 45s left" in text
+        assert "Bench Press" in text
+        assert "set 1: 135 lbs x 10 reps, RPE 8" in text
+        assert "set 2: not logged yet" in text
+
+    def test_format_live_snapshot_ignores_junk(self):
+        import ai
+        text = ai.format_live_snapshot({"elapsed_seconds": "abc", "exercises": "nope"})
+        assert "Live workout status" in text
+
+    def test_on_usage_gets_model_and_usage(self, application, profile, upper_body):
+        import ai
+        mock_client = _mock_chat_client("ok")
+        seen = []
+        ctx = self._workout_context(application, upper_body)
+        with application.app_context():
+            with patch("ai.get_client", return_value=mock_client):
+                ai.chat_with_trainer(UserProfile.query.get(profile), ctx,
+                                     [{"role": "user", "content": "Hi"}],
+                                     on_usage=lambda model, usage: seen.append((model, usage.input_tokens)))
+        assert seen == [("claude-sonnet-5-5", 1000)]
+
+    def test_estimate_cost(self):
+        import ai
+        usage = _mock_usage(1_000_000, 100_000, cache_read=1_000_000, cache_write=1_000_000)
+        assert ai.estimate_cost("claude-sonnet-5-5", usage) == pytest.approx(2 + 1 + 0.2 + 2.5)
+        assert ai.estimate_cost("claude-opus-5-5", usage) == pytest.approx(4 + 2 + 0.2 + 5)
+
+
+class TestTrainerChatRoute:
+    def test_requires_login(self, application, profile, upper_body):
+        r = _chat(application.test_client(), upper_body)
+        assert r.status_code in (302, 401)
+
+    def test_reply_saves_messages_and_usage(self, client, application, profile, upper_body):
+        with patch("ai.get_client", return_value=_mock_chat_client("Add 5 lbs.")):
+            r = _chat(client, upper_body)
+        assert r.status_code == 200
+        body = r.get_json()
+        assert body["reply"] == "Add 5 lbs."
+        assert body["usage"]["messages"] == 1
+        assert body["usage"]["cost"] == pytest.approx(0.004)
+        assert body["usage"]["budget"] == pytest.approx(1.0)
+        with application.app_context():
+            msgs = TrainerChatMessage.query.filter_by(chat_key=CHAT_KEY).order_by(TrainerChatMessage.id).all()
+            assert [(m.role, m.content) for m in msgs] == [
+                ("user", "Should I add weight?"), ("assistant", "Add 5 lbs.")]
+            assert "set 1: 135 lbs x 10 reps" in msgs[0].context
+            usage = AIUsage.query.one()
+            assert (usage.feature, usage.model, usage.chat_key) == ("chat", "claude-sonnet-5-5", CHAT_KEY)
+            assert usage.input_tokens == 1000 and usage.output_tokens == 200
+
+    def test_second_turn_replays_history_unchanged(self, client, application, profile, upper_body):
+        mock_client = _mock_chat_client("Add 5 lbs.", "Nice work.")
+        with patch("ai.get_client", return_value=mock_client):
+            _chat(client, upper_body, "Should I add weight?")
+            _chat(client, upper_body, "Done, felt good")
+        first, second = mock_client.beta.messages.stream.call_args_list
+        first_msgs = first.kwargs["messages"]
+        second_msgs = second.kwargs["messages"]
+        assert [m["role"] for m in second_msgs] == ["user", "assistant", "user"]
+        # Append-only: earlier turns are byte-identical so the prompt cache hits.
+        assert second_msgs[0] == first_msgs[0]
+        assert second_msgs[1]["content"] == "Add 5 lbs."
+        assert "Done, felt good" in second_msgs[2]["content"]
+        assert "Live workout status" in second_msgs[2]["content"]
+
+    def test_rejects_empty_message(self, client, profile, upper_body):
+        assert _chat(client, upper_body, message="   ").status_code == 400
+
+    def test_rejects_overlong_message(self, client, profile, upper_body):
+        assert _chat(client, upper_body, message="x" * 2001).status_code == 400
+
+    def test_rejects_bad_chat_key(self, client, profile, upper_body):
+        assert _chat(client, upper_body, key="not-a-key").status_code == 400
+
+    def test_rejects_unknown_planned_workout(self, client, profile, upper_body):
+        assert _chat(client, 99999).status_code == 404
+
+    def test_ai_error_returns_502_and_saves_nothing(self, client, application, profile, upper_body):
+        mock_client = MagicMock()
+        mock_client.beta.messages.stream.side_effect = RuntimeError("boom")
+        with patch("ai.get_client", return_value=mock_client):
+            r = _chat(client, upper_body)
+        assert r.status_code == 502
+        assert "error" in r.get_json()
+        with application.app_context():
+            assert TrainerChatMessage.query.count() == 0
+
+    def test_refusal_returns_502_with_message(self, client, application, profile, upper_body):
+        mock_client = MagicMock()
+        stream = mock_client.beta.messages.stream.return_value.__enter__.return_value
+        stream.get_final_message.return_value = _mock_ai_message("", stop_reason="refusal")
+        with patch("ai.get_client", return_value=mock_client):
+            r = _chat(client, upper_body)
+        assert r.status_code == 502
+        assert "declined" in r.get_json()["error"]
+
+
+class TestTrainerChatWorkoutFlow:
+    def _form(self, application, upper_body, key=CHAT_KEY):
+        items = [("overall_feeling", "4"), ("session_notes", ""),
+                 ("planned_workout_id", str(upper_body)), ("chat_key", key),
+                 ("exercise_name", "Bench Press"), ("set_number", "1"), ("weight", "135"),
+                 ("reps", "10"), ("rpe", "7"), ("set_notes", "")]
+        return MultiDict(items)
+
+    def test_workout_page_has_chat_panel_and_key(self, client, profile, active_plan):
+        html = client.get("/workout/today").data.decode()
+        assert 'id="coachPanel"' in html
+        assert 'id="coachMeter"' in html
+        import re
+        assert re.search(r'name="chat_key" value="[0-9a-f]{32}"', html)
+
+    def test_log_links_chat_to_session(self, client, application, profile, upper_body):
+        _add_chat_messages(application, profile)
+        client.post("/workout/log", data=self._form(application, upper_body))
+        with application.app_context():
+            ws = WorkoutSession.query.one()
+            assert ws.chat_key == CHAT_KEY
+            assert {m.session_id for m in TrainerChatMessage.query.all()} == {ws.id}
+
+    def test_session_detail_shows_chat(self, client, application, profile, upper_body):
+        _add_chat_messages(application, profile)
+        client.post("/workout/log", data=self._form(application, upper_body))
+        with application.app_context():
+            ws_id = WorkoutSession.query.one().id
+        html = client.get(f"/history/{ws_id}").data.decode()
+        assert "Trainer Chat" in html
+        assert "Go up to 145 next set." in html
+
+    def test_resume_restores_chat(self, client, application, profile, upper_body):
+        _add_chat_messages(application, profile)
+        client.post("/workout/pause", data=self._form(application, upper_body))
+        with application.app_context():
+            ws_id = WorkoutSession.query.one().id
+        html = client.get(f"/workout/resume/{ws_id}").data.decode()
+        assert f'name="chat_key" value="{CHAT_KEY}"' in html
+        assert "Go up to 145 next set." in html
+
+    def test_delete_session_deletes_chat(self, client, application, profile, upper_body):
+        _add_chat_messages(application, profile)
+        client.post("/workout/log", data=self._form(application, upper_body))
+        with application.app_context():
+            ws_id = WorkoutSession.query.one().id
+        client.post(f"/history/{ws_id}/delete")
+        with application.app_context():
+            assert TrainerChatMessage.query.count() == 0
+
+    def test_delete_account_deletes_chat_and_usage(self, client, application, profile, upper_body):
+        _add_chat_messages(application, profile)
+        with application.app_context():
+            db.session.add(AIUsage(user_id=profile, feature="chat", model="claude-sonnet-5-5", cost_usd=0.01))
+            db.session.commit()
+        client.post("/settings/delete-account", data={"confirm_email": "test@example.com"})
+        with application.app_context():
+            assert TrainerChatMessage.query.count() == 0
+            assert AIUsage.query.count() == 0
+
+
+class TestAIUsageTracking:
+    def test_plan_generation_records_usage(self, client, application, profile):
+        with patch("ai.get_client", return_value=_mock_ai_client(_MOCK_PLAN)):
+            client.post("/generate-plan/generate")
+        with application.app_context():
+            usage = AIUsage.query.one()
+            assert (usage.feature, usage.model) == ("plan", "claude-opus-5-5")
+            assert usage.cost_usd == pytest.approx(1000 * 4 / 1e6 + 200 * 20 / 1e6)
+
+    def test_review_records_usage(self, client, application, profile, active_plan, upper_body):
+        log_session(application, profile, upper_body, [("Bench Press", 1)])
+        with patch("ai.get_client", return_value=_mock_ai_client(_MOCK_REVIEW)):
+            client.post("/review/generate", data={"range": "plan"})
+        with application.app_context():
+            assert AIUsage.query.one().feature == "review"
+
+    def test_settings_shows_this_months_usage(self, client, application, profile):
+        with application.app_context():
+            old = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=40)
+            db.session.add_all([
+                AIUsage(user_id=profile, feature="chat", model="claude-sonnet-5-5", cost_usd=0.50),
+                AIUsage(user_id=profile, feature="plan", model="claude-opus-5-5", cost_usd=0.25),
+                AIUsage(user_id=profile, feature="plan", model="claude-opus-5-5", cost_usd=9.99, created_at=old),
+            ])
+            db.session.commit()
+        html = client.get("/settings").data.decode()
+        assert "$0.75" in html
+        assert "Trainer chat" in html
+        assert "$9.99" not in html
+        assert 'name="budget" value="1.00"' in html
+
+    def test_update_budget(self, client, application, profile):
+        client.post("/settings/ai-budget", data={"budget": "2.50"})
+        with application.app_context():
+            assert UserProfile.query.get(profile).ai_budget_per_workout == pytest.approx(2.5)
+
+    def test_rejects_invalid_budget(self, client, application, profile):
+        r = client.post("/settings/ai-budget", data={"budget": "-1"}, follow_redirects=True)
+        assert "Budget must be" in r.data.decode()
+        with application.app_context():
+            assert UserProfile.query.get(profile).ai_budget_per_workout == pytest.approx(1.0)
 
 
 # ---------------------------------------------------------------------------

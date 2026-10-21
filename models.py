@@ -46,6 +46,8 @@ class UserProfile(db.Model):
     current_streak = db.Column(db.Integer, default=0)
     longest_streak = db.Column(db.Integer, default=0)
     last_workout_date = db.Column(db.Date, nullable=True)
+    # Per-workout spending budget (USD) shown on the trainer chat usage meter
+    ai_budget_per_workout = db.Column(db.Float, default=1.0)
 
     @property
     def current_age(self):
@@ -123,6 +125,7 @@ class WorkoutSession(db.Model):
     elapsed_seconds = db.Column(db.Integer, default=0)
     superset_exercises = db.Column(db.Text, nullable=True)  # JSON list of exercise names
     phase_name = db.Column(db.String(100), nullable=True)
+    chat_key = db.Column(db.String(32), nullable=True)  # links TrainerChatMessage / AIUsage rows
 
     logged_sets = db.relationship("LoggedSet", backref="session", cascade="all, delete-orphan")
     planned_workout = db.relationship("PlannedWorkout")
@@ -153,6 +156,41 @@ class AIReview(db.Model):
     review_text = db.Column(db.Text)
     suggestions_json = db.Column(db.Text)
     data_summary = db.Column(db.Text)
+
+
+class TrainerChatMessage(db.Model):
+    """One turn of the in-workout trainer chat.
+
+    A workout's chat is identified by chat_key (generated when the workout page
+    renders) until the workout is logged or paused, which sets session_id.
+    """
+    __tablename__ = "trainer_chat_message"
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user_profile.id"), nullable=False)
+    chat_key = db.Column(db.String(32), nullable=False, index=True)
+    session_id = db.Column(db.Integer, db.ForeignKey("workout_session.id"), nullable=True)
+    role = db.Column(db.String(20), nullable=False)  # "user" / "assistant"
+    content = db.Column(db.Text, nullable=False)
+    # Live workout status sent ahead of a user message. Stored so later turns
+    # replay the conversation byte-for-byte (keeps the prompt cache valid).
+    context = db.Column(db.Text, nullable=True)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class AIUsage(db.Model):
+    """Tokens and estimated cost of one Claude request."""
+    __tablename__ = "ai_usage"
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user_profile.id"), nullable=False)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    feature = db.Column(db.String(20), nullable=False)  # "plan" / "review" / "chat"
+    model = db.Column(db.String(64), nullable=False)
+    input_tokens = db.Column(db.Integer, default=0)
+    output_tokens = db.Column(db.Integer, default=0)
+    cache_read_tokens = db.Column(db.Integer, default=0)
+    cache_write_tokens = db.Column(db.Integer, default=0)
+    cost_usd = db.Column(db.Float, default=0.0)
+    chat_key = db.Column(db.String(32), nullable=True, index=True)
 
 
 class FitnessTest(db.Model):

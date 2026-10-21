@@ -75,6 +75,7 @@
     <input type="hidden" name="planned_workout_id" value="{{ workout.id }}">
     <input type="hidden" name="session_elapsed_seconds" id="sessionElapsedSeconds" value="0">
     <input type="hidden" name="resume_session_id" value="{{ resume_session_id or '' }}">
+    <input type="hidden" name="chat_key" value="{{ chat_key }}">
 
     {% if warmup_exercises %}
     <div class="section-header warmup-header">Warm-Up</div>
@@ -459,6 +460,7 @@
 </div>
 
 {% include "_exercise_history_modal.html" %}
+{% include "_trainer_chat.html" %}
 
 <script>
 let modalConfirmAction = null;
