@@ -2657,6 +2657,29 @@ class TestRequirements:
         assert chosen == {"3.9": ["==0.125.0"], "3.10": ["==1.17.0"], "3.14": ["==1.17.0"]}
 
 
+class TestGunicornConfig:
+    """Opalstack's 512 MB plan kills every process on the account when it's
+    exceeded; each extra gunicorn worker costs ~110 MB."""
+
+    def _load(self, monkeypatch, **env):
+        import runpy
+        for key in ("WEB_CONCURRENCY", "GUNICORN_THREADS"):
+            monkeypatch.delenv(key, raising=False)
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gunicorn.conf.py")
+        return runpy.run_path(path)
+
+    def test_defaults_to_one_worker_with_threads(self, monkeypatch):
+        cfg = self._load(monkeypatch)
+        assert cfg["workers"] == 1
+        assert cfg["threads"] >= 4
+
+    def test_worker_count_can_be_raised_by_env(self, monkeypatch):
+        cfg = self._load(monkeypatch, WEB_CONCURRENCY="2", GUNICORN_THREADS="2")
+        assert (cfg["workers"], cfg["threads"]) == (2, 2)
+
+
 class TestDatabaseIsolation:
     def test_importing_tests_module_never_opens_real_db(self):
         result = _run_isolated('''
