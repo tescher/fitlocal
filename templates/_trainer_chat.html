@@ -31,8 +31,16 @@
     <div id="coachError" class="coach-error" hidden></div>
 
     <div class="coach-input-row">
+        <button type="button" id="coachMic" class="coach-mic" onclick="toggleCoachListening()"
+                aria-label="Speak your message" aria-pressed="false" hidden>&#127908;</button>
         <textarea id="coachInput" rows="2" maxlength="2000" placeholder="Message your trainer&hellip;" aria-label="Message your trainer"></textarea>
         <button type="button" id="coachSend" class="btn btn-primary" onclick="sendCoachMessage()">Send</button>
+    </div>
+
+    <div class="coach-voice-options">
+        <label id="coachVoiceInLabel"><input type="checkbox" id="coachVoiceIn"> Voice input</label>
+        <label id="coachVoiceOutLabel"><input type="checkbox" id="coachVoiceOut"> Speak replies</label>
+        <span id="coachVoiceNote" class="coach-voice-note" hidden></span>
     </div>
 </div>
 
@@ -54,6 +62,9 @@ function toggleCoach(open) {
     if (open) {
         scrollCoachToEnd();
         document.getElementById('coachInput').focus();
+    } else {
+        stopCoachListening();
+        if ('speechSynthesis' in window) speechSynthesis.cancel();
     }
 }
 
@@ -169,6 +180,7 @@ async function sendCoachMessage(preset) {
     typing.remove();
     if (ok) {
         addCoachMessage('assistant', data.reply);
+        speakCoachReply(data.reply);
     } else {
         // The server saves nothing on failure, so take the message back.
         userMsg.remove();
@@ -186,5 +198,159 @@ document.getElementById('coachInput').addEventListener('keydown', function(e) {
     }
 });
 
+// --- Voice: speech-to-text input and spoken replies (browser built-ins) ---
+// Speech-to-text needs Chrome, Edge or Safari, and a secure context: HTTPS,
+// localhost, or Chrome's "insecure origins treated as secure" flag (README).
+const CoachRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+const COACH_VOICE = { recognition: null, listening: false };
+
+// Per-device preference (the workout-room machine has the speakers and mic).
+function coachVoicePref(name, value) {
+    try {
+        if (value === undefined) return localStorage.getItem('fitlocal.coach.' + name) === '1';
+        localStorage.setItem('fitlocal.coach.' + name, value ? '1' : '0');
+    } catch (e) {
+        return false;
+    }
+}
+
+function setCoachVoiceNote(message) {
+    const note = document.getElementById('coachVoiceNote');
+    note.textContent = message;
+    note.hidden = !message;
+}
+
+function setupCoachVoice() {
+    const voiceIn = document.getElementById('coachVoiceIn');
+    const voiceOut = document.getElementById('coachVoiceOut');
+
+    if (!CoachRecognition) {
+        voiceIn.disabled = true;
+        document.getElementById('coachVoiceInLabel').title = "This browser can't turn speech into text. Use Google Chrome.";
+    } else if (!window.isSecureContext) {
+        voiceIn.disabled = true;
+        setCoachVoiceNote('Voice input needs the one-time Chrome microphone setting (see the README).');
+    } else {
+        voiceIn.checked = coachVoicePref('voiceIn');
+    }
+
+    if ('speechSynthesis' in window) {
+        voiceOut.checked = coachVoicePref('voiceOut');
+        speechSynthesis.getVoices();  // Chrome loads its voice list lazily
+    } else {
+        voiceOut.disabled = true;
+    }
+
+    voiceIn.addEventListener('change', function() {
+        coachVoicePref('voiceIn', voiceIn.checked);
+        if (!voiceIn.checked) stopCoachListening();
+        updateCoachMic();
+    });
+    voiceOut.addEventListener('change', function() {
+        coachVoicePref('voiceOut', voiceOut.checked);
+        if (!voiceOut.checked) speechSynthesis.cancel();
+    });
+    updateCoachMic();
+}
+
+function updateCoachMic() {
+    document.getElementById('coachMic').hidden = !document.getElementById('coachVoiceIn').checked;
+}
+
+function setCoachMicState(listening) {
+    const mic = document.getElementById('coachMic');
+    mic.classList.toggle('coach-mic-on', listening);
+    mic.setAttribute('aria-pressed', String(listening));
+    mic.setAttribute('aria-label', listening ? 'Stop listening and send' : 'Speak your message');
+    document.getElementById('coachInput').placeholder = listening ? 'Listening…' : 'Message your trainer…';
+}
+
+function coachSpeechError(code) {
+    switch (code) {
+        case 'not-allowed':
+        case 'service-not-allowed':
+            return 'The microphone is blocked. Allow it for this site in Chrome (and see the README if FitLocal is on http://).';
+        case 'no-speech': return "Didn't catch that. Tap the mic and try again.";
+        case 'audio-capture': return 'No microphone found.';
+        case 'network': return "Chrome's speech service couldn't be reached. Check the internet connection.";
+        case 'aborted': return '';
+        default: return 'Voice input stopped (' + code + ').';
+    }
+}
+
+function toggleCoachListening() {
+    if (COACH_VOICE.listening) stopCoachListening();
+    else startCoachListening();
+}
+
+function startCoachListening() {
+    if (COACH.busy || COACH_VOICE.listening || !CoachRecognition) return;
+    if ('speechSynthesis' in window) speechSynthesis.cancel();  // don't transcribe the trainer
+
+    const input = document.getElementById('coachInput');
+    const typedBefore = input.value.trim() ? input.value.trim() + ' ' : '';
+    let heard = '';
+    const rec = new CoachRecognition();
+    rec.lang = navigator.language || 'en-US';
+    rec.interimResults = true;
+    rec.continuous = false;  // stops after a pause in speech
+
+    rec.onresult = function(e) {
+        let finalText = '';
+        let interim = '';
+        for (let i = 0; i < e.results.length; i++) {
+            if (e.results[i].isFinal) finalText += e.results[i][0].transcript;
+            else interim += e.results[i][0].transcript;
+        }
+        heard = finalText;
+        input.value = typedBefore + finalText + interim;
+    };
+    rec.onerror = function(e) { showCoachError(coachSpeechError(e.error)); };
+    rec.onend = function() {
+        COACH_VOICE.recognition = null;
+        COACH_VOICE.listening = false;
+        setCoachMicState(false);
+        if (heard.trim()) sendCoachMessage();
+    };
+
+    try {
+        rec.start();
+    } catch (e) {
+        showCoachError('Could not start the microphone.');
+        return;
+    }
+    COACH_VOICE.recognition = rec;
+    COACH_VOICE.listening = true;
+    setCoachMicState(true);
+    showCoachError('');
+}
+
+// Tapping the mic again ends listening; what was heard so far is sent.
+function stopCoachListening() {
+    if (COACH_VOICE.recognition) COACH_VOICE.recognition.stop();
+}
+
+function pickCoachVoice() {
+    const voices = speechSynthesis.getVoices();
+    const lang = (navigator.language || 'en-US').toLowerCase();
+    const sameLang = voices.filter(function(v) { return v.lang.toLowerCase().startsWith(lang.split('-')[0]); });
+    // Chrome's "Google ..." voices and OS "Natural"/"Neural" voices sound far better than eSpeak.
+    return sameLang.find(function(v) { return /google|natural|neural/i.test(v.name) && v.lang.toLowerCase() === lang; })
+        || sameLang.find(function(v) { return /google|natural|neural/i.test(v.name); })
+        || sameLang.find(function(v) { return v.default; })
+        || sameLang[0] || null;
+}
+
+function speakCoachReply(text) {
+    if (!('speechSynthesis' in window) || !document.getElementById('coachVoiceOut').checked) return;
+    speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    const voice = pickCoachVoice();
+    if (voice) utterance.voice = voice;
+    utterance.lang = voice ? voice.lang : (navigator.language || 'en-US');
+    speechSynthesis.speak(utterance);
+}
+
+setupCoachVoice();
 renderCoachMeter({{ chat_usage | tojson }});
 </script>

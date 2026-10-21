@@ -1923,6 +1923,22 @@ class TestTrainerChatWorkoutFlow:
             assert AIUsage.query.count() == 0
 
 
+class TestTrainerVoice:
+    def test_permissions_policy_allows_microphone_for_this_site_only(self, client, profile):
+        policy = client.get("/settings").headers["Permissions-Policy"]
+        assert "microphone=(self)" in policy
+        assert "camera=()" in policy
+        assert "geolocation=()" in policy
+
+    def test_workout_page_has_voice_toggles_and_mic(self, client, profile, active_plan):
+        html = client.get("/workout/today").data.decode()
+        assert 'id="coachVoiceIn"' in html
+        assert 'id="coachVoiceOut"' in html
+        assert 'id="coachMic"' in html
+        assert "Voice input" in html
+        assert "Speak replies" in html
+
+
 class TestAIUsageTracking:
     def test_plan_generation_records_usage(self, client, application, profile):
         with patch("ai.get_client", return_value=_mock_ai_client(_MOCK_PLAN)):

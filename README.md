@@ -84,6 +84,29 @@ sudo ufw allow 5000/tcp
 
 To keep the bookmark stable on your workout room device, assign a static local IP to your desktop in your router's settings (often called "DHCP Reservation" or "Static Lease").
 
+### 8. Optional: Voice with the Trainer Chat
+
+The trainer chat on the workout page has two checkboxes: **Voice input** (talk instead of type) and **Speak replies** (the trainer's answers are read aloud).
+
+- **Speak replies** works in any modern browser. On Linux, Google Chrome has the best-sounding voices; Firefox needs the `speech-dispatcher` package and sounds robotic.
+- **Voice input** needs **Google Chrome** (or Edge/Safari). Firefox can't turn speech into text, and Ubuntu's Chromium Snap package lacks Google's speech service. Chrome sends the audio to Google to transcribe it.
+
+Browsers only allow the microphone on HTTPS or `localhost` pages. FitLocal on your network is plain `http://`, so on the workout room machine, tell Chrome to treat it as secure (one time):
+
+1. In Chrome, open `chrome://flags/#unsafely-treat-insecure-origin-as-secure`
+2. Set it to **Enabled** and enter your FitLocal address, e.g. `http://192.168.1.100:5000`
+3. Click **Relaunch**
+4. The first time you tap the 🎤 button, allow microphone access when Chrome asks
+
+To install Chrome on 64-bit Ubuntu/Debian:
+
+```
+wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+sudo apt install ./google-chrome-stable_current_amd64.deb
+```
+
+Tap 🎤, speak, and pause: your message sends when you stop talking (tap 🎤 again to send early). The checkboxes are remembered per device.
+
 ---
 
 ## User Accounts & Registration
