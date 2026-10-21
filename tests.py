@@ -2631,6 +2631,22 @@ def _run_isolated(code, env_overrides=None):
     )
 
 
+class TestRequirements:
+    def test_anthropic_pin_matches_python_version(self):
+        """anthropic 1.x needs Python 3.10+; Opalstack runs 3.9, which gets the last 0.x."""
+        from packaging.requirements import Requirement
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "requirements.txt")
+        with open(path, encoding="utf-8") as f:
+            reqs = [Requirement(line) for line in f
+                    if line.strip() and not line.startswith("#") and Requirement(line).name == "anthropic"]
+        chosen = {
+            py: [str(r.specifier) for r in reqs
+                 if r.marker is None or r.marker.evaluate({"python_version": py})]
+            for py in ("3.9", "3.10", "3.14")
+        }
+        assert chosen == {"3.9": ["==0.125.0"], "3.10": ["==1.17.0"], "3.14": ["==1.17.0"]}
+
+
 class TestDatabaseIsolation:
     def test_importing_tests_module_never_opens_real_db(self):
         result = _run_isolated('''
