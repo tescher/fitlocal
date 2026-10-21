@@ -107,6 +107,8 @@ sudo apt install ./google-chrome-stable_current_amd64.deb
 
 Tap 🎤, speak, and pause: your message sends when you stop talking (tap 🎤 again to send early). The checkboxes are remembered per device.
 
+**On an iPad (or iPhone):** use **Safari** with the **https** address (e.g. your Opalstack site). Every iPad browser runs on Safari's engine, only Safari offers speech-to-text to web pages, and there is no way to allow the microphone on a plain `http://` page. If the mic reports that speech recognition is off, turn on **Dictation** in Settings > General > Keyboard. Spoken replies and the check-in chime start working after your first tap on the page (iPad Safari only plays sound that a tap started), and nothing plays while the iPad is in silent mode.
+
 ---
 
 ## User Accounts & Registration
