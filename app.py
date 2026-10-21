@@ -1659,7 +1659,12 @@ def delete_session(session_id):
 @app.route("/history/<int:session_id>")
 @login_required
 def session_detail(session_id):
+    profile = get_profile()
+    if not profile:
+        return redirect(url_for("setup"))
     workout_session = WorkoutSession.query.get_or_404(session_id)
+    if workout_session.user_id != profile.id:
+        return redirect(url_for("history"))
     logged_sets = sorted(workout_session.logged_sets, key=_exercise_order_key(workout_session))
 
     exercises = {}

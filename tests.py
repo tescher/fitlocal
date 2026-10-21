@@ -1198,6 +1198,44 @@ class TestHistory:
         r = client.get("/history/9999")
         assert r.status_code == 404
 
+    def test_session_detail_hidden_from_other_users(self, application, profile, active_plan):
+        with application.app_context():
+            pw_id = PlannedWorkout.query.filter_by(day_of_week="Workout A").first().id
+            other = Account(email="other@example.com", email_claimed=True)
+            db.session.add(other)
+            db.session.flush()
+            db.session.add(UserProfile(account_id=other.id, name="Other", age=30, sex="Female",
+                                       fitness_level="Beginner", goals="Run a 5K"))
+            db.session.commit()
+            other_id = other.id
+        sid = log_session(application, profile, pw_id, [("Bench Press", 3)])
+
+        other_client = application.test_client()
+        with other_client.session_transaction() as sess:
+            sess["_user_id"] = str(other_id)
+            sess["_fresh"] = True
+        r = other_client.get(f"/history/{sid}")
+        assert r.status_code == 302
+        assert r.headers["Location"].endswith("/history")
+        assert b"Bench Press" not in r.data
+
+    def test_session_detail_without_profile_redirects_to_setup(self, client, application, profile, active_plan):
+        with application.app_context():
+            pw_id = PlannedWorkout.query.filter_by(day_of_week="Workout A").first().id
+            sid = log_session(application, profile, pw_id, [("Bench Press", 3)])
+            # A fresh account with no profile of its own
+            lonely = Account(email="lonely@example.com", email_claimed=True)
+            db.session.add(lonely)
+            db.session.commit()
+            lonely_id = lonely.id
+        lonely_client = application.test_client()
+        with lonely_client.session_transaction() as sess:
+            sess["_user_id"] = str(lonely_id)
+            sess["_fresh"] = True
+        r = lonely_client.get(f"/history/{sid}")
+        assert r.status_code == 302
+        assert r.headers["Location"].endswith("/setup")
+
 
 # ---------------------------------------------------------------------------
 # Exercise ordering in workout summary and history detail
