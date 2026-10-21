@@ -1938,6 +1938,16 @@ class TestTrainerVoice:
         assert "Voice input" in html
         assert "Speak replies" in html
 
+    def test_workout_page_has_safari_ipad_fixes(self, client, profile, active_plan):
+        """iPad Safari only plays speech/sound started from a tap, has no Chrome
+        mic flag, and lets the on-screen keyboard cover fixed panels."""
+        html = client.get("/workout/today").data.decode()
+        assert "function unlockCoachAudio" in html      # speech + sound unlocked on first tap
+        assert "function coachAudioContext" in html     # one reused audio player for the chime
+        assert "function isAppleMobile" in html
+        assert "use the https address" in html          # iPad guidance instead of the Chrome flag
+        assert "visualViewport" in html                 # keep the panel above the keyboard
+
 
 def _log_sets(application, profile_id, planned_workout_id, sets, delta_days):
     """Insert a completed session with explicit (exercise, set_number, weight, reps) rows."""
