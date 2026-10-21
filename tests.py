@@ -2238,6 +2238,60 @@ class TestTrainerSettings:
         assert "Strong start!" in html
 
 
+CLEAR_DRAFT_MARKER = "fitlocal-clear-workout-draft"
+
+
+class TestWorkoutAutosave:
+    """The workout page keeps an unsaved draft in localStorage; the server tells
+    the browser to clear it only after a log or pause has actually been saved."""
+
+    def _form(self, application, upper_body):
+        return TestTrainerChatWorkoutFlow()._form(application, upper_body)
+
+    def test_workout_page_has_autosave_with_per_user_key(self, client, profile, active_plan):
+        html = client.get("/workout/today").data.decode()
+        assert 'id="draftBanner"' in html
+        assert f'"fitlocal.workoutDraft.{profile}"' in html
+        assert CLEAR_DRAFT_MARKER not in html
+
+    def test_logging_clears_the_draft_once(self, client, application, profile, upper_body):
+        r = client.post("/workout/log", data=self._form(application, upper_body))
+        assert CLEAR_DRAFT_MARKER in r.data.decode()
+        assert CLEAR_DRAFT_MARKER not in client.get("/history").data.decode()
+
+    def test_pausing_clears_the_draft_on_the_next_page(self, client, application, profile, upper_body):
+        r = client.post("/workout/pause", data=self._form(application, upper_body), follow_redirects=True)
+        assert CLEAR_DRAFT_MARKER in r.data.decode()
+        assert CLEAR_DRAFT_MARKER not in client.get("/").data.decode()
+
+    def test_chat_transcript_endpoint(self, client, application, profile, upper_body):
+        _add_chat_messages(application, profile)
+        r = client.get(f"/api/workout/chat?key={CHAT_KEY}")
+        assert r.status_code == 200
+        body = r.get_json()
+        assert [(m["role"], m["kind"], m["content"]) for m in body["messages"]] == [
+            ("user", "chat", "Is 135 too light?"), ("assistant", "chat", "Go up to 145 next set.")]
+        assert body["usage"]["messages"] == 1
+
+    def test_chat_transcript_is_per_user(self, client, application, profile, upper_body):
+        with application.app_context():
+            other = UserProfile(name="Other", age=30, sex="Female", fitness_level="Beginner", goals="x")
+            db.session.add(other)
+            db.session.commit()
+            other_id = other.id
+        _add_chat_messages(application, other_id)
+        assert client.get(f"/api/workout/chat?key={CHAT_KEY}").get_json()["messages"] == []
+
+    def test_chat_transcript_rejects_bad_key(self, client, profile):
+        assert client.get("/api/workout/chat?key=nope").status_code == 400
+
+    def test_chat_transcript_needs_login(self, application, profile):
+        # Its own test: the application fixture keeps one app context open, and
+        # Flask-Login caches the logged-in user on it, so a request from the
+        # logged-in `client` earlier in the same test would leak into this one.
+        assert application.test_client().get(f"/api/workout/chat?key={CHAT_KEY}").status_code in (302, 401)
+
+
 class TestAIUsageTracking:
     def test_plan_generation_records_usage(self, client, application, profile):
         with patch("ai.get_client", return_value=_mock_ai_client(_MOCK_PLAN)):
