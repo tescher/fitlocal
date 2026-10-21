@@ -111,6 +111,25 @@ with app.app_context():
                     "ALTER TABLE user_profile ADD COLUMN ai_budget_per_workout FLOAT DEFAULT 1.0"
                 ))
                 conn.commit()
+            if "trainer_chattiness" not in cols:
+                conn.execute(text(
+                    "ALTER TABLE user_profile ADD COLUMN trainer_chattiness VARCHAR(20) DEFAULT 'normal'"
+                ))
+                conn.commit()
+            if "trainer_style" not in cols:
+                conn.execute(text(
+                    "ALTER TABLE user_profile ADD COLUMN trainer_style VARCHAR(20) DEFAULT 'encouraging'"
+                ))
+                conn.commit()
+
+        # Add kind to trainer_chat_message if missing (check-ins vs chat replies)
+        if insp.has_table("trainer_chat_message"):
+            tcm_cols = [c["name"] for c in insp.get_columns("trainer_chat_message")]
+            if "kind" not in tcm_cols:
+                conn.execute(text(
+                    "ALTER TABLE trainer_chat_message ADD COLUMN kind VARCHAR(20) NOT NULL DEFAULT 'chat'"
+                ))
+                conn.commit()
 
         # Add status column to workout_plan if it doesn't exist, backfilling from is_active + notes
         if insp.has_table("workout_plan"):
@@ -253,7 +272,8 @@ def get_profile():
 
 DEFAULT_AI_BUDGET = 1.0
 AI_BUDGET_RANGE = (0.05, 50.0)
-AI_FEATURE_LABELS = {"chat": "Trainer chat", "plan": "Plan generation", "review": "Progress reviews"}
+AI_FEATURE_LABELS = {"chat": "Trainer chat", "checkin": "Trainer check-ins",
+                     "plan": "Plan generation", "review": "Progress reviews"}
 
 CHAT_KEY_RE = re.compile(r"[0-9a-f]{32}")
 CHAT_MESSAGE_MAX_CHARS = 2000
@@ -294,8 +314,11 @@ def _chat_usage_summary(profile, chat_key):
             .filter(AIUsage.user_id == profile.id, AIUsage.chat_key == chat_key).scalar())
     messages = TrainerChatMessage.query.filter_by(
         user_id=profile.id, chat_key=chat_key, role="user").count()
+    checkins = TrainerChatMessage.query.filter_by(
+        user_id=profile.id, chat_key=chat_key, kind="checkin").count()
     return {
         "messages": messages,
+        "checkins": checkins,
         "cost": round(cost, 4),
         "budget": profile.ai_budget_per_workout or DEFAULT_AI_BUDGET,
     }
@@ -365,12 +388,196 @@ def build_trainer_context(profile, planned_workout):
     }
 
 
-def _chat_api_message(chat_message):
-    """A stored chat turn in Messages API form. User turns are rebuilt exactly
-    as first sent (status block + text) so history replays unchanged."""
-    if chat_message.role == "user" and chat_message.context:
-        return {"role": "user", "content": f"{chat_message.context}\n\n{chat_message.content}"}
-    return {"role": chat_message.role, "content": chat_message.content}
+def _chat_api_messages(rows):
+    """Stored chat rows in Messages API form, rebuilt exactly as first sent so
+    history replays unchanged: a user turn is its status block + text, and a
+    check-in is its prompt (as a user turn) followed by the trainer's reply."""
+    messages = []
+    for row in rows:
+        if row.kind == "checkin":
+            messages.append({"role": "user", "content": row.context or "[Check-in]"})
+            messages.append({"role": "assistant", "content": row.content})
+        elif row.role == "user" and row.context:
+            messages.append({"role": "user", "content": f"{row.context}\n\n{row.content}"})
+        else:
+            messages.append({"role": row.role, "content": row.content})
+    while messages and messages[0]["role"] != "user":  # history may be trimmed mid-pair
+        messages.pop(0)
+    return messages
+
+
+# ---------------------------------------------------------------------------
+# Trainer check-ins: the trainer speaking up unprompted during a workout
+# ---------------------------------------------------------------------------
+
+# Moments the workout page can report, most important first. "pr" and
+# "beat_last_time" come from classify_set(); "set" is any other logged set.
+CHECKIN_PRIORITY = [
+    "pr", "skipped_sets", "rep_drop", "high_rpe", "beat_last_time", "long_rest",
+    "idle", "exercise_done", "last_exercise", "halfway", "first_set", "set",
+]
+_QUIET_EVENTS = ["pr", "skipped_sets", "long_rest", "idle"]
+_NORMAL_EVENTS = _QUIET_EVENTS + [
+    "rep_drop", "high_rpe", "beat_last_time", "exercise_done", "last_exercise", "halfway", "first_set"]
+
+# How often the trainer may speak up. gap_minutes is the minimum time between
+# check-ins (personal records ignore it); a rest counts as long once it passes
+# max(prescribed x long_rest_factor, prescribed + 60s); idle_minutes is how
+# long with no set logged before it nudges. Sent to the page as JSON.
+CHECKIN_LEVELS = {
+    "off": {"label": "Off"},
+    "quiet": {"label": "Quiet", "gap_minutes": 15, "long_rest_factor": 3, "idle_minutes": 15,
+              "events": _QUIET_EVENTS},
+    "normal": {"label": "Normal", "gap_minutes": 8, "long_rest_factor": 2, "idle_minutes": 10,
+               "events": _NORMAL_EVENTS},
+    "chatty": {"label": "Chatty", "gap_minutes": 3, "long_rest_factor": 1.5, "idle_minutes": 6,
+               "events": _NORMAL_EVENTS + ["set"]},
+}
+DEFAULT_CHATTINESS = "normal"
+
+from ai import COACH_STYLES as _COACH_STYLES, DEFAULT_COACH_STYLE as COACH_STYLES_DEFAULT  # noqa: E402
+COACH_STYLE_OPTIONS = [(key, style["label"]) for key, style in _COACH_STYLES.items()]
+DEFAULT_REST_SECONDS = 90
+CHECKIN_FLAGS = {"first_set", "high_rpe", "rep_drop", "exercise_done", "skipped_sets", "halfway",
+                 "last_exercise"}
+
+
+def _fmt_set(weight, reps):
+    return f"{weight:g} lbs x {reps}" if weight else f"bodyweight x {reps}"
+
+
+def classify_set(profile_id, exercise_name, set_number, weight, reps):
+    """Compare a just-logged set with this user's completed history.
+
+    Returns {"kind": "pr", "previous": ...} for a personal record (heavier than
+    ever, or more reps at the heaviest weight; for bodyweight, most reps ever),
+    {"kind": "beat_last_time", "previous": ...} for beating the same set last
+    session, or None (also when there is no history to compare with).
+    """
+    if not reps or reps <= 0:
+        return None
+    weight = weight or 0
+    sessions = (WorkoutSession.query
+                .filter(WorkoutSession.user_id == profile_id,
+                        WorkoutSession.status == SESSION_STATUS_COMPLETED,
+                        WorkoutSession.logged_sets.any(LoggedSet.exercise_name == exercise_name))
+                .order_by(WorkoutSession.date.desc(), WorkoutSession.id.desc()).all())
+    prior = [s for ws in sessions for s in ws.logged_sets
+             if s.exercise_name == exercise_name and (s.reps_completed or 0) > 0]
+    if not prior:
+        return None
+
+    same_kind = [s for s in prior if bool(s.weight_lbs) == bool(weight)]
+    if same_kind:
+        if weight:
+            best_weight = max(s.weight_lbs for s in same_kind)
+            best_reps = max(s.reps_completed for s in same_kind if s.weight_lbs == best_weight)
+            if weight > best_weight or (weight == best_weight and reps > best_reps):
+                return {"kind": "pr", "previous": f"best was {_fmt_set(best_weight, best_reps)}"}
+        else:
+            best_reps = max(s.reps_completed for s in same_kind)
+            if reps > best_reps:
+                return {"kind": "pr", "previous": f"best was {_fmt_set(0, best_reps)}"}
+
+    last = next((s for s in sessions[0].logged_sets
+                 if s.exercise_name == exercise_name and s.set_number == set_number), None)
+    if last and last.reps_completed:
+        last_weight = last.weight_lbs or 0
+        if ((weight > last_weight and reps >= last.reps_completed)
+                or (weight == last_weight and reps > last.reps_completed)):
+            return {"kind": "beat_last_time",
+                    "previous": f"last time was {_fmt_set(last_weight, last.reps_completed)}"}
+    return None
+
+
+def _number_or_none(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _workouts_this_week(profile_id):
+    today = date.today()
+    return WorkoutSession.query.filter(
+        WorkoutSession.user_id == profile_id,
+        WorkoutSession.date >= today - timedelta(days=today.weekday()),
+        WorkoutSession.status == SESSION_STATUS_COMPLETED,
+    ).count()
+
+
+def _checkin_moment(profile, event, level):
+    """Pick the most important moment in a page event that this chattiness
+    level speaks up for. Returns (kind, description) or None."""
+    if not isinstance(event, dict):
+        return None
+    allowed = set(level["events"])
+    exercise = str(event.get("exercise") or "").strip()[:100]
+    event_type = event.get("type")
+
+    if event_type == "set_logged":
+        set_number = int(_number_or_none(event.get("set")) or 0)
+        weight = _number_or_none(event.get("weight"))
+        reps = _number_or_none(event.get("reps"))
+        reps = int(reps) if reps is not None else None
+        flags = {f for f in (event.get("flags") or []) if f in CHECKIN_FLAGS} if isinstance(
+            event.get("flags"), list) else set()
+        this_set = f"{exercise} set {set_number}: {_fmt_set(weight, reps or 0)}"
+        candidates = {"set": f"They just logged {this_set}."}
+        result = classify_set(profile.id, exercise, set_number, weight, reps) if exercise else None
+        if result and result["kind"] == "pr":
+            candidates["pr"] = f"{this_set}. That's a personal record ({result['previous']})."
+        elif result:
+            candidates["beat_last_time"] = f"{this_set}, which beats last time ({result['previous']})."
+        if "skipped_sets" in flags:
+            skipped = str(event.get("skipped_exercise") or "the previous exercise")[:100]
+            candidates["skipped_sets"] = f"They moved on from {skipped} with sets still unlogged."
+        if "rep_drop" in flags:
+            candidates["rep_drop"] = f"{this_set}. Reps are down 30% or more from their first set."
+        if "high_rpe" in flags:
+            candidates["high_rpe"] = f"{this_set}. RPE 9 or higher on two sets in a row."
+        if "exercise_done" in flags:
+            candidates["exercise_done"] = f"They just finished every set of {exercise}."
+        if "last_exercise" in flags:
+            candidates["last_exercise"] = f"They've started {exercise}, the last exercise of the workout."
+        if "halfway" in flags:
+            candidates["halfway"] = "They're about halfway through today's sets."
+        if "first_set" in flags:
+            n = _workouts_this_week(profile.id) + 1
+            candidates["first_set"] = (f"First set of the day is in ({this_set}). This is workout {n} "
+                                       f"this week; their streak is {profile.current_streak or 0}.")
+    elif event_type == "long_rest":
+        seconds = _number_or_none(event.get("seconds")) or 0
+        prescribed = _number_or_none(event.get("prescribed_rest")) or DEFAULT_REST_SECONDS
+        threshold = max(prescribed * level["long_rest_factor"], prescribed + 60)
+        if seconds < threshold:
+            return None
+        minutes, secs = divmod(int(seconds), 60)
+        candidates = {"long_rest": (f"It's been {minutes} min {secs} s since their last set of "
+                                    f"{exercise or 'the current exercise'}; prescribed rest is "
+                                    f"{int(prescribed)} s.")}
+    elif event_type == "idle":
+        seconds = _number_or_none(event.get("seconds")) or 0
+        if seconds < level["idle_minutes"] * 60:
+            return None
+        candidates = {"idle": f"{int(seconds // 60)} minutes into the session and no sets logged yet."}
+    else:
+        return None
+
+    for kind in CHECKIN_PRIORITY:
+        if kind in candidates and kind in allowed:
+            return kind, candidates[kind]
+    return None
+
+
+def _last_checkin_age_minutes(profile_id, chat_key):
+    last = (TrainerChatMessage.query
+            .filter_by(user_id=profile_id, chat_key=chat_key, kind="checkin")
+            .order_by(TrainerChatMessage.id.desc()).first())
+    if not last or not last.created_at:
+        return None
+    created = last.created_at.replace(tzinfo=None)
+    return (datetime.now(timezone.utc).replace(tzinfo=None) - created).total_seconds() / 60
 
 
 def get_active_plan(user_id):
@@ -1649,6 +1856,12 @@ def _build_workout_context(profile, planned_workout, active_plan, *, resume_sess
         chat_key=chat_key,
         chat_messages=_chat_messages(profile.id, chat_key),
         chat_usage=_chat_usage_summary(profile, chat_key),
+        trainer_settings={
+            "chattiness": profile.trainer_chattiness or DEFAULT_CHATTINESS,
+            "style": profile.trainer_style or COACH_STYLES_DEFAULT,
+        },
+        checkin_levels=CHECKIN_LEVELS,
+        coach_styles=COACH_STYLE_OPTIONS,
         workout=planned_workout,
         warmup_exercises=warmup,
         main_exercises=main,
@@ -2313,24 +2526,16 @@ def api_workout_chat():
         return jsonify({"error": "Set up your profile first."}), 400
 
     data = request.get_json(silent=True) or {}
-    chat_key = str(data.get("chat_key") or "")
+    chat_key, planned_workout, error = _parse_trainer_request(profile, data)
+    if error:
+        return error
     message = str(data.get("message") or "").strip()
-    if not CHAT_KEY_RE.fullmatch(chat_key):
-        return jsonify({"error": "Invalid chat key."}), 400
     if not message or len(message) > CHAT_MESSAGE_MAX_CHARS:
         return jsonify({"error": f"Messages must be 1 to {CHAT_MESSAGE_MAX_CHARS} characters."}), 400
-    try:
-        planned_workout_id = int(data.get("planned_workout_id"))
-    except (TypeError, ValueError):
-        planned_workout_id = None
-    planned_workout = (_get_planned_workout_for_user(planned_workout_id, profile.id)
-                       if planned_workout_id else None)
-    if planned_workout is None:
-        return jsonify({"error": "Workout not found."}), 404
 
     context = ai.format_live_snapshot(data.get("snapshot"))
     history = _chat_messages(profile.id, chat_key)[-CHAT_HISTORY_MAX_MESSAGES:]
-    api_messages = [_chat_api_message(m) for m in history]
+    api_messages = _chat_api_messages(history)
     api_messages.append({"role": "user", "content": f"{context}\n\n{message}"})
 
     try:
@@ -2351,6 +2556,104 @@ def api_workout_chat():
                                       content=reply))
     db.session.commit()
     return jsonify({"reply": reply, "usage": _chat_usage_summary(profile, chat_key)})
+
+
+def _parse_trainer_request(profile, data):
+    """Validate the chat_key and planned_workout_id shared by the chat and
+    check-in endpoints. Returns (chat_key, planned_workout, error_response)."""
+    chat_key = str(data.get("chat_key") or "")
+    if not CHAT_KEY_RE.fullmatch(chat_key):
+        return None, None, (jsonify({"error": "Invalid chat key."}), 400)
+    try:
+        planned_workout_id = int(data.get("planned_workout_id"))
+    except (TypeError, ValueError):
+        planned_workout_id = None
+    planned_workout = (_get_planned_workout_for_user(planned_workout_id, profile.id)
+                       if planned_workout_id else None)
+    if planned_workout is None:
+        return None, None, (jsonify({"error": "Workout not found."}), 404)
+    return chat_key, planned_workout, None
+
+
+@app.route("/api/workout/checkin", methods=["POST"])
+@login_required
+@limiter.limit("30 per minute")
+def api_workout_checkin():
+    """Let the trainer speak up about something the workout page noticed.
+
+    Expects JSON with chat_key, planned_workout_id, snapshot, and event (see
+    _checkin_moment). Claude is only called when the moment is one the user's
+    chattiness level covers, the gap since the last check-in has passed
+    (personal records skip the gap), and the workout is under budget.
+    Returns {"message": ..., "usage": ...} or {"skipped": reason}.
+    """
+    import ai
+
+    profile = get_profile()
+    if not profile:
+        return jsonify({"error": "Set up your profile first."}), 400
+    data = request.get_json(silent=True) or {}
+    chat_key, planned_workout, error = _parse_trainer_request(profile, data)
+    if error:
+        return error
+
+    level = CHECKIN_LEVELS.get(profile.trainer_chattiness or DEFAULT_CHATTINESS)
+    if not level or "events" not in level:
+        return jsonify({"skipped": "off"})
+    moment = _checkin_moment(profile, data.get("event"), level)
+    if moment is None:
+        return jsonify({"skipped": "not_notable"})
+    kind, description = moment
+
+    if kind != "pr":
+        age = _last_checkin_age_minutes(profile.id, chat_key)
+        if age is not None and age < level["gap_minutes"]:
+            return jsonify({"skipped": "too_soon"})
+    usage = _chat_usage_summary(profile, chat_key)
+    if usage["cost"] >= usage["budget"]:
+        return jsonify({"skipped": "budget", "usage": usage})
+
+    turn = ai.format_checkin_turn(description, ai.format_live_snapshot(data.get("snapshot")))
+    history = _chat_messages(profile.id, chat_key)[-CHAT_HISTORY_MAX_MESSAGES:]
+    api_messages = _chat_api_messages(history) + [{"role": "user", "content": turn}]
+    try:
+        reply = ai.trainer_checkin(
+            profile, build_trainer_context(profile, planned_workout), api_messages,
+            on_usage=record_ai_usage(profile.id, "checkin", chat_key))
+    except Exception:
+        app.logger.exception("Trainer check-in request failed")
+        return jsonify({"skipped": "error"})
+    if not reply:
+        return jsonify({"skipped": "pass", "usage": _chat_usage_summary(profile, chat_key)})
+
+    db.session.add(TrainerChatMessage(user_id=profile.id, chat_key=chat_key, role="assistant",
+                                      kind="checkin", content=reply, context=turn))
+    db.session.commit()
+    return jsonify({"message": reply, "moment": kind, "usage": _chat_usage_summary(profile, chat_key)})
+
+
+@app.route("/api/trainer/settings", methods=["POST"])
+@login_required
+def api_trainer_settings():
+    """Save the trainer's check-in chattiness and coaching style (JSON)."""
+    import ai
+
+    profile = get_profile()
+    if not profile:
+        return jsonify({"error": "Set up your profile first."}), 400
+    data = request.get_json(silent=True) or {}
+    chattiness = data.get("chattiness")
+    style = data.get("style")
+    if chattiness is not None and chattiness not in CHECKIN_LEVELS:
+        return jsonify({"error": "Unknown check-in level."}), 400
+    if style is not None and style not in ai.COACH_STYLES:
+        return jsonify({"error": "Unknown coaching style."}), 400
+    if chattiness is not None:
+        profile.trainer_chattiness = chattiness
+    if style is not None:
+        profile.trainer_style = style
+    db.session.commit()
+    return jsonify({"chattiness": profile.trainer_chattiness, "style": profile.trainer_style})
 
 
 @app.route("/settings")

@@ -1508,7 +1508,7 @@ tr.hist-detail-row td {
     border-bottom: 1px solid var(--border);
     background: var(--bg);
 }
-.coach-close {
+.coach-icon-btn {
     margin-left: auto;
     background: none;
     border: none;
@@ -1697,3 +1697,60 @@ tr.hist-detail-row td {
 .coach-voice-options label:has(input:disabled) { color: var(--text-muted); cursor: default; }
 .coach-voice-note { color: var(--text-muted); font-size: 0.8rem; width: 100%; }
 .coach-voice-note[hidden] { display: none; }
+
+/* Trainer check-ins, settings strip, and moving the panel */
+.coach-header { cursor: move; touch-action: none; user-select: none; }
+.coach-grip { color: var(--text-muted); font-size: 1.1rem; line-height: 1; }
+.coach-header .coach-icon-btn + .coach-icon-btn { margin-left: 0; }
+.coach-header .coach-icon-btn:first-of-type { margin-left: auto; }
+.coach-header .coach-icon-btn { font-size: 1.4rem; cursor: pointer; }
+
+.coach-settings {
+    padding: 0.6rem 0.75rem 0.75rem;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg);
+    font-size: 0.9rem;
+}
+.coach-settings[hidden] { display: none; }
+.coach-settings label { display: block; margin-top: 0.25rem; }
+.coach-settings input[type="range"] { width: 100%; min-height: 32px; }
+.coach-settings select { width: 100%; min-height: 40px; font-size: 1rem; margin-top: 0.25rem; }
+.coach-range-labels {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+.coach-settings-help { color: var(--text-muted); font-size: 0.8rem; margin: 0.35rem 0 0.5rem; }
+
+.coach-msg-checkin {
+    align-self: flex-start;
+    background: #fff8e1;
+    border: 1px solid #fcd34d;
+    border-bottom-left-radius: 4px;
+}
+.coach-msg-checkin::before {
+    content: "Check-in";
+    display: block;
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--warning);
+}
+
+.coach-bubble {
+    position: fixed;
+    right: 1rem;
+    bottom: 4.75rem;
+    z-index: 901;
+    max-width: min(320px, calc(100vw - 2rem));
+    background: #fff8e1;
+    border: 1px solid #fcd34d;
+    border-radius: 12px;
+    padding: 0.6rem 0.8rem;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.2);
+    cursor: pointer;
+    font-size: 1rem;
+}
+.coach-bubble[hidden] { display: none; }
