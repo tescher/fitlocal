@@ -1939,6 +1939,295 @@ class TestTrainerVoice:
         assert "Speak replies" in html
 
 
+def _log_sets(application, profile_id, planned_workout_id, sets, delta_days):
+    """Insert a completed session with explicit (exercise, set_number, weight, reps) rows."""
+    with application.app_context():
+        ws = WorkoutSession(user_id=profile_id, planned_workout_id=planned_workout_id,
+                            date=date.today() - timedelta(days=delta_days), overall_feeling=4)
+        db.session.add(ws)
+        db.session.flush()
+        for name, set_number, weight, reps in sets:
+            db.session.add(LoggedSet(session_id=ws.id, exercise_name=name, set_number=set_number,
+                                     weight_lbs=weight, reps_completed=reps, rpe=7))
+        db.session.commit()
+        return ws.id
+
+
+def _checkin(client, planned_workout_id, event, key=CHAT_KEY):
+    return client.post("/api/workout/checkin", json={
+        "chat_key": key, "planned_workout_id": planned_workout_id,
+        "snapshot": _SNAPSHOT, "event": event,
+    })
+
+
+def _set_event(weight, reps, set_number=1, exercise="Bench Press", flags=()):
+    return {"type": "set_logged", "exercise": exercise, "set": set_number,
+            "weight": weight, "reps": reps, "rpe": 8, "flags": list(flags)}
+
+
+def _set_chattiness(application, profile_id, level):
+    with application.app_context():
+        UserProfile.query.get(profile_id).trainer_chattiness = level
+        db.session.commit()
+
+
+class TestSetClassification:
+    def test_no_history_is_not_notable(self, application, profile, upper_body):
+        with application.app_context():
+            assert flask_app.classify_set(profile, "Bench Press", 1, 135, 10) is None
+
+    def test_heavier_than_ever_is_a_pr(self, application, profile, upper_body):
+        _log_sets(application, profile, upper_body, [("Bench Press", 1, 135, 10)], delta_days=3)
+        with application.app_context():
+            result = flask_app.classify_set(profile, "Bench Press", 1, 145, 8)
+        assert result["kind"] == "pr"
+        assert "135 lbs x 10" in result["previous"]
+
+    def test_more_reps_at_best_weight_is_a_pr(self, application, profile, upper_body):
+        _log_sets(application, profile, upper_body, [("Bench Press", 1, 135, 10)], delta_days=3)
+        with application.app_context():
+            assert flask_app.classify_set(profile, "Bench Press", 1, 135, 11)["kind"] == "pr"
+
+    def test_beating_last_session_without_a_pr(self, application, profile, upper_body):
+        _log_sets(application, profile, upper_body, [("Bench Press", 1, 155, 10)], delta_days=10)
+        _log_sets(application, profile, upper_body, [("Bench Press", 1, 135, 10)], delta_days=3)
+        with application.app_context():
+            result = flask_app.classify_set(profile, "Bench Press", 1, 140, 10)
+        assert result["kind"] == "beat_last_time"
+        assert "135 lbs x 10" in result["previous"]
+
+    def test_matching_last_time_is_not_notable(self, application, profile, upper_body):
+        _log_sets(application, profile, upper_body, [("Bench Press", 1, 135, 10)], delta_days=3)
+        with application.app_context():
+            assert flask_app.classify_set(profile, "Bench Press", 1, 135, 10) is None
+
+    def test_bodyweight_rep_pr(self, application, profile, upper_body):
+        _log_sets(application, profile, upper_body, [("Pull-Ups", 1, None, 8)], delta_days=3)
+        with application.app_context():
+            assert flask_app.classify_set(profile, "Pull-Ups", 1, None, 9)["kind"] == "pr"
+
+    def test_other_users_history_is_ignored(self, application, profile, upper_body):
+        with application.app_context():
+            other = UserProfile(name="Other", age=30, sex="Female", fitness_level="Beginner", goals="x")
+            db.session.add(other)
+            db.session.commit()
+            other_id = other.id
+        _log_sets(application, other_id, upper_body, [("Bench Press", 1, 100, 5)], delta_days=3)
+        with application.app_context():
+            assert flask_app.classify_set(profile, "Bench Press", 1, 135, 10) is None
+
+
+class TestCoachStyleAndCheckinAI:
+    def _context(self, application, upper_body):
+        with application.app_context():
+            return flask_app.build_trainer_context(
+                UserProfile.query.first(), PlannedWorkout.query.get(upper_body))
+
+    def _system_text(self, application, profile, upper_body, style):
+        import ai
+        mock_client = _mock_chat_client("ok")
+        ctx = self._context(application, upper_body)
+        with application.app_context():
+            p = UserProfile.query.get(profile)
+            p.trainer_style = style
+            with patch("ai.get_client", return_value=mock_client):
+                ai.chat_with_trainer(p, ctx, [{"role": "user", "content": "Hi"}])
+        return _ai_call_kwargs(mock_client)["system"][0]["text"]
+
+    def test_checkin_model_is_sonnet_5_5(self):
+        import ai
+        assert ai.MODEL_CHECKIN == "claude-sonnet-5-5"
+
+    def test_styles_change_the_system_prompt(self, application, profile, upper_body):
+        import ai
+        tough = self._system_text(application, profile, upper_body, "tough_love")
+        calm = self._system_text(application, profile, upper_body, "calm")
+        assert ai.COACH_STYLES["tough_love"]["instruction"] in tough
+        assert ai.COACH_STYLES["calm"]["instruction"] in calm
+
+    def test_unknown_style_falls_back_to_encouraging(self, application, profile, upper_body):
+        import ai
+        text = self._system_text(application, profile, upper_body, "bogus")
+        assert ai.COACH_STYLES["encouraging"]["instruction"] in text
+
+    def test_checkin_turn_asks_for_specific_motivation_or_pass(self):
+        import ai
+        turn = ai.format_checkin_turn("Bench Press set 1: a personal record.", "[Live workout status]")
+        assert "personal record" in turn
+        assert "PASS" in turn
+        assert "repeat" in turn
+        assert turn.rstrip().endswith("[Live workout status]")
+
+    def test_pass_reply_returns_empty(self, application, profile, upper_body):
+        import ai
+        ctx = self._context(application, upper_body)
+        with application.app_context():
+            with patch("ai.get_client", return_value=_mock_chat_client("PASS")):
+                reply = ai.trainer_checkin(UserProfile.query.get(profile), ctx,
+                                           [{"role": "user", "content": "x"}])
+        assert reply == ""
+
+    def test_checkin_request_uses_low_effort(self, application, profile, upper_body):
+        import ai
+        mock_client = _mock_chat_client("Huge lift!")
+        ctx = self._context(application, upper_body)
+        with application.app_context():
+            with patch("ai.get_client", return_value=mock_client):
+                reply = ai.trainer_checkin(UserProfile.query.get(profile), ctx,
+                                           [{"role": "user", "content": "x"}])
+        assert reply == "Huge lift!"
+        kwargs = _ai_call_kwargs(mock_client)
+        assert (kwargs["model"], kwargs["output_config"]) == ("claude-sonnet-5-5", {"effort": "low"})
+
+
+class TestCheckinRoute:
+    def test_requires_login(self, application, profile, upper_body):
+        r = _checkin(application.test_client(), upper_body, _set_event(145, 8))
+        assert r.status_code in (302, 401)
+
+    def test_rejects_bad_key_and_unknown_workout(self, client, profile, upper_body):
+        assert _checkin(client, upper_body, _set_event(145, 8), key="bad").status_code == 400
+        assert _checkin(client, 99999, _set_event(145, 8)).status_code == 404
+
+    def test_off_never_calls_claude(self, client, application, profile, upper_body):
+        _set_chattiness(application, profile, "off")
+        mock_client = _mock_chat_client("x")
+        with patch("ai.get_client", return_value=mock_client):
+            r = _checkin(client, upper_body, _set_event(145, 8, flags=["exercise_done"]))
+        assert r.get_json()["skipped"] == "off"
+        assert not mock_client.beta.messages.stream.called
+
+    def test_ordinary_set_is_skipped_without_calling_claude(self, client, profile, upper_body):
+        mock_client = _mock_chat_client("x")
+        with patch("ai.get_client", return_value=mock_client):
+            r = _checkin(client, upper_body, _set_event(135, 10))
+        assert r.get_json()["skipped"] == "not_notable"
+        assert not mock_client.beta.messages.stream.called
+
+    def test_pr_checkin_is_saved_with_usage(self, client, application, profile, upper_body):
+        _log_sets(application, profile, upper_body, [("Bench Press", 1, 135, 10)], delta_days=3)
+        with patch("ai.get_client", return_value=_mock_chat_client("145 is a new best. Huge.")):
+            r = _checkin(client, upper_body, _set_event(145, 8))
+        body = r.get_json()
+        assert body["message"] == "145 is a new best. Huge."
+        assert body["usage"]["checkins"] == 1
+        with application.app_context():
+            row = TrainerChatMessage.query.one()
+            assert (row.role, row.kind, row.chat_key) == ("assistant", "checkin", CHAT_KEY)
+            assert "personal record" in row.context
+            assert AIUsage.query.one().feature == "checkin"
+
+    def test_gap_between_checkins_but_pr_bypasses_it(self, client, application, profile, upper_body):
+        _log_sets(application, profile, upper_body, [("Bench Press", 1, 135, 10)], delta_days=3)
+        mock_client = _mock_chat_client("Done with bench, nice.", "New best!")
+        with patch("ai.get_client", return_value=mock_client):
+            first = _checkin(client, upper_body, _set_event(135, 10, flags=["exercise_done"]))
+            second = _checkin(client, upper_body, _set_event(135, 10, set_number=2, flags=["halfway"]))
+            pr = _checkin(client, upper_body, _set_event(150, 6, set_number=3))
+        assert "message" in first.get_json()
+        assert second.get_json()["skipped"] == "too_soon"
+        assert pr.get_json()["message"] == "New best!"
+
+    def test_quiet_ignores_normal_level_moments(self, client, application, profile, upper_body):
+        _set_chattiness(application, profile, "quiet")
+        mock_client = _mock_chat_client("x")
+        with patch("ai.get_client", return_value=mock_client):
+            r = _checkin(client, upper_body, _set_event(135, 10, flags=["high_rpe", "exercise_done"]))
+        assert r.get_json()["skipped"] == "not_notable"
+        assert not mock_client.beta.messages.stream.called
+
+    def test_long_rest_needs_to_pass_the_threshold(self, client, application, profile, upper_body):
+        mock_client = _mock_chat_client("Clock's running, back under the bar.")
+        event = {"type": "long_rest", "exercise": "Bench Press", "prescribed_rest": 90}
+        with patch("ai.get_client", return_value=mock_client):
+            short = _checkin(client, upper_body, dict(event, seconds=120))
+            long = _checkin(client, upper_body, dict(event, seconds=300))
+        assert short.get_json()["skipped"] == "not_notable"
+        assert long.get_json()["message"].startswith("Clock's running")
+        with application.app_context():
+            assert "5 min" in TrainerChatMessage.query.one().context
+
+    def test_over_budget_skips(self, client, application, profile, upper_body):
+        _log_sets(application, profile, upper_body, [("Bench Press", 1, 135, 10)], delta_days=3)
+        with application.app_context():
+            db.session.add(AIUsage(user_id=profile, feature="chat", model="claude-sonnet-5-5",
+                                   cost_usd=1.50, chat_key=CHAT_KEY))
+            db.session.commit()
+        mock_client = _mock_chat_client("x")
+        with patch("ai.get_client", return_value=mock_client):
+            r = _checkin(client, upper_body, _set_event(145, 8))
+        assert r.get_json()["skipped"] == "budget"
+        assert not mock_client.beta.messages.stream.called
+
+    def test_pass_reply_saves_nothing_but_counts_usage(self, client, application, profile, upper_body):
+        _log_sets(application, profile, upper_body, [("Bench Press", 1, 135, 10)], delta_days=3)
+        with patch("ai.get_client", return_value=_mock_chat_client("PASS")):
+            r = _checkin(client, upper_body, _set_event(145, 8))
+        assert r.get_json()["skipped"] == "pass"
+        with application.app_context():
+            assert TrainerChatMessage.query.count() == 0
+            assert AIUsage.query.count() == 1
+
+    def test_first_set_mentions_workouts_this_week(self, client, application, profile, upper_body):
+        _log_sets(application, profile, upper_body, [("Squats", 1, 185, 8)], delta_days=0)
+        with patch("ai.get_client", return_value=_mock_chat_client("Second session this week!")):
+            _checkin(client, upper_body, _set_event(135, 10, flags=["first_set"]))
+        with application.app_context():
+            assert "workout 2 this week" in TrainerChatMessage.query.one().context
+
+    def test_chat_replays_checkins_as_user_then_assistant(self, client, application, profile, upper_body):
+        _log_sets(application, profile, upper_body, [("Bench Press", 1, 135, 10)], delta_days=3)
+        mock_client = _mock_chat_client("New best!", "Yes, add 5.")
+        with patch("ai.get_client", return_value=mock_client):
+            _checkin(client, upper_body, _set_event(145, 8))
+            _chat(client, upper_body, "Should I go heavier?")
+        checkin_call, chat_call = mock_client.beta.messages.stream.call_args_list
+        msgs = chat_call.kwargs["messages"]
+        assert [m["role"] for m in msgs] == ["user", "assistant", "user"]
+        assert msgs[0] == checkin_call.kwargs["messages"][-1]  # replayed unchanged
+        assert msgs[1]["content"] == "New best!"
+
+
+class TestTrainerSettings:
+    def test_defaults(self, application, profile):
+        with application.app_context():
+            p = UserProfile.query.get(profile)
+            assert (p.trainer_chattiness, p.trainer_style) == ("normal", "encouraging")
+
+    def test_update_settings(self, client, application, profile):
+        r = client.post("/api/trainer/settings", json={"chattiness": "chatty", "style": "tough_love"})
+        assert r.status_code == 200
+        with application.app_context():
+            p = UserProfile.query.get(profile)
+            assert (p.trainer_chattiness, p.trainer_style) == ("chatty", "tough_love")
+
+    def test_rejects_unknown_values(self, client, application, profile):
+        assert client.post("/api/trainer/settings", json={"chattiness": "loud"}).status_code == 400
+        assert client.post("/api/trainer/settings", json={"style": "mean"}).status_code == 400
+        with application.app_context():
+            assert UserProfile.query.get(profile).trainer_chattiness == "normal"
+
+    def test_workout_page_has_checkin_controls(self, client, profile, active_plan):
+        html = client.get("/workout/today").data.decode()
+        assert 'id="coachChattiness"' in html
+        assert 'id="coachStyle"' in html
+        assert 'value="tough_love"' in html
+        assert 'id="coachBubble"' in html
+        assert 'data-rest-seconds="90"' in html
+        assert '"gap_minutes"' in html  # check-in levels passed to the page
+
+    def test_session_detail_marks_checkins(self, client, application, profile, upper_body):
+        sid = _log_sets(application, profile, upper_body, [("Bench Press", 1, 135, 10)], delta_days=0)
+        with application.app_context():
+            db.session.add(TrainerChatMessage(user_id=profile, chat_key=CHAT_KEY, session_id=sid,
+                                              role="assistant", kind="checkin", content="Strong start!",
+                                              context="[Check-in]"))
+            db.session.commit()
+        html = client.get(f"/history/{sid}").data.decode()
+        assert "coach-msg-checkin" in html
+        assert "Strong start!" in html
+
+
 class TestAIUsageTracking:
     def test_plan_generation_records_usage(self, client, application, profile):
         with patch("ai.get_client", return_value=_mock_ai_client(_MOCK_PLAN)):
