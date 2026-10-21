@@ -48,6 +48,10 @@ class UserProfile(db.Model):
     last_workout_date = db.Column(db.Date, nullable=True)
     # Per-workout spending budget (USD) shown on the trainer chat usage meter
     ai_budget_per_workout = db.Column(db.Float, default=1.0)
+    # Trainer check-ins: how often it speaks up ("off"/"quiet"/"normal"/"chatty", see
+    # app.CHECKIN_LEVELS) and its personality (see ai.COACH_STYLES)
+    trainer_chattiness = db.Column(db.String(20), default="normal")
+    trainer_style = db.Column(db.String(20), default="encouraging")
 
     @property
     def current_age(self):
@@ -170,9 +174,12 @@ class TrainerChatMessage(db.Model):
     chat_key = db.Column(db.String(32), nullable=False, index=True)
     session_id = db.Column(db.Integer, db.ForeignKey("workout_session.id"), nullable=True)
     role = db.Column(db.String(20), nullable=False)  # "user" / "assistant"
+    # "chat" (a reply to the user) or "checkin" (the trainer speaking up unprompted)
+    kind = db.Column(db.String(20), nullable=False, default="chat")
     content = db.Column(db.Text, nullable=False)
-    # Live workout status sent ahead of a user message. Stored so later turns
-    # replay the conversation byte-for-byte (keeps the prompt cache valid).
+    # The text sent to Claude as the user turn: the live workout status ahead of a
+    # user message, or the whole check-in prompt for a check-in. Stored so later
+    # turns replay the conversation byte-for-byte (keeps the prompt cache valid).
     context = db.Column(db.Text, nullable=True)
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
 

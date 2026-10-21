@@ -1,16 +1,38 @@
 <!-- Trainer chat panel (included by workout_today.html). Needs chat_key, chat_messages,
-     chat_usage and workout in the context, and a #workoutForm on the page. -->
+     chat_usage, trainer_settings, checkin_levels, coach_styles and workout in the
+     context, and a #workoutForm whose .exercise-block divs carry data-rest-seconds. -->
 <button type="button" id="coachFab" class="coach-fab" onclick="toggleCoach(true)"
         aria-controls="coachPanel" aria-expanded="false">&#128172; Coach</button>
+<div id="coachBubble" class="coach-bubble" role="status" hidden onclick="toggleCoach(true)"></div>
 
 <div id="coachPanel" class="coach-panel" role="dialog" aria-label="Trainer chat" hidden>
-    <div class="coach-header">
+    <div class="coach-header" id="coachDragHandle" title="Drag to move">
+        <span class="coach-grip" aria-hidden="true">&#10303;</span>
         <strong>Trainer</strong>
         <div id="coachMeter" class="coach-meter" title="Estimated Claude cost for this workout, against your budget (set it in Settings)">
             <div class="coach-meter-bar"><div class="coach-meter-fill" id="coachMeterFill"></div></div>
             <span id="coachMeterText" class="coach-meter-text"></span>
         </div>
-        <button type="button" class="coach-close" onclick="toggleCoach(false)" aria-label="Close trainer chat">&times;</button>
+        <button type="button" class="coach-icon-btn" onclick="toggleCoachSettings()" aria-controls="coachSettings"
+                aria-expanded="false" id="coachSettingsBtn" aria-label="Check-in settings">&#9881;</button>
+        <button type="button" class="coach-icon-btn" onclick="toggleCoach(false)" aria-label="Minimize trainer chat">&minus;</button>
+    </div>
+
+    {% set level_keys = checkin_levels.keys() | list %}
+    <div id="coachSettings" class="coach-settings" hidden>
+        <label for="coachChattiness">Check-ins: <strong id="coachChattinessLabel">{{ checkin_levels[trainer_settings.chattiness].label }}</strong></label>
+        <input type="range" id="coachChattiness" min="0" max="{{ level_keys | length - 1 }}" step="1"
+               value="{{ level_keys.index(trainer_settings.chattiness) }}" aria-describedby="coachChattinessHelp">
+        <div class="coach-range-labels" aria-hidden="true">
+            {% for key in level_keys %}<span>{{ checkin_levels[key].label }}</span>{% endfor %}
+        </div>
+        <p id="coachChattinessHelp" class="coach-settings-help">How often the trainer speaks up on its own about your sets, rest and progress.</p>
+        <label for="coachStyle">Coaching style</label>
+        <select id="coachStyle">
+            {% for key, label in coach_styles %}
+            <option value="{{ key }}" {{ 'selected' if key == trainer_settings.style else '' }}>{{ label }}</option>
+            {% endfor %}
+        </select>
     </div>
 
     <div id="coachMessages" class="coach-messages" aria-live="polite">
@@ -18,7 +40,7 @@
         <p class="coach-empty" id="coachEmpty">Ask about weights, form, rest, or how today is going. Your trainer sees what you've logged so far.</p>
         {% endif %}
         {% for m in chat_messages %}
-        <div class="coach-msg coach-msg-{{ m.role }}">{{ m.content }}</div>
+        <div class="coach-msg coach-msg-{{ 'checkin' if m.kind == 'checkin' else m.role }}">{{ m.content }}</div>
         {% endfor %}
     </div>
 
@@ -59,12 +81,14 @@ function toggleCoach(open) {
     panel.hidden = !open;
     fab.hidden = open;
     fab.setAttribute('aria-expanded', String(open));
+    hideCoachBubble();
     if (open) {
         scrollCoachToEnd();
         document.getElementById('coachInput').focus();
     } else {
         stopCoachListening();
         if ('speechSynthesis' in window) speechSynthesis.cancel();
+        resetCoachPosition();  // minimizing puts the panel back in its default spot
     }
 }
 
@@ -95,8 +119,9 @@ function renderCoachMeter(usage) {
     document.getElementById('coachMeterFill').style.width = (Math.min(ratio, 1) * 100) + '%';
     meter.classList.toggle('coach-meter-warn', ratio >= 0.75 && ratio < 1);
     meter.classList.toggle('coach-meter-over', ratio >= 1);
-    let text = usage.messages + (usage.messages === 1 ? ' message' : ' messages') + ' · '
-        + formatCoachCost(usage.cost) + ' of ' + formatCoachCost(usage.budget);
+    let text = usage.messages + (usage.messages === 1 ? ' message' : ' messages') + ' · ';
+    if (usage.checkins) text += usage.checkins + (usage.checkins === 1 ? ' check-in' : ' check-ins') + ' · ';
+    text += formatCoachCost(usage.cost) + ' of ' + formatCoachCost(usage.budget);
     if (ratio >= 1) text += ' — over budget';
     document.getElementById('coachMeterText').textContent = text;
 }
@@ -351,6 +376,304 @@ function speakCoachReply(text) {
     speechSynthesis.speak(utterance);
 }
 
+// --- Check-in settings (chattiness slider + coaching style), saved to the profile ---
+const COACH_LEVEL_KEYS = {{ level_keys | tojson }};
+
+function toggleCoachSettings() {
+    const settings = document.getElementById('coachSettings');
+    settings.hidden = !settings.hidden;
+    document.getElementById('coachSettingsBtn').setAttribute('aria-expanded', String(!settings.hidden));
+}
+
+async function saveCoachSettings(changes) {
+    try {
+        const res = await fetch({{ url_for('api_trainer_settings') | tojson }}, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': document.querySelector('meta[name="csrf-token"]').content,
+            },
+            body: JSON.stringify(changes),
+        });
+        if (!res.ok) throw new Error('save failed');
+        showCoachError('');
+    } catch (e) {
+        showCoachError("Couldn't save the trainer settings. Try again.");
+    }
+}
+
+document.getElementById('coachChattiness').addEventListener('input', function() {
+    const key = COACH_LEVEL_KEYS[this.value];
+    document.getElementById('coachChattinessLabel').textContent = COACH_CHECKIN.levels[key].label;
+});
+document.getElementById('coachChattiness').addEventListener('change', function() {
+    COACH_CHECKIN.level = COACH_LEVEL_KEYS[this.value];
+    saveCoachSettings({ chattiness: COACH_CHECKIN.level });
+});
+document.getElementById('coachStyle').addEventListener('change', function() {
+    saveCoachSettings({ style: this.value });
+});
+
+// --- Check-ins: watch the workout and let the trainer speak up ---
+// The page notices moments (a set logged, a long rest, no sets yet); the server
+// decides whether the chattiness level covers it, applies the gap between
+// check-ins and the budget, spots personal records, and asks Claude.
+const COACH_CHECKIN = {
+    url: {{ url_for('api_workout_checkin') | tojson }},
+    levels: {{ checkin_levels | tojson }},
+    level: {{ trainer_settings.chattiness | tojson }},
+    lastSetAt: null,       // ms timestamp of the last logged set
+    lastBlock: null,       // .exercise-block of the last logged set
+    longRestSent: false,   // one long-rest nudge per rest
+    idleSent: false,
+    halfwaySent: false,
+    lastExerciseSent: false,
+    skippedSent: new Set(),
+    inFlight: false,
+    analyzeDelayMs: 5000,  // wait for RPE/notes after reps are entered
+};
+
+function coachSetRows(block) {
+    return Array.from(block.querySelectorAll('tbody tr')).filter(function(row) {
+        return row.querySelector('input[name="exercise_name"]');
+    });
+}
+
+function coachRowValue(row, name) {
+    const el = row.querySelector('[name="' + name + '"]');
+    return el ? el.value : '';
+}
+
+function coachRowDone(row) {
+    return coachRowValue(row, 'reps') !== '';
+}
+
+function coachAllRows() {
+    return Array.from(document.querySelectorAll('#workoutForm .exercise-block')).flatMap(coachSetRows);
+}
+
+// Rows already filled in (e.g. a resumed workout) don't count as new sets.
+function markExistingCoachSets() {
+    coachAllRows().forEach(function(row) {
+        if (coachRowDone(row)) row.dataset.coachLogged = '1';
+    });
+}
+
+function coachSetFlags(row, block) {
+    const rows = coachSetRows(block);
+    const index = rows.indexOf(row);
+    const reps = parseFloat(coachRowValue(row, 'reps'));
+    const rpe = parseFloat(coachRowValue(row, 'rpe'));
+    const flags = [];
+    const extra = {};
+
+    const allRows = coachAllRows();
+    if (!allRows.some(function(r) { return r !== row && r.dataset.coachLogged === '1'; })) flags.push('first_set');
+    if (rows.every(coachRowDone)) flags.push('exercise_done');
+    if (index > 0) {
+        const prevRpe = parseFloat(coachRowValue(rows[index - 1], 'rpe'));
+        if (rpe >= 9 && prevRpe >= 9) flags.push('high_rpe');
+        const firstReps = parseFloat(coachRowValue(rows[0], 'reps'));
+        if (firstReps > 0 && reps <= firstReps * 0.7) flags.push('rep_drop');
+    }
+    const prev = COACH_CHECKIN.lastBlock;
+    if (prev && prev !== block && !coachSetRows(prev).every(coachRowDone)
+            && !COACH_CHECKIN.skippedSent.has(prev.dataset.exerciseName)) {
+        flags.push('skipped_sets');
+        extra.skipped_exercise = prev.dataset.exerciseName;
+        COACH_CHECKIN.skippedSent.add(prev.dataset.exerciseName);
+    }
+    const done = allRows.filter(coachRowDone).length;
+    if (!COACH_CHECKIN.halfwaySent && allRows.length >= 4 && done >= allRows.length / 2) {
+        flags.push('halfway');
+        COACH_CHECKIN.halfwaySent = true;
+    }
+    const mainBlocks = document.querySelectorAll('#workoutForm .exercise-block:not(.cooldown-block)');
+    if (!COACH_CHECKIN.lastExerciseSent && mainBlocks.length > 1
+            && block === mainBlocks[mainBlocks.length - 1] && index === rows.findIndex(coachRowDone)) {
+        flags.push('last_exercise');
+        COACH_CHECKIN.lastExerciseSent = true;
+    }
+    return { flags: flags, extra: extra };
+}
+
+function analyzeCoachSet(row) {
+    if (row.dataset.coachLogged === '1' || !coachRowDone(row)) return;
+    const block = row.closest('.exercise-block');
+    const result = coachSetFlags(row, block);
+    row.dataset.coachLogged = '1';
+    COACH_CHECKIN.lastSetAt = Date.now();
+    COACH_CHECKIN.lastBlock = block;
+    COACH_CHECKIN.longRestSent = false;
+    sendCoachCheckin(Object.assign({
+        type: 'set_logged',
+        exercise: block.dataset.exerciseName,
+        set: coachSetRows(block).indexOf(row) + 1,
+        weight: coachRowValue(row, 'weight'),
+        reps: coachRowValue(row, 'reps'),
+        rpe: coachRowValue(row, 'rpe'),
+        flags: result.flags,
+    }, result.extra));
+}
+
+document.getElementById('workoutForm').addEventListener('change', function(e) {
+    if (e.target.name !== 'reps' || e.target.value === '') return;
+    const row = e.target.closest('tr');
+    if (!row || row.dataset.coachLogged === '1') return;
+    clearTimeout(row._coachTimer);
+    row._coachTimer = setTimeout(function() { analyzeCoachSet(row); }, COACH_CHECKIN.analyzeDelayMs);
+});
+
+function checkCoachTimers() {
+    const config = COACH_CHECKIN.levels[COACH_CHECKIN.level];
+    if (!config || !config.events) return;
+    const now = Date.now();
+    if (COACH_CHECKIN.lastSetAt) {
+        if (COACH_CHECKIN.longRestSent || coachAllRows().every(coachRowDone)) return;
+        const rest = parseFloat(COACH_CHECKIN.lastBlock.dataset.restSeconds) || 90;
+        const elapsed = (now - COACH_CHECKIN.lastSetAt) / 1000;
+        if (elapsed >= Math.max(rest * config.long_rest_factor, rest + 60)) {
+            COACH_CHECKIN.longRestSent = true;
+            sendCoachCheckin({ type: 'long_rest', exercise: COACH_CHECKIN.lastBlock.dataset.exerciseName,
+                               seconds: Math.round(elapsed), prescribed_rest: rest });
+        }
+    } else if (!COACH_CHECKIN.idleSent && typeof sessionStart !== 'undefined') {
+        const elapsed = (now - sessionStart) / 1000;
+        if (elapsed >= config.idle_minutes * 60 && !coachAllRows().some(coachRowDone)) {
+            COACH_CHECKIN.idleSent = true;
+            sendCoachCheckin({ type: 'idle', seconds: Math.round(elapsed) });
+        }
+    }
+}
+
+async function sendCoachCheckin(event) {
+    const config = COACH_CHECKIN.levels[COACH_CHECKIN.level];
+    if (!config || !config.events || COACH_CHECKIN.inFlight) return;
+    COACH_CHECKIN.inFlight = true;
+    try {
+        const res = await fetch(COACH_CHECKIN.url, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': document.querySelector('meta[name="csrf-token"]').content,
+            },
+            body: JSON.stringify({
+                chat_key: COACH.key,
+                planned_workout_id: COACH.plannedWorkoutId,
+                snapshot: coachSnapshot(),
+                event: event,
+            }),
+        });
+        const data = await res.json();
+        if (data.usage) renderCoachMeter(data.usage);
+        if (data.message) deliverCoachCheckin(data.message);
+    } catch (e) {
+        // Check-ins are best-effort; a failed one is simply skipped.
+    } finally {
+        COACH_CHECKIN.inFlight = false;
+    }
+}
+
+function deliverCoachCheckin(text) {
+    addCoachMessage('checkin', text);
+    if (document.getElementById('coachPanel').hidden) showCoachBubble(text);
+    playCoachChime();
+    setTimeout(function() { speakCoachReply(text); }, 450);
+}
+
+function playCoachChime() {
+    try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        [660, 880].forEach(function(freq, i) {
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.type = 'sine';
+            osc.frequency.value = freq;
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            const start = ctx.currentTime + i * 0.15;
+            gain.gain.setValueAtTime(0.0001, start);
+            gain.gain.exponentialRampToValueAtTime(0.15, start + 0.02);
+            gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.3);
+            osc.start(start);
+            osc.stop(start + 0.32);
+        });
+    } catch (e) {
+        // No audio available: the message still shows.
+    }
+}
+
+let coachBubbleTimer = null;
+function showCoachBubble(text) {
+    const bubble = document.getElementById('coachBubble');
+    bubble.textContent = text;
+    bubble.hidden = false;
+    clearTimeout(coachBubbleTimer);
+    coachBubbleTimer = setTimeout(hideCoachBubble, 12000);
+}
+
+function hideCoachBubble() {
+    clearTimeout(coachBubbleTimer);
+    document.getElementById('coachBubble').hidden = true;
+}
+
+// --- Moving the panel: drag the header; minimizing puts it back ---
+const COACH_DRAG = { active: false, dx: 0, dy: 0 };
+
+function clampCoachPanel(left, top, panel) {
+    const rect = panel.getBoundingClientRect();
+    // clientWidth/Height exclude the scrollbars, unlike innerWidth/Height
+    const maxLeft = Math.max(0, document.documentElement.clientWidth - rect.width);
+    const maxTop = Math.max(0, document.documentElement.clientHeight - 48);  // keep the header reachable
+    return [Math.min(Math.max(0, left), maxLeft), Math.min(Math.max(0, top), maxTop)];
+}
+
+function resetCoachPosition() {
+    const panel = document.getElementById('coachPanel');
+    ['left', 'top', 'right', 'bottom', 'width', 'height'].forEach(function(prop) { panel.style[prop] = ''; });
+    panel.classList.remove('coach-moved');
+}
+
+document.getElementById('coachDragHandle').addEventListener('pointerdown', function(e) {
+    if (e.target.closest('button, input, select, a')) return;
+    const panel = document.getElementById('coachPanel');
+    const rect = panel.getBoundingClientRect();
+    // Pin the current size and switch from right/bottom anchoring to left/top.
+    Object.assign(panel.style, {
+        left: rect.left + 'px', top: rect.top + 'px', right: 'auto', bottom: 'auto',
+        width: rect.width + 'px', height: rect.height + 'px',
+    });
+    panel.classList.add('coach-moved');
+    COACH_DRAG.active = true;
+    COACH_DRAG.dx = e.clientX - rect.left;
+    COACH_DRAG.dy = e.clientY - rect.top;
+    this.setPointerCapture(e.pointerId);
+    e.preventDefault();
+});
+
+document.getElementById('coachDragHandle').addEventListener('pointermove', function(e) {
+    if (!COACH_DRAG.active) return;
+    const panel = document.getElementById('coachPanel');
+    const pos = clampCoachPanel(e.clientX - COACH_DRAG.dx, e.clientY - COACH_DRAG.dy, panel);
+    panel.style.left = pos[0] + 'px';
+    panel.style.top = pos[1] + 'px';
+});
+
+['pointerup', 'pointercancel'].forEach(function(type) {
+    document.getElementById('coachDragHandle').addEventListener(type, function() { COACH_DRAG.active = false; });
+});
+
+window.addEventListener('resize', function() {
+    const panel = document.getElementById('coachPanel');
+    if (!panel.classList.contains('coach-moved')) return;
+    const rect = panel.getBoundingClientRect();
+    const pos = clampCoachPanel(rect.left, rect.top, panel);
+    panel.style.left = pos[0] + 'px';
+    panel.style.top = pos[1] + 'px';
+});
+
 setupCoachVoice();
+markExistingCoachSets();
+setInterval(checkCoachTimers, 15000);
 renderCoachMeter({{ chat_usage | tojson }});
 </script>

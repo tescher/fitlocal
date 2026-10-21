@@ -63,7 +63,7 @@
     <h2>Trainer Chat</h2>
     <div class="coach-transcript">
         {% for m in chat_messages %}
-        <div class="coach-msg coach-msg-{{ m.role }}">{{ m.content }}</div>
+        <div class="coach-msg coach-msg-{{ 'checkin' if m.kind == 'checkin' else m.role }}">{{ m.content }}</div>
         {% endfor %}
     </div>
 </div>

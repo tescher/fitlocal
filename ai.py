@@ -6,6 +6,7 @@ import anthropic
 MODEL_PLAN = "claude-opus-5-5"
 MODEL_REVIEW = "claude-opus-5-5"
 MODEL_CHAT = "claude-sonnet-5-5"
+MODEL_CHECKIN = "claude-sonnet-5-5"  # same model as chat so both share one prompt cache
 
 # Server-side refusal fallback: if a safety classifier declines a request, the
 # API re-runs it on Anthropic's recommended fallback model in the same call.
@@ -241,6 +242,28 @@ Return only valid JSON, no commentary."""
 # ---------------------------------------------------------------------------
 
 CHAT_MAX_TOKENS = 4000  # thinking (kept short at low effort) plus a short reply
+CHECKIN_PASS = "PASS"  # what the model replies when a check-in isn't worth saying
+
+# The trainer's personality, chosen per user (UserProfile.trainer_style).
+COACH_STYLES = {
+    "encouraging": {
+        "label": "Encouraging",
+        "instruction": ("Your coaching style is warm and upbeat. Celebrate effort and progress, "
+                        "and frame problems as the next step forward."),
+    },
+    "tough_love": {
+        "label": "Tough love",
+        "instruction": ("Your coaching style is direct and demanding, like a no-nonsense coach. Push them "
+                        "and call out slacking (long rests, skipped sets) bluntly, but never insult them "
+                        "and never push them through pain."),
+    },
+    "calm": {
+        "label": "Calm & technical",
+        "instruction": ("Your coaching style is calm, steady and technical. Focus on form, pacing and the "
+                        "numbers, and keep the emotional tone low-key."),
+    },
+}
+DEFAULT_COACH_STYLE = "encouraging"
 _SNAPSHOT_MAX_EXERCISES = 30
 _SNAPSHOT_MAX_SETS = 20
 
@@ -324,7 +347,10 @@ def _trainer_system_prompt(profile, workout_context):
         exercise_lines.append(line)
 
     review = workout_context.get("review_suggestions") or "None yet."
-    return f"""You are a personal trainer coaching {profile.name} through a workout in real time, by text chat between sets.
+    style = COACH_STYLES.get(getattr(profile, "trainer_style", None), COACH_STYLES[DEFAULT_COACH_STYLE])
+    return f"""You are a personal trainer coaching {profile.name} through a workout in real time, by text chat between sets. Sometimes you also speak up unprompted, like a trainer watching from nearby.
+
+{style['instruction']}
 
 How to reply:
 - Keep it short: one to three sentences, since they are reading between sets. Use a short list only when they ask for steps.
@@ -357,3 +383,26 @@ def chat_with_trainer(profile, workout_context, messages, on_usage=None):
         "cache_control": {"type": "ephemeral"},
     }]
     return _send(MODEL_CHAT, messages, CHAT_MAX_TOKENS, "low", system=system, on_usage=on_usage).strip()
+
+
+def format_checkin_turn(moment, status_text):
+    """The user turn for a check-in: the moment the workout page noticed, the
+    instructions for speaking up, then the live workout status."""
+    return f"""[Check-in: they haven't messaged you. You're deciding whether to speak up unprompted.]
+Moment: {moment}
+
+If it's worth saying, reply with one or two short sentences they will hear between sets. Be motivating and specific: mention a number, an exercise, or their goal, not generic hype on its own. When something needs fixing, pair the encouragement with one clear next step. Don't repeat the wording or opening of anything you've already said this workout. If nothing useful is worth saying right now, reply with exactly {CHECKIN_PASS}.
+
+{status_text}"""
+
+
+def trainer_checkin(profile, workout_context, messages, on_usage=None):
+    """Compose an unprompted check-in. messages ends with the check-in turn from
+    format_checkin_turn(). Returns "" when the model decides to stay quiet."""
+    system = [{
+        "type": "text",
+        "text": _trainer_system_prompt(profile, workout_context),
+        "cache_control": {"type": "ephemeral"},
+    }]
+    reply = _send(MODEL_CHECKIN, messages, CHAT_MAX_TOKENS, "low", system=system, on_usage=on_usage).strip()
+    return "" if reply.strip(".").upper() == CHECKIN_PASS else reply
