@@ -74,7 +74,8 @@ def set_security_headers(response):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-XSS-Protection"] = "1; mode=block"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+    # Microphone allowed for this site only: trainer chat voice input
+    response.headers["Permissions-Policy"] = "geolocation=(), microphone=(self), camera=()"
     # Strict CSP — relaxed only enough for inline styles used in templates
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "

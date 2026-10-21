@@ -1641,9 +1641,10 @@ tr.hist-detail-row td {
 
 @media (max-width: 600px) {
     .coach-panel {
+        left: 0;
         right: 0;
         bottom: 0;
-        width: 100vw;
+        width: auto;  /* not 100vw, which includes the scrollbar and overflows */
         height: 75vh;
         border-radius: 12px 12px 0 0;
     }
@@ -1656,3 +1657,43 @@ tr.hist-detail-row td {
 .budget-form label { display: block; font-weight: 600; margin-bottom: 0.35rem; }
 .budget-row { display: flex; gap: 0.5rem; }
 .budget-row input { max-width: 8rem; padding: 0.5rem; font-size: 1rem; border: 1px solid var(--border); border-radius: var(--radius); }
+
+/* Trainer chat voice controls */
+.coach-mic {
+    flex: 0 0 auto;
+    width: 52px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    font-size: 1.5rem;
+    cursor: pointer;
+}
+.coach-mic[hidden] { display: none; }
+.coach-mic-on {
+    background: var(--danger);
+    border-color: var(--danger);
+    animation: coach-pulse 1.2s ease-in-out infinite;
+}
+@keyframes coach-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.5); }
+    50% { box-shadow: 0 0 0 8px rgba(220, 38, 38, 0); }
+}
+.coach-voice-options {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.25rem 1rem;
+    padding: 0 0.75rem 0.6rem;
+    font-size: 0.9rem;
+}
+.coach-voice-options label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    min-height: 32px;
+    cursor: pointer;
+}
+.coach-voice-options input { width: 18px; height: 18px; }
+.coach-voice-options label:has(input:disabled) { color: var(--text-muted); cursor: default; }
+.coach-voice-note { color: var(--text-muted); font-size: 0.8rem; width: 100%; }
+.coach-voice-note[hidden] { display: none; }
