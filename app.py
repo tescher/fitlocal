@@ -9,6 +9,7 @@ from datetime import datetime, date, timedelta, timezone
 
 from dotenv import load_dotenv
 from flask import Flask, render_template, request, redirect, url_for, flash, send_file, jsonify
+from flask import session as flask_session
 from flask_login import login_required, current_user
 from markupsafe import Markup
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -276,6 +277,12 @@ AI_FEATURE_LABELS = {"chat": "Trainer chat", "checkin": "Trainer check-ins",
                      "plan": "Plan generation", "review": "Progress reviews"}
 
 CHAT_KEY_RE = re.compile(r"[0-9a-f]{32}")
+
+# Workout autosave: workout_today.html keeps the unsaved workout in localStorage
+# under WORKOUT_DRAFT_KEY_PREFIX + profile id. After a log or pause is saved,
+# this session flag makes base.html clear it on the next page rendered.
+WORKOUT_DRAFT_KEY_PREFIX = "fitlocal.workoutDraft."
+CLEAR_WORKOUT_DRAFT = "clear_workout_draft"
 CHAT_MESSAGE_MAX_CHARS = 2000
 CHAT_HISTORY_MAX_MESSAGES = 40  # even, so the replayed history starts on a user turn
 
@@ -1853,6 +1860,7 @@ def _build_workout_context(profile, planned_workout, active_plan, *, resume_sess
                 else uuid.uuid4().hex)
 
     return dict(
+        draft_key=f"{WORKOUT_DRAFT_KEY_PREFIX}{profile.id}",
         chat_key=chat_key,
         chat_messages=_chat_messages(profile.id, chat_key),
         chat_usage=_chat_usage_summary(profile, chat_key),
@@ -1916,6 +1924,8 @@ def workout_log():
 
     update_streak(profile)
     db.session.commit()
+    # The workout is saved: the next page tells the browser to drop its draft.
+    flask_session[CLEAR_WORKOUT_DRAFT] = True
 
     return render_template(
         "workout_done.html",
@@ -1943,6 +1953,7 @@ def workout_pause():
         db.session.add(ls)
 
     db.session.commit()
+    flask_session[CLEAR_WORKOUT_DRAFT] = True  # saved; the next page drops the browser draft
     flash("Workout paused. Resume it anytime from the dashboard.", "info")
     return redirect(url_for("index"))
 
@@ -2573,6 +2584,24 @@ def _parse_trainer_request(profile, data):
     if planned_workout is None:
         return None, None, (jsonify({"error": "Workout not found."}), 404)
     return chat_key, planned_workout, None
+
+
+@app.route("/api/workout/chat", methods=["GET"])
+@login_required
+def api_workout_chat_transcript():
+    """A workout chat's messages and usage, for restoring the panel when an
+    autosaved workout draft is brought back. Query: ?key=<chat_key>."""
+    profile = get_profile()
+    if not profile:
+        return jsonify({"error": "Set up your profile first."}), 400
+    chat_key = request.args.get("key", "")
+    if not CHAT_KEY_RE.fullmatch(chat_key):
+        return jsonify({"error": "Invalid chat key."}), 400
+    return jsonify({
+        "messages": [{"role": m.role, "kind": m.kind, "content": m.content}
+                     for m in _chat_messages(profile.id, chat_key)],
+        "usage": _chat_usage_summary(profile, chat_key),
+    })
 
 
 @app.route("/api/workout/checkin", methods=["POST"])

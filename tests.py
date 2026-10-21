@@ -2282,8 +2282,13 @@ class TestWorkoutAutosave:
         _add_chat_messages(application, other_id)
         assert client.get(f"/api/workout/chat?key={CHAT_KEY}").get_json()["messages"] == []
 
-    def test_chat_transcript_rejects_bad_key_and_needs_login(self, client, application, profile):
+    def test_chat_transcript_rejects_bad_key(self, client, profile):
         assert client.get("/api/workout/chat?key=nope").status_code == 400
+
+    def test_chat_transcript_needs_login(self, application, profile):
+        # Its own test: the application fixture keeps one app context open, and
+        # Flask-Login caches the logged-in user on it, so a request from the
+        # logged-in `client` earlier in the same test would leak into this one.
         assert application.test_client().get(f"/api/workout/chat?key={CHAT_KEY}").status_code in (302, 401)
 
 

@@ -1,0 +1,190 @@
+<!-- Workout autosave (included at the end of workout_today.html, after its scripts).
+     Keeps the unsaved workout in localStorage under draft_key, so a reload, a
+     closed tab, or a server outage while logging doesn't lose the sets. The
+     server clears the draft (base.html) once a log or pause is actually saved. -->
+<div id="draftBanner" class="draft-banner" role="status" hidden>
+    <span id="draftBannerText"></span>
+    <button type="button" class="btn btn-secondary btn-sm" onclick="discardWorkoutDraft()">Discard</button>
+</div>
+
+<script>
+const WORKOUT_DRAFT = {
+    key: {{ draft_key | tojson }},
+    plannedWorkoutId: {{ workout.id | tojson }},
+    resumeSessionId: {{ (resume_session_id or '') | string | tojson }},
+    maxAgeMs: 12 * 60 * 60 * 1000,  // older drafts are from another day's workout
+    fields: ['session_notes', 'notes_for_next_general', 'notes_for_next_workout'],
+    setFields: ['weight', 'reps', 'weight_b', 'reps_b', 'rpe', 'set_notes'],
+};
+
+function readWorkoutDraft() {
+    try { return JSON.parse(localStorage.getItem(WORKOUT_DRAFT.key) || 'null'); } catch (e) { return null; }
+}
+
+function clearWorkoutDraft() {
+    try { localStorage.removeItem(WORKOUT_DRAFT.key); } catch (e) {}
+}
+
+function draftSetRows(block) {
+    return Array.from(block.querySelectorAll('tbody tr')).filter(function(row) {
+        return row.querySelector('input[name="exercise_name"]');  // skip "last time" rows
+    });
+}
+
+function snapshotWorkout() {
+    const form = document.getElementById('workoutForm');
+    const fields = {};
+    WORKOUT_DRAFT.fields.forEach(function(name) {
+        const el = form.querySelector('[name="' + name + '"]');
+        fields[name] = el ? el.value : '';
+    });
+    const feeling = form.querySelector('input[name="overall_feeling"]:checked');
+    fields.overall_feeling = feeling ? feeling.value : '';
+    const phase = document.querySelector('select[name="phase_name"]');
+    fields.phase_name = phase ? phase.value : '';
+    return {
+        version: 1,
+        savedAt: Date.now(),
+        plannedWorkoutId: WORKOUT_DRAFT.plannedWorkoutId,
+        resumeSessionId: WORKOUT_DRAFT.resumeSessionId,
+        sessionStart: typeof sessionStart !== 'undefined' ? sessionStart : Date.now(),
+        chatKey: typeof COACH !== 'undefined' ? COACH.key : null,
+        exercises: Array.from(form.querySelectorAll('.exercise-block')).map(function(block) {
+            const superset = block.querySelector('.superset-checkbox');
+            return {
+                name: block.dataset.exerciseName,
+                superset: !!(superset && superset.checked),
+                sets: draftSetRows(block).map(function(row) {
+                    const values = {};
+                    WORKOUT_DRAFT.setFields.forEach(function(name) {
+                        const el = row.querySelector('[name="' + name + '"]');
+                        values[name] = el ? el.value : '';
+                    });
+                    return values;
+                }),
+            };
+        }),
+        fields: fields,
+    };
+}
+
+function draftHasEntries(draft) {
+    const f = draft.fields;
+    return draft.exercises.some(function(ex) {
+        return ex.sets.some(function(s) { return Object.keys(s).some(function(k) { return s[k] !== ''; }); });
+    }) || !!(f.session_notes || f.notes_for_next_general || f.notes_for_next_workout || f.overall_feeling);
+}
+
+function saveWorkoutDraft() {
+    clearTimeout(saveWorkoutDraft.timer);
+    if (WORKOUT_DRAFT.discarded) return;  // the reload after Discard must not re-save it
+    const draft = snapshotWorkout();
+    if (draftHasEntries(draft)) {
+        try { localStorage.setItem(WORKOUT_DRAFT.key, JSON.stringify(draft)); } catch (e) {}
+    } else {
+        // Everything was cleared on this page; don't bring old entries back.
+        const old = readWorkoutDraft();
+        if (old && draftMatchesPage(old)) clearWorkoutDraft();
+    }
+}
+
+function saveWorkoutDraftSoon() {
+    clearTimeout(saveWorkoutDraft.timer);
+    saveWorkoutDraft.timer = setTimeout(saveWorkoutDraft, 400);
+}
+
+function draftMatchesPage(draft) {
+    return draft.version === 1
+        && draft.plannedWorkoutId === WORKOUT_DRAFT.plannedWorkoutId
+        && draft.resumeSessionId === WORKOUT_DRAFT.resumeSessionId
+        && Date.now() - draft.savedAt < WORKOUT_DRAFT.maxAgeMs;
+}
+
+function restoreWorkoutDraft(draft) {
+    const form = document.getElementById('workoutForm');
+    const blockFor = function(name) {
+        return Array.from(form.querySelectorAll('.exercise-block')).find(function(b) {
+            return b.dataset.exerciseName === name;
+        });
+    };
+    // Exercises removed during the workout stay removed.
+    const kept = draft.exercises.map(function(ex) { return ex.name; });
+    Array.from(form.querySelectorAll('.exercise-block')).forEach(function(block) {
+        if (kept.indexOf(block.dataset.exerciseName) === -1) block.remove();
+    });
+
+    draft.exercises.forEach(function(ex) {
+        const block = blockFor(ex.name);
+        if (!block) return;
+        const superset = block.querySelector('.superset-checkbox');
+        if (superset && superset.checked !== ex.superset) toggleSuperset(block.querySelector('.btn-superset'));
+        // Match the number of set rows (Add Set / Remove Set during the workout).
+        const addButton = block.querySelector('.btn-set-add');
+        const removeButton = block.querySelector('.btn-set-remove');
+        for (let guard = 0; draftSetRows(block).length < ex.sets.length && guard < 50; guard++) addSet(addButton);
+        for (let guard = 0; draftSetRows(block).length > Math.max(ex.sets.length, 1) && guard < 50; guard++) removeSet(removeButton);
+        draftSetRows(block).forEach(function(row, i) {
+            const values = ex.sets[i];
+            if (!values) return;
+            WORKOUT_DRAFT.setFields.forEach(function(name) {
+                const el = row.querySelector('[name="' + name + '"]');
+                if (el && values[name] !== undefined) el.value = values[name];
+            });
+        });
+    });
+
+    WORKOUT_DRAFT.fields.forEach(function(name) {
+        const el = form.querySelector('[name="' + name + '"]');
+        if (el && draft.fields[name] !== undefined) el.value = draft.fields[name];
+    });
+    if (draft.fields.overall_feeling) {
+        const radio = form.querySelector('input[name="overall_feeling"][value="' + draft.fields.overall_feeling + '"]');
+        if (radio) radio.checked = true;
+    }
+    const phase = document.querySelector('select[name="phase_name"]');
+    if (phase && draft.fields.phase_name) phase.value = draft.fields.phase_name;
+
+    // Keep the session clock running from when the workout really started.
+    if (draft.sessionStart && typeof sessionStart !== 'undefined' && draft.sessionStart < sessionStart) {
+        sessionStart = draft.sessionStart;
+    }
+    // Bring back the trainer chat that went with this workout.
+    if (draft.chatKey && typeof COACH !== 'undefined' && draft.chatKey !== COACH.key
+            && typeof loadCoachTranscript === 'function') {
+        loadCoachTranscript(draft.chatKey);
+    }
+    // Restored sets aren't new: don't let them trigger trainer check-ins.
+    if (typeof markExistingCoachSets === 'function') markExistingCoachSets();
+
+    const saved = new Date(draft.savedAt);
+    document.getElementById('draftBannerText').textContent =
+        'Restored your unsaved entries from ' + saved.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) + '.';
+    const banner = document.getElementById('draftBanner');
+    document.getElementById('timerCard').before(banner);
+    banner.hidden = false;
+}
+
+function discardWorkoutDraft() {
+    WORKOUT_DRAFT.discarded = true;
+    clearWorkoutDraft();
+    workoutSubmitted = true;  // skip the "leave page?" prompt for this reload
+    window.location.reload();
+}
+
+(function() {
+    const draft = readWorkoutDraft();
+    if (draft && draftMatchesPage(draft) && draftHasEntries(draft)) restoreWorkoutDraft(draft);
+
+    const form = document.getElementById('workoutForm');
+    form.addEventListener('input', saveWorkoutDraftSoon);
+    form.addEventListener('change', saveWorkoutDraftSoon);
+    // Add/Remove Set, Superset, and the confirm modal change the page without input events.
+    document.addEventListener('click', saveWorkoutDraftSoon);
+    // iPad Safari has no "leave page?" prompt; save whenever the page is hidden.
+    document.addEventListener('visibilitychange', function() {
+        if (document.visibilityState === 'hidden') saveWorkoutDraft();
+    });
+    window.addEventListener('pagehide', saveWorkoutDraft);
+    setInterval(saveWorkoutDraft, 15000);
+})();
+</script>

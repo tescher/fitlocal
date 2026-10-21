@@ -8,6 +8,17 @@
     <meta name="csrf-token" content="{{ csrf_token() }}">
 </head>
 <body>
+    {% if session.pop('clear_workout_draft', False) %}
+    <script>
+      // fitlocal-clear-workout-draft: the server saved the workout, so the
+      // browser's autosaved draft (workout_today.html) is no longer needed.
+      try {
+        Object.keys(localStorage)
+          .filter(function (k) { return k.indexOf('fitlocal.workoutDraft.') === 0; })
+          .forEach(function (k) { localStorage.removeItem(k); });
+      } catch (e) {}
+    </script>
+    {% endif %}
     <nav>
         <div class="nav-inner">
             <a href="{{ url_for('index') }}" class="brand">FitLocal</a>

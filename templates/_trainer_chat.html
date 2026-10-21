@@ -108,6 +108,27 @@ function addCoachMessage(role, text) {
     return div;
 }
 
+// Switch the panel to another chat (an autosaved workout being restored):
+// adopt its key and show its saved messages and spend.
+async function loadCoachTranscript(key) {
+    COACH.key = key;
+    const keyInput = document.querySelector('#workoutForm input[name="chat_key"]');
+    if (keyInput) keyInput.value = key;
+    try {
+        const res = await fetch({{ url_for('api_workout_chat_transcript') | tojson }} + '?key=' + encodeURIComponent(key));
+        if (!res.ok) return;
+        const data = await res.json();
+        const list = document.getElementById('coachMessages');
+        if (data.messages.length) list.innerHTML = '';
+        data.messages.forEach(function(m) {
+            addCoachMessage(m.kind === 'checkin' ? 'checkin' : m.role, m.content);
+        });
+        renderCoachMeter(data.usage);
+    } catch (e) {
+        // The chat can't be shown right now; it's still saved under its key.
+    }
+}
+
 function formatCoachCost(cost) {
     if (cost > 0 && cost < 0.01) return '<$0.01';
     return '$' + cost.toFixed(2);
