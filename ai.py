@@ -334,6 +334,31 @@ def format_live_snapshot(snapshot):
     return "\n".join(lines)
 
 
+def _phase_prompt(phase):
+    """The plan phase section of the trainer prompt ("" when the plan has no
+    phases). The planned exercises list the plan's standard prescriptions, so
+    the phase's own instructions (e.g. a deload's fewer sets) must take priority."""
+    if not phase:
+        return ""
+    kind = "a recovery (deload) phase" if phase.get("is_recovery") else "a training phase"
+    start, end = phase.get("week_start"), phase.get("week_end")
+    where = []
+    if start:
+        where.append(f"week {start}" if not end or end == start else f"weeks {start}-{end}")
+        if phase.get("total_weeks"):
+            where[-1] += f" of {phase['total_weeks']}"
+    if phase.get("workout_in_phase"):
+        total = phase.get("phase_total_workouts")
+        where.append(f"workout {phase['workout_in_phase']}" + (f" of {total} in this phase" if total else " in this phase"))
+    detail = f" ({', '.join(where)})" if where else ""
+    instructions = phase.get("description") or "None given."
+    return (f"Current training phase: {phase['name']}, {kind}{detail}.\n"
+            f"Phase instructions: {instructions}\n"
+            "These phase instructions override the standard prescriptions in the planned exercises "
+            "below wherever they differ (sets, reps, load, RPE, tempo). Exercise notes that mention "
+            "other phases don't apply right now.\n")
+
+
 def _trainer_system_prompt(profile, workout_context):
     exercise_lines = []
     for ex in workout_context.get("exercises", []):
@@ -347,6 +372,7 @@ def _trainer_system_prompt(profile, workout_context):
         exercise_lines.append(line)
 
     review = workout_context.get("review_suggestions") or "None yet."
+    phase_text = _phase_prompt(workout_context.get("phase"))
     style = COACH_STYLES.get(getattr(profile, "trainer_style", None), COACH_STYLES[DEFAULT_COACH_STYLE])
     return f"""You are a personal trainer coaching {profile.name} through a workout in real time, by text chat between sets. Sometimes you also speak up unprompted, like a trainer watching from nearby.
 
@@ -362,7 +388,7 @@ How to reply:
 Athlete: Age {profile.current_age}, Sex {profile.sex}, Fitness level {profile.fitness_level}. Goals: {profile.goals}
 
 Plan: {workout_context.get('plan_name') or 'Unknown'}. Today's workout: {workout_context.get('workout_name') or 'Unknown'}.
-Planned exercises:
+{phase_text}Planned exercises:
 {chr(10).join(exercise_lines) or '- None listed'}
 
 Latest progress review suggestions: {review}
