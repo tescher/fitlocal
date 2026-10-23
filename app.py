@@ -375,13 +375,64 @@ def _latest_review_suggestions(profile_id, max_chars=1500):
     return text[:max_chars]
 
 
-def build_trainer_context(profile, planned_workout):
-    """The parts of the trainer chat prompt that stay fixed for a workout."""
+def _int_or_none(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _trainer_phase(profile, planned_workout, phase_name=None):
+    """The plan phase this workout belongs to, for the trainer prompt, or None
+    when the plan has no phases.
+
+    Uses phase_name (the phase picked on the workout page) when it names one of
+    the plan's phases, otherwise the user's current phase from get_plan_position.
+    """
+    plan = planned_workout.plan
+    if plan is None:
+        return None
+    try:
+        phases = json.loads(plan.plan_json or "{}").get("phases") or []
+    except (ValueError, AttributeError):
+        phases = []
+    phases = [p for p in phases if isinstance(p, dict) and p.get("phase_name")]
+    if not phases:
+        return None
+    by_name = {p["phase_name"]: p for p in phases}
+
+    position = get_plan_position(profile.id, plan)
+    chosen = by_name.get(phase_name) if phase_name else None
+    if chosen is None:
+        chosen = by_name.get(position["phase_name"]) if position else None
+    if chosen is None:
+        chosen = phases[0]
+
+    in_this_phase = position and position.get("phase_name") == chosen["phase_name"]
+    week_ends = [_int_or_none(p.get("week_end")) for p in phases]
+    return {
+        "name": chosen["phase_name"],
+        "is_recovery": chosen.get("phase_type") == "recovery",
+        "week_start": _int_or_none(chosen.get("week_start")),
+        "week_end": _int_or_none(chosen.get("week_end")),
+        "total_weeks": max([w for w in week_ends if w] or [0]) or None,
+        "description": str(chosen.get("description") or "")[:2000],
+        "workout_in_phase": position.get("workout_in_phase") if in_this_phase else None,
+        "phase_total_workouts": position.get("phase_total_workouts") if in_this_phase else None,
+    }
+
+
+def build_trainer_context(profile, planned_workout, phase_name=None):
+    """The parts of the trainer chat prompt that stay fixed for a workout.
+
+    phase_name is the phase picked on the workout page; see _trainer_phase.
+    """
     exercises = (PlannedExercise.query.filter_by(planned_workout_id=planned_workout.id)
                  .order_by(PlannedExercise.order_index).all())
     return {
         "plan_name": planned_workout.plan.name if planned_workout.plan else None,
         "workout_name": planned_workout.workout_name,
+        "phase": _trainer_phase(profile, planned_workout, phase_name),
         "exercises": [{
             "name": ex.exercise_name,
             "sets": ex.sets_prescribed,
@@ -2551,7 +2602,7 @@ def api_workout_chat():
 
     try:
         reply = ai.chat_with_trainer(
-            profile, build_trainer_context(profile, planned_workout), api_messages,
+            profile, build_trainer_context(profile, planned_workout, _requested_phase(data)), api_messages,
             on_usage=record_ai_usage(profile.id, "chat", chat_key))
     except ai.AIRefusalError as e:
         return jsonify({"error": str(e), "usage": _chat_usage_summary(profile, chat_key)}), 502
@@ -2567,6 +2618,11 @@ def api_workout_chat():
                                       content=reply))
     db.session.commit()
     return jsonify({"reply": reply, "usage": _chat_usage_summary(profile, chat_key)})
+
+
+def _requested_phase(data):
+    """The phase picked on the workout page, sent with chat and check-in requests."""
+    return str(data.get("phase_name") or "").strip()[:100] or None
 
 
 def _parse_trainer_request(profile, data):
@@ -2647,7 +2703,7 @@ def api_workout_checkin():
     api_messages = _chat_api_messages(history) + [{"role": "user", "content": turn}]
     try:
         reply = ai.trainer_checkin(
-            profile, build_trainer_context(profile, planned_workout), api_messages,
+            profile, build_trainer_context(profile, planned_workout, _requested_phase(data)), api_messages,
             on_usage=record_ai_usage(profile.id, "checkin", chat_key))
     except Exception:
         app.logger.exception("Trainer check-in request failed")

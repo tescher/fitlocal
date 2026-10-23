@@ -2238,6 +2238,89 @@ class TestTrainerSettings:
         assert "Strong start!" in html
 
 
+_PHASES = [
+    {"phase_name": "Foundation", "phase_type": "progressive", "week_start": 1, "week_end": 3,
+     "description": "Build base strength at RPE 6-7 with 3-second lowers."},
+    {"phase_name": "Recovery Week 1", "phase_type": "recovery", "week_start": 4, "week_end": 4,
+     "description": "Deload week: reduce all working weights by 40%, drop to 2 sets on everything, RPE 5-6."},
+]
+
+
+@pytest.fixture
+def phased_plan(application, active_plan):
+    """The active plan with a Foundation phase followed by a recovery week."""
+    with application.app_context():
+        plan = WorkoutPlan.query.get(active_plan)
+        data = json.loads(plan.plan_json)
+        data["phases"] = _PHASES
+        plan.plan_json = json.dumps(data)
+        db.session.commit()
+    return active_plan
+
+
+class TestTrainerPhase:
+    """The trainer must know which phase of the plan the workout is in (2026-10-21:
+    it told the user to keep 3 sets in a recovery week that called for 2)."""
+
+    def _context(self, application, upper_body, **kwargs):
+        with application.app_context():
+            return flask_app.build_trainer_context(
+                UserProfile.query.first(), PlannedWorkout.query.get(upper_body), **kwargs)
+
+    def test_context_uses_the_phase_chosen_on_the_page(self, application, profile, phased_plan, upper_body):
+        phase = self._context(application, upper_body, phase_name="Recovery Week 1")["phase"]
+        assert phase["name"] == "Recovery Week 1"
+        assert phase["is_recovery"] is True
+        assert (phase["week_start"], phase["week_end"]) == (4, 4)
+        assert "drop to 2 sets on everything" in phase["description"]
+
+    def test_context_defaults_to_the_current_phase(self, application, profile, phased_plan, upper_body):
+        assert self._context(application, upper_body)["phase"]["name"] == "Foundation"
+
+    def test_unknown_phase_falls_back_to_the_current_phase(self, application, profile, phased_plan, upper_body):
+        assert self._context(application, upper_body, phase_name="Bogus")["phase"]["name"] == "Foundation"
+
+    def test_plan_without_phases_has_no_phase(self, application, profile, active_plan, upper_body):
+        assert self._context(application, upper_body)["phase"] is None
+
+    def test_system_prompt_puts_the_phase_above_standard_prescriptions(self, application, profile, phased_plan,
+                                                                     upper_body):
+        import ai
+        mock_client = _mock_chat_client("ok")
+        ctx = self._context(application, upper_body, phase_name="Recovery Week 1")
+        with application.app_context():
+            with patch("ai.get_client", return_value=mock_client):
+                ai.chat_with_trainer(UserProfile.query.get(profile), ctx, [{"role": "user", "content": "Hi"}])
+        text = _ai_call_kwargs(mock_client)["system"][0]["text"]
+        assert "Current training phase: Recovery Week 1" in text
+        assert "recovery" in text.lower()
+        assert "drop to 2 sets on everything" in text
+        assert "override" in text  # phase instructions win over the standard sets/reps
+        assert text.index("Current training phase") < text.index("Planned exercises")
+
+    def test_chat_route_uses_the_page_phase(self, client, profile, phased_plan, upper_body):
+        mock_client = _mock_chat_client("Two sets today.")
+        with patch("ai.get_client", return_value=mock_client):
+            client.post("/api/workout/chat", json={
+                "chat_key": CHAT_KEY, "planned_workout_id": upper_body, "message": "How many sets?",
+                "snapshot": _SNAPSHOT, "phase_name": "Recovery Week 1"})
+        assert "Current training phase: Recovery Week 1" in _ai_call_kwargs(mock_client)["system"][0]["text"]
+
+    def test_checkin_route_uses_the_page_phase(self, client, profile, phased_plan, upper_body):
+        mock_client = _mock_chat_client("Back to it.")
+        with patch("ai.get_client", return_value=mock_client):
+            client.post("/api/workout/checkin", json={
+                "chat_key": CHAT_KEY, "planned_workout_id": upper_body, "snapshot": _SNAPSHOT,
+                "phase_name": "Recovery Week 1",
+                "event": {"type": "long_rest", "exercise": "Bench Press", "prescribed_rest": 90, "seconds": 400}})
+        assert "Current training phase: Recovery Week 1" in _ai_call_kwargs(mock_client)["system"][0]["text"]
+
+    def test_workout_page_sends_the_selected_phase(self, client, profile, phased_plan):
+        html = client.get("/workout/today").data.decode()
+        assert "function coachPhaseName" in html
+        assert html.count("phase_name: coachPhaseName()") == 2  # chat and check-in requests
+
+
 CLEAR_DRAFT_MARKER = "fitlocal-clear-workout-draft"
 
 

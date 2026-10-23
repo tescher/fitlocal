@@ -147,6 +147,13 @@ function renderCoachMeter(usage) {
     document.getElementById('coachMeterText').textContent = text;
 }
 
+// The plan phase picked on the workout page (what this workout is logged as),
+// so the trainer follows that phase's instructions (e.g. a deload's 2 sets).
+function coachPhaseName() {
+    const select = document.querySelector('select[name="phase_name"]');
+    return select ? select.value : null;
+}
+
 // What the trainer sees: every set row on the page, plus the timers.
 function coachSnapshot() {
     const exercises = [];
@@ -209,6 +216,7 @@ async function sendCoachMessage(preset) {
             body: JSON.stringify({
                 chat_key: COACH.key,
                 planned_workout_id: COACH.plannedWorkoutId,
+                phase_name: coachPhaseName(),
                 message: text,
                 snapshot: coachSnapshot(),
             }),
@@ -602,6 +610,7 @@ async function sendCoachCheckin(event) {
             body: JSON.stringify({
                 chat_key: COACH.key,
                 planned_workout_id: COACH.plannedWorkoutId,
+                phase_name: coachPhaseName(),
                 snapshot: coachSnapshot(),
                 event: event,
             }),
