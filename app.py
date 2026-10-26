@@ -708,7 +708,9 @@ def resolve_plan_position(profile_id, active_plan):
     the user is; once that count reaches the phase's workout total, the next
     workout becomes the first workout of the next phase. Within a phase, the
     next workout is the one AFTER the last logged workout in plan order (so the
-    workout switcher / out-of-order logging behaves correctly).
+    workout switcher / out-of-order logging behaves correctly), unless another
+    workout has been logged fewer times in the phase: a skipped workout comes
+    up before the rotation repeats.
 
     Returns a dict (or None if there's no usable plan) with keys:
       phase_data, phase_index (0-based), workouts_done_in_phase,
@@ -793,14 +795,23 @@ def resolve_plan_position(profile_id, active_plan):
             break
         guard += 1
 
-    # Within-phase: next workout follows the last one logged in THIS phase.
-    # Freshly entered phase (done == 0) starts at the first workout.
+    # Within-phase: next workout follows the last one logged in THIS phase,
+    # but a workout logged fewer times in the phase (one that was skipped)
+    # comes first. Freshly entered phase (done == 0) starts at the first workout.
     if done == 0:
         next_workout = workouts[0]
     else:
-        next_workout = _next_after(
-            _last_session(WorkoutSession.phase_name == phases_data[idx].get("phase_name"))
+        phase_name = phases_data[idx].get("phase_name")
+        counts = dict(
+            db.session.query(WorkoutSession.planned_workout_id, db.func.count())
+            .filter(*base_filter, WorkoutSession.phase_name == phase_name)
+            .group_by(WorkoutSession.planned_workout_id)
+            .all()
         )
+        start = pos_by_id[_next_after(_last_session(WorkoutSession.phase_name == phase_name)).id]
+        rotation = workouts[start:] + workouts[:start]
+        # min() keeps the first of equal counts, so ties follow the rotation.
+        next_workout = min(rotation, key=lambda w: counts.get(w.id, 0))
 
     return {
         "phase_data": phases_data[idx],
@@ -943,7 +954,8 @@ def get_plan_position(profile_id, active_plan):
 
 def get_next_workout(profile_id, active_plan):
     """Return the next PlannedWorkout: the workout after the last one logged in
-    the current phase, or the first workout of the next phase once the current
+    the current phase (a workout skipped in the phase comes first), or the
+    first workout of the next phase once the current
     phase's workout total is complete. Purely workout-count based — no weeks,
     dates, or session_offset."""
     pos = resolve_plan_position(profile_id, active_plan)

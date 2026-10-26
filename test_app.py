@@ -2037,7 +2037,8 @@ with app.app_context():
           and pos is not None and pos.get("phase_name") == NEXT_NAME)
 
 # Case 8: out-of-order logging — the next workout follows the one just logged,
-# not a positional count. Do the last workout out of turn; next wraps to the first.
+# not a positional count, but a workout skipped in the phase comes first. Do the
+# last workout out of turn; next is the skipped second workout.
 with app.app_context():
     profile = UserProfile.query.first()
     active = _gap_wc(profile.id)
@@ -2066,9 +2067,10 @@ with app.app_context():
     profile = UserProfile.query.first()
     active = _gap_wc(profile.id)
     nxt = get_next_workout(profile.id, active)
-    # Did the last workout; the next is the one AFTER it -> wraps to the first.
-    check("out-of-order: next workout follows the workout just logged (sequence, not count)",
-          nxt is not None and nxt.workout_name == wc_names[0])
+    # Did the first and then the last workout; the skipped second one is next
+    # (with only two workouts nothing was skipped, so it wraps to the first).
+    check("out-of-order: a workout skipped in the phase comes up next",
+          nxt is not None and nxt.workout_name == wc_names[1 if _nlen > 2 else 0])
 
 # Case 9: the workout switcher is a display-only override (no position change).
 _show_idx = _nlen - 1
