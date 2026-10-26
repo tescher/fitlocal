@@ -2321,6 +2321,54 @@ class TestTrainerPhase:
         assert html.count("phase_name: coachPhaseName()") == 2  # chat and check-in requests
 
 
+class TestNextWorkoutInPhase:
+    """Within a phase, a workout that was skipped comes up before the rotation
+    repeats (2026-10-26: a recovery week went Push, Legs, Push and never Pull)."""
+
+    def _log(self, application, profile_id, history):
+        """history: [(phase_name, workout_name), ...] oldest first, one per day."""
+        with application.app_context():
+            ids = {w.workout_name: w.id for w in PlannedWorkout.query.all()}
+            for i, (phase_name, workout_name) in enumerate(history):
+                db.session.add(WorkoutSession(
+                    user_id=profile_id, planned_workout_id=ids[workout_name],
+                    date=date.today() - timedelta(days=len(history) - i),
+                    status="completed", phase_name=phase_name,
+                ))
+            db.session.commit()
+
+    def _next(self, application, profile_id):
+        with application.app_context():
+            plan = flask_app.get_active_plan(profile_id)
+            return flask_app.get_next_workout(profile_id, plan).workout_name
+
+    def test_skipped_workout_comes_up_before_the_rotation_repeats(self, application, profile, phased_plan):
+        foundation = [("Foundation", w) for w in ["Upper Body", "Lower Body", "Conditioning"] * 3]
+        self._log(application, profile, foundation + [
+            ("Recovery Week 1", "Upper Body"),
+            ("Recovery Week 1", "Conditioning"),  # Lower Body skipped
+        ])
+        assert self._next(application, profile) == "Lower Body"
+
+    def test_skipped_workout_still_comes_up_after_a_repeat(self, application, profile, phased_plan):
+        self._log(application, profile, [
+            ("Foundation", "Upper Body"),
+            ("Foundation", "Conditioning"),
+            ("Foundation", "Upper Body"),
+            ("Foundation", "Conditioning"),
+        ])
+        assert self._next(application, profile) == "Lower Body"
+
+    def test_rotation_without_skips_is_unchanged(self, application, profile, phased_plan):
+        self._log(application, profile, [
+            ("Foundation", "Conditioning"),
+            ("Foundation", "Upper Body"),
+            ("Foundation", "Lower Body"),
+            ("Foundation", "Conditioning"),
+        ])
+        assert self._next(application, profile) == "Upper Body"
+
+
 CLEAR_DRAFT_MARKER = "fitlocal-clear-workout-draft"
 
 
