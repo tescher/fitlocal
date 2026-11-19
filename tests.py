@@ -2916,3 +2916,344 @@ class TestDatabaseIsolation:
         ''', {"DATABASE_URL": "sqlite:///:memory:"})
         assert result.returncode == 0, result.stderr[-2000:]
         assert json.loads(result.stdout.split("CALLS=")[1]) == []
+
+
+# ---------------------------------------------------------------------------
+# Coach history lookups: read-only tools the trainer chat can call
+# ---------------------------------------------------------------------------
+
+def _history_session(application, profile_id, planned_workout_id, start_utc, sets=(("Pull-Ups", 2),),
+                     status="completed", chat_key=None, notes="Felt strong"):
+    """Insert a WorkoutSession that started at start_utc (naive UTC) with simple sets."""
+    with application.app_context():
+        ws = WorkoutSession(
+            user_id=profile_id, planned_workout_id=planned_workout_id,
+            date=start_utc.date(), start_time=start_utc,
+            end_time=start_utc + timedelta(minutes=55), elapsed_seconds=55 * 60,
+            overall_feeling=4, session_notes=notes, status=status, chat_key=chat_key,
+        )
+        db.session.add(ws)
+        db.session.flush()
+        for name, count in sets:
+            for n in range(1, count + 1):
+                db.session.add(LoggedSet(session_id=ws.id, exercise_name=name, set_number=n,
+                                         weight_lbs=None if name == "Pull-Ups" else 135.0,
+                                         reps_completed=8, rpe=8))
+        db.session.commit()
+        return ws.id
+
+
+def _other_user_session(application, start_utc):
+    """A second account + profile + plan with one session, to check isolation."""
+    with application.app_context():
+        acc = Account(email="other@example.com", password_hash="x", email_claimed=True)
+        db.session.add(acc)
+        db.session.flush()
+        p = UserProfile(account_id=acc.id, name="Other", age=30, sex="Female",
+                        fitness_level="Beginner", goals="Run")
+        db.session.add(p)
+        db.session.flush()
+        plan = WorkoutPlan(user_id=p.id, name="Other Plan", days_per_week=1,
+                           plan_json="{}", status="active")
+        db.session.add(plan)
+        db.session.flush()
+        pw = PlannedWorkout(plan_id=plan.id, day_of_week="Workout A",
+                            workout_name="Upper Body Secret", order_index=0)
+        db.session.add(pw)
+        db.session.commit()
+        profile_id, pw_id = p.id, pw.id
+    return _history_session(application, profile_id, pw_id, start_utc, notes="other user's notes")
+
+
+def _tool_use_message(*calls, model="claude-sonnet-5-5"):
+    """A fake response that asks to run tools: calls are (id, name, input)."""
+    blocks = [MagicMock(type="thinking", thinking="")]
+    for call_id, name, tool_input in calls:
+        block = MagicMock(type="tool_use", id=call_id, input=tool_input)
+        block.name = name  # MagicMock(name=...) names the mock instead
+        blocks.append(block)
+    return MagicMock(content=blocks, stop_reason="tool_use", model=model, usage=_mock_usage())
+
+
+def _mock_sequence_client(*messages):
+    """Mock client whose successive stream calls return each message in turn."""
+    client = MagicMock()
+    stream = client.beta.messages.stream.return_value.__enter__.return_value
+    stream.get_final_message.side_effect = list(messages)
+    return client
+
+
+def _all_call_kwargs(mock_client):
+    return [c.kwargs for c in mock_client.beta.messages.stream.call_args_list]
+
+
+def _tool_results(request_kwargs):
+    """The tool_result blocks in the last user turn of a request."""
+    last = request_kwargs["messages"][-1]
+    return [b for b in last["content"] if isinstance(b, dict) and b.get("type") == "tool_result"]
+
+
+class TestCoachHistoryTools:
+    def _tools(self, profile_id, time_zone="America/Chicago", chat_key=None):
+        import coach_tools
+        return coach_tools.HistoryTools(profile_id, time_zone=time_zone, exclude_chat_key=chat_key)
+
+    def _run(self, application, tools, name, tool_input):
+        with application.app_context():
+            return json.loads(tools.run(name, tool_input))
+
+    def test_definitions_are_strict_read_only_lookups(self, application, profile):
+        names = {d["name"] for d in self._tools(profile).definitions}
+        assert names == {"list_past_workouts", "get_workout_details", "get_exercise_history"}
+        for d in self._tools(profile).definitions:
+            assert d["strict"] is True
+            assert d["input_schema"]["additionalProperties"] is False
+
+    def test_lists_newest_first_with_local_times(self, application, profile, upper_body):
+        # 13:30 UTC in July is 8:30 AM CDT; 19:05 UTC in January is 1:05 PM CST.
+        _history_session(application, profile, upper_body, datetime(2026, 1, 15, 19, 5))
+        _history_session(application, profile, upper_body, datetime(2026, 7, 15, 13, 30))
+        out = self._run(application, self._tools(profile), "list_past_workouts", {})
+        assert out["time_zone"] == "America/Chicago"
+        first, second = out["workouts"]
+        assert (first["date"], first["start_time"], first["end_time"]) == ("2026-07-15", "8:30 AM", "9:25 AM")
+        assert (second["date"], second["start_time"]) == ("2026-01-15", "1:05 PM")
+        assert first["weekday"] == "Wednesday"
+        assert first["workout_name"] == "Upper Body"
+        assert first["plan_name"] == "Test Plan"
+        assert first["duration_minutes"] == 55
+        assert first["exercises"] == ["Pull-Ups"]
+        assert first["notes"] == "Felt strong"
+        assert isinstance(first["days_ago"], int)
+
+    def test_workout_name_filter_and_limit(self, application, profile, active_plan, upper_body):
+        with application.app_context():
+            lower = PlannedWorkout.query.filter_by(workout_name="Lower Body").first().id
+        _history_session(application, profile, upper_body, datetime(2026, 7, 1, 13, 0))
+        _history_session(application, profile, upper_body, datetime(2026, 7, 3, 13, 0))
+        _history_session(application, profile, lower, datetime(2026, 7, 5, 13, 0), sets=(("Squats", 1),))
+        out = self._run(application, self._tools(profile), "list_past_workouts",
+                        {"workout_name": "UPPER", "limit": 1})
+        assert [w["date"] for w in out["workouts"]] == ["2026-07-03"]
+        assert out["more_available"] is True
+        by_exercise = self._run(application, self._tools(profile), "list_past_workouts",
+                                {"exercise_name": "squat"})
+        assert [w["workout_name"] for w in by_exercise["workouts"]] == ["Lower Body"]
+
+    def test_date_range_filter(self, application, profile, upper_body):
+        _history_session(application, profile, upper_body, datetime(2026, 6, 1, 13, 0))
+        _history_session(application, profile, upper_body, datetime(2026, 7, 1, 13, 0))
+        out = self._run(application, self._tools(profile), "list_past_workouts",
+                        {"date_from": "2026-06-15", "date_to": "2026-07-31"})
+        assert [w["date"] for w in out["workouts"]] == ["2026-07-01"]
+
+    def test_bad_date_is_an_input_error(self, application, profile):
+        with application.app_context():
+            with pytest.raises(ValueError):
+                self._tools(profile).run("list_past_workouts", {"date_from": "last tuesday"})
+
+    def test_never_returns_another_users_sessions(self, application, profile, upper_body):
+        mine = _history_session(application, profile, upper_body, datetime(2026, 7, 1, 13, 0))
+        theirs = _other_user_session(application, datetime(2026, 7, 2, 13, 0))
+        tools = self._tools(profile)
+        out = self._run(application, tools, "list_past_workouts", {})
+        assert [w["session_id"] for w in out["workouts"]] == [mine]
+        history = self._run(application, tools, "get_exercise_history", {"exercise_name": "pull"})
+        assert [h["session_id"] for h in history["sessions"]] == [mine]
+        with application.app_context():
+            with pytest.raises(ValueError):
+                tools.run("get_workout_details", {"session_id": theirs})
+
+    def test_excludes_the_workout_in_progress(self, application, profile, upper_body):
+        _history_session(application, profile, upper_body, datetime(2026, 7, 1, 13, 0))
+        _history_session(application, profile, upper_body, datetime(2026, 7, 2, 13, 0),
+                         status="paused", chat_key=CHAT_KEY)
+        out = self._run(application, self._tools(profile, chat_key=CHAT_KEY), "list_past_workouts", {})
+        assert [w["date"] for w in out["workouts"]] == ["2026-07-01"]
+
+    def test_workout_details_lists_sets(self, application, profile, upper_body):
+        sid = _history_session(application, profile, upper_body, datetime(2026, 7, 1, 13, 0),
+                               sets=(("Bench Press", 2), ("Pull-Ups", 1)))
+        out = self._run(application, self._tools(profile), "get_workout_details", {"session_id": sid})
+        assert out["start_time"] == "8:00 AM"
+        assert out["feeling"] == 4
+        assert out["notes"] == "Felt strong"
+        assert out["exercises"] == [
+            {"name": "Bench Press", "sets": ["135 lbs x 8 reps, RPE 8", "135 lbs x 8 reps, RPE 8"]},
+            {"name": "Pull-Ups", "sets": ["bodyweight x 8 reps, RPE 8"]},
+        ]
+
+    def test_exercise_history_matches_names_loosely(self, application, profile, upper_body):
+        _history_session(application, profile, upper_body, datetime(2026, 7, 1, 13, 0),
+                         sets=(("Bench Press", 2),))
+        _history_session(application, profile, upper_body, datetime(2026, 7, 8, 13, 0),
+                         sets=(("Incline Bench Press", 1),))
+        out = self._run(application, self._tools(profile), "get_exercise_history", {"exercise_name": "bench"})
+        newest, oldest = out["sessions"]
+        assert newest["exercise"] == "Incline Bench Press"
+        assert oldest["sets"] == ["135 lbs x 8 reps, RPE 8", "135 lbs x 8 reps, RPE 8"]
+        assert oldest["volume"] == 135 * 8 * 2
+        assert oldest["avg_rpe"] == 8
+
+    def test_unknown_time_zone_falls_back_to_utc(self, application, profile, upper_body):
+        _history_session(application, profile, upper_body, datetime(2026, 7, 15, 13, 30))
+        out = self._run(application, self._tools(profile, time_zone="Mars/Olympus"), "list_past_workouts", {})
+        assert out["time_zone"] == "UTC"
+        assert out["workouts"][0]["start_time"] == "1:30 PM"
+
+    def test_unknown_tool_is_an_input_error(self, application, profile):
+        with application.app_context():
+            with pytest.raises(ValueError):
+                self._tools(profile).run("drop_tables", {})
+
+
+class TestTrainerToolLoop:
+    def _ctx(self, application, upper_body):
+        with application.app_context():
+            return flask_app.build_trainer_context(
+                UserProfile.query.first(), PlannedWorkout.query.get(upper_body))
+
+    def _lookups(self, results=None, error=None):
+        lookups = MagicMock()
+        lookups.definitions = [{"name": "list_past_workouts", "description": "d", "strict": True,
+                                "input_schema": {"type": "object", "properties": {},
+                                                 "additionalProperties": False}}]
+        if error:
+            lookups.run.side_effect = error
+        else:
+            lookups.run.return_value = results or '{"workouts": []}'
+        return lookups
+
+    def test_runs_a_tool_and_sends_the_result_back(self, application, profile, upper_body):
+        import ai
+        mock_client = _mock_sequence_client(
+            _tool_use_message(("toolu_1", "list_past_workouts", {"workout_name": "pull"})),
+            _mock_ai_message("Your last pull day started at 8:30 AM.", model="claude-sonnet-5-5"),
+        )
+        lookups = self._lookups('{"workouts": [{"start_time": "8:30 AM"}]}')
+        seen = []
+        ctx = self._ctx(application, upper_body)
+        with application.app_context():
+            with patch("ai.get_client", return_value=mock_client):
+                reply = ai.chat_with_trainer(UserProfile.query.get(profile), ctx,
+                                             [{"role": "user", "content": "When was my last pull workout?"}],
+                                             on_usage=lambda model, usage: seen.append(model), history=lookups)
+        assert reply == "Your last pull day started at 8:30 AM."
+        lookups.run.assert_called_once_with("list_past_workouts", {"workout_name": "pull"})
+        first, second = _all_call_kwargs(mock_client)
+        assert first["tools"] == lookups.definitions == second["tools"]
+        assert len(first["messages"]) == 1  # each round sends a new list; the first request is unchanged
+        assistant = second["messages"][-2]
+        assert assistant["role"] == "assistant"
+        assert [b.type for b in assistant["content"]] == ["thinking", "tool_use"]  # replayed unchanged
+        (result,) = _tool_results(second)
+        assert result["tool_use_id"] == "toolu_1"
+        assert "8:30 AM" in result["content"]
+        assert not result.get("is_error")
+        assert seen == ["claude-sonnet-5-5", "claude-sonnet-5-5"]  # every round is counted
+
+    def test_input_errors_go_back_as_tool_errors(self, application, profile, upper_body):
+        import ai
+        mock_client = _mock_sequence_client(
+            _tool_use_message(("toolu_1", "get_workout_details", {"session_id": 999})),
+            _mock_ai_message("I couldn't find that workout.", model="claude-sonnet-5-5"),
+        )
+        lookups = self._lookups(error=ValueError("No workout with id 999."))
+        ctx = self._ctx(application, upper_body)
+        with application.app_context():
+            with patch("ai.get_client", return_value=mock_client):
+                ai.chat_with_trainer(UserProfile.query.get(profile), ctx,
+                                     [{"role": "user", "content": "Hi"}], history=lookups)
+        (result,) = _tool_results(_ai_call_kwargs(mock_client))
+        assert result["is_error"] is True
+        assert result["content"] == "No workout with id 999."
+
+    def test_tool_rounds_are_capped(self, application, profile, upper_body):
+        import ai
+        calls = [_tool_use_message((f"toolu_{i}", "list_past_workouts", {})) for i in range(10)]
+        mock_client = _mock_sequence_client(*calls)
+        lookups = self._lookups()
+        ctx = self._ctx(application, upper_body)
+        with application.app_context():
+            with patch("ai.get_client", return_value=mock_client):
+                reply = ai.chat_with_trainer(UserProfile.query.get(profile), ctx,
+                                             [{"role": "user", "content": "Hi"}], history=lookups)
+        assert reply == ""
+        requests = _all_call_kwargs(mock_client)
+        assert len(requests) == ai.MAX_TOOL_ROUNDS + 1
+        assert lookups.run.call_count == ai.MAX_TOOL_ROUNDS
+        last_turn = requests[-1]["messages"][-1]["content"]
+        assert any(b.get("type") == "text" and "limit" in b["text"].lower() for b in last_turn)
+
+    def test_chat_and_checkins_send_the_same_tools(self, application, profile, upper_body):
+        """Tools come first in the prompt cache, so both must send the same list."""
+        import ai
+        import coach_tools
+        mock_client = _mock_chat_client("ok", "PASS")
+        ctx = self._ctx(application, upper_body)
+        with application.app_context():
+            p = UserProfile.query.get(profile)
+            with patch("ai.get_client", return_value=mock_client):
+                ai.chat_with_trainer(p, ctx, [{"role": "user", "content": "Hi"}],
+                                     history=coach_tools.HistoryTools(p.id))
+                ai.trainer_checkin(p, ctx, [{"role": "user", "content": "[Check-in]"}],
+                                   history=coach_tools.HistoryTools(p.id, time_zone="Europe/Paris"))
+        chat, checkin = _all_call_kwargs(mock_client)
+        assert chat["tools"] == checkin["tools"] == coach_tools.TOOL_DEFINITIONS
+        assert chat["system"] == checkin["system"]
+
+    def test_system_prompt_mentions_history_lookups(self, application, profile, upper_body):
+        import ai
+        with application.app_context():
+            text = ai._trainer_system_prompt(UserProfile.query.get(profile), self._ctx(application, upper_body))
+        assert "look it up" in text
+        assert "local time" in text
+
+
+class TestTrainerChatHistoryRoute:
+    def test_chat_answers_from_history_in_the_browsers_time_zone(self, client, application, profile, upper_body):
+        _history_session(application, profile, upper_body, datetime(2026, 7, 15, 13, 30))
+        mock_client = _mock_sequence_client(
+            _tool_use_message(("toolu_1", "list_past_workouts", {"workout_name": "upper", "limit": 1})),
+            _mock_ai_message("8:30 in the morning.", model="claude-sonnet-5-5"),
+        )
+        with patch("ai.get_client", return_value=mock_client):
+            r = client.post("/api/workout/chat", json={
+                "chat_key": CHAT_KEY, "planned_workout_id": upper_body, "time_zone": "America/Chicago",
+                "message": "What time was my last upper body workout?", "snapshot": _SNAPSHOT,
+            })
+        assert r.status_code == 200
+        assert r.get_json()["reply"] == "8:30 in the morning."
+        (result,) = _tool_results(_ai_call_kwargs(mock_client))
+        assert '"start_time": "8:30 AM"' in result["content"]
+        with application.app_context():
+            assert AIUsage.query.filter_by(chat_key=CHAT_KEY, feature="chat").count() == 2
+            # Only the question and the final answer are stored, so history replays as before.
+            assert [m.role for m in TrainerChatMessage.query.filter_by(chat_key=CHAT_KEY)] == ["user", "assistant"]
+
+    def test_checkin_sends_history_tools(self, client, application, profile, upper_body):
+        import coach_tools
+        mock_client = _mock_chat_client("Nice work.")
+        with patch("ai.get_client", return_value=mock_client):
+            r = client.post("/api/workout/checkin", json={
+                "chat_key": CHAT_KEY, "planned_workout_id": upper_body, "time_zone": "America/Chicago",
+                "snapshot": _SNAPSHOT, "event": _set_event(135, 10, flags=("first_set",)),
+            })
+        assert r.get_json().get("message") == "Nice work."
+        assert _ai_call_kwargs(mock_client)["tools"] == coach_tools.TOOL_DEFINITIONS
+
+    def test_workout_page_sends_the_browsers_time_zone(self, client, profile, active_plan):
+        html = client.get("/workout/today").data.decode()
+        assert "Intl.DateTimeFormat().resolvedOptions().timeZone" in html
+        assert html.count("time_zone: coachTimeZone()") == 2  # chat and check-in requests
+
+
+class TestTzdataRequirement:
+    def test_tzdata_is_required_on_windows(self):
+        """Windows has no system time zone database for zoneinfo."""
+        from packaging.requirements import Requirement
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "requirements.txt")
+        with open(path, encoding="utf-8") as f:
+            reqs = [Requirement(line) for line in f if line.strip() and not line.startswith("#")]
+        tz = [r for r in reqs if r.name == "tzdata"]
+        assert tz and all(r.marker is None or r.marker.evaluate({"sys_platform": "win32"}) for r in tz)

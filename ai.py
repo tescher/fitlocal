@@ -1,7 +1,10 @@
 import json
+import logging
 import os
 import re
 import anthropic
+
+logger = logging.getLogger(__name__)
 
 MODEL_PLAN = "claude-opus-5-5"
 MODEL_REVIEW = "claude-opus-5-5"
@@ -45,15 +48,42 @@ def estimate_cost(model, usage):
     ) / 1_000_000
 
 
-def _send(model, messages, max_tokens, effort, system=None, on_usage=None):
+MAX_TOOL_ROUNDS = 3  # history lookups per chat turn before Claude must answer
+_TOOL_LIMIT_NOTE = ("Lookup limit reached for this message. Answer now from what you have, "
+                    "and say if something is still unknown.")
+
+
+def _run_tool_calls(history, tool_calls):
+    """Run Claude's tool calls and return the tool_result blocks, in order.
+    A ValueError's message goes back to Claude as the error text."""
+    results = []
+    for call in tool_calls:
+        result = {"type": "tool_result", "tool_use_id": call.id}
+        try:
+            result["content"] = history.run(call.name, call.input)
+        except ValueError as e:
+            result.update(content=str(e), is_error=True)
+        except Exception:
+            logger.exception("Trainer history lookup %s failed", call.name)
+            result.update(content="That lookup failed. Answer without it.", is_error=True)
+        results.append(result)
+    return results
+
+
+def _send(model, messages, max_tokens, effort, system=None, on_usage=None, history=None):
     """Send a request and return the reply text.
 
     Streams so long replies don't hit HTTP timeouts. Thinking is always on for
     the 5.5 models, so max_tokens covers thinking plus the reply, and the reply
     text is read from the text blocks rather than content[0].
 
-    on_usage(model, usage) is called once the response arrives, before the
-    refusal check, so declined requests are still counted.
+    on_usage(model, usage) is called once per response, before the refusal
+    check, so declined requests and every tool round are still counted.
+
+    history (optional) is a coach_tools.HistoryTools: its definitions are sent
+    as tools, and while Claude asks for lookups they run and their results go
+    back, up to MAX_TOOL_ROUNDS times. Each round sends a new messages list
+    with the assistant content replayed unchanged (thinking blocks included).
     """
     request = dict(
         model=model,
@@ -61,19 +91,30 @@ def _send(model, messages, max_tokens, effort, system=None, on_usage=None):
         output_config={"effort": effort},
         betas=[FALLBACK_BETA],
         fallbacks="default",
-        messages=messages,
     )
     if system is not None:
         request["system"] = system
+    if history is not None:
+        request["tools"] = history.definitions
 
     client = get_client()
-    with client.beta.messages.stream(**request) as stream:
-        message = stream.get_final_message()
+    for round_number in range(MAX_TOOL_ROUNDS + 1):
+        with client.beta.messages.stream(messages=messages, **request) as stream:
+            message = stream.get_final_message()
 
-    if on_usage:
-        on_usage(message.model, message.usage)
-    if message.stop_reason == "refusal":
-        raise AIRefusalError("Claude declined this request. Try rewording it.")
+        if on_usage:
+            on_usage(message.model, message.usage)
+        if message.stop_reason == "refusal":
+            raise AIRefusalError("Claude declined this request. Try rewording it.")
+        if history is None or message.stop_reason != "tool_use" or round_number == MAX_TOOL_ROUNDS:
+            break
+        results = _run_tool_calls(history, [b for b in message.content if b.type == "tool_use"])
+        if round_number == MAX_TOOL_ROUNDS - 1:
+            results.append({"type": "text", "text": _TOOL_LIMIT_NOTE})
+        messages = messages + [
+            {"role": "assistant", "content": message.content},
+            {"role": "user", "content": results},
+        ]
     return "".join(block.text for block in message.content if block.type == "text")
 
 
@@ -393,22 +434,27 @@ Plan: {workout_context.get('plan_name') or 'Unknown'}. Today's workout: {workout
 
 Latest progress review suggestions: {review}
 
-Each of their messages starts with a [Live workout status] block showing what they have logged so far today. Use it, but don't read it back to them."""
+Each of their messages starts with a [Live workout status] block showing what they have logged so far today. Use it, but don't read it back to them.
+
+You can read their whole workout log with the history tools: past workouts with their dates and start times, every logged set, and their notes. When they ask about a past workout, a previous time, a past weight, or how often they train, and the answer isn't above, look it up rather than guessing or saying you can't see it. Times from the tools are already in their local time."""
 
 
-def chat_with_trainer(profile, workout_context, messages, on_usage=None):
+def chat_with_trainer(profile, workout_context, messages, on_usage=None, history=None):
     """Reply to the in-workout chat. messages is the full conversation in API
     form (user turns already include their live status block), oldest first.
 
     The system prompt is the same for the whole workout and carries a cache
     breakpoint; history is append-only, so each turn reuses the cached prefix.
+    history (a coach_tools.HistoryTools) lets the trainer look up past workouts;
+    check-ins send the same tools so both keep sharing one prompt cache.
     """
     system = [{
         "type": "text",
         "text": _trainer_system_prompt(profile, workout_context),
         "cache_control": {"type": "ephemeral"},
     }]
-    return _send(MODEL_CHAT, messages, CHAT_MAX_TOKENS, "low", system=system, on_usage=on_usage).strip()
+    return _send(MODEL_CHAT, messages, CHAT_MAX_TOKENS, "low", system=system, on_usage=on_usage,
+                 history=history).strip()
 
 
 def format_checkin_turn(moment, status_text):
@@ -422,7 +468,7 @@ If it's worth saying, reply with one or two short sentences they will hear betwe
 {status_text}"""
 
 
-def trainer_checkin(profile, workout_context, messages, on_usage=None):
+def trainer_checkin(profile, workout_context, messages, on_usage=None, history=None):
     """Compose an unprompted check-in. messages ends with the check-in turn from
     format_checkin_turn(). Returns "" when the model decides to stay quiet."""
     system = [{
@@ -430,5 +476,6 @@ def trainer_checkin(profile, workout_context, messages, on_usage=None):
         "text": _trainer_system_prompt(profile, workout_context),
         "cache_control": {"type": "ephemeral"},
     }]
-    reply = _send(MODEL_CHECKIN, messages, CHAT_MAX_TOKENS, "low", system=system, on_usage=on_usage).strip()
+    reply = _send(MODEL_CHECKIN, messages, CHAT_MAX_TOKENS, "low", system=system, on_usage=on_usage,
+                  history=history).strip()
     return "" if reply.strip(".").upper() == CHECKIN_PASS else reply
