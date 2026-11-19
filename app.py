@@ -2615,7 +2615,8 @@ def api_workout_chat():
     try:
         reply = ai.chat_with_trainer(
             profile, build_trainer_context(profile, planned_workout, _requested_phase(data)), api_messages,
-            on_usage=record_ai_usage(profile.id, "chat", chat_key))
+            on_usage=record_ai_usage(profile.id, "chat", chat_key),
+            history=_history_tools(profile, chat_key, data))
     except ai.AIRefusalError as e:
         return jsonify({"error": str(e), "usage": _chat_usage_summary(profile, chat_key)}), 502
     except Exception:
@@ -2630,6 +2631,14 @@ def api_workout_chat():
                                       content=reply))
     db.session.commit()
     return jsonify({"reply": reply, "usage": _chat_usage_summary(profile, chat_key)})
+
+
+def _history_tools(profile, chat_key, data):
+    """The trainer's read-only lookups into this user's workout log, with times in
+    the browser's time zone. The workout in progress (a resumed session shares
+    its chat_key) is left out, so "my last workout" means a previous one."""
+    from coach_tools import HistoryTools
+    return HistoryTools(profile.id, time_zone=data.get("time_zone"), exclude_chat_key=chat_key)
 
 
 def _requested_phase(data):
@@ -2716,7 +2725,8 @@ def api_workout_checkin():
     try:
         reply = ai.trainer_checkin(
             profile, build_trainer_context(profile, planned_workout, _requested_phase(data)), api_messages,
-            on_usage=record_ai_usage(profile.id, "checkin", chat_key))
+            on_usage=record_ai_usage(profile.id, "checkin", chat_key),
+            history=_history_tools(profile, chat_key, data))
     except Exception:
         app.logger.exception("Trainer check-in request failed")
         return jsonify({"skipped": "error"})

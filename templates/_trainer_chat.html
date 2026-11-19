@@ -154,6 +154,12 @@ function coachPhaseName() {
     return select ? select.value : null;
 }
 
+// The browser's IANA time zone (e.g. "America/Chicago"): the server stores UTC,
+// so the trainer's history lookups use this to report local times of day.
+function coachTimeZone() {
+    try { return Intl.DateTimeFormat().resolvedOptions().timeZone || null; } catch (e) { return null; }
+}
+
 // What the trainer sees: every set row on the page, plus the timers.
 function coachSnapshot() {
     const exercises = [];
@@ -217,6 +223,7 @@ async function sendCoachMessage(preset) {
                 chat_key: COACH.key,
                 planned_workout_id: COACH.plannedWorkoutId,
                 phase_name: coachPhaseName(),
+                time_zone: coachTimeZone(),
                 message: text,
                 snapshot: coachSnapshot(),
             }),
@@ -611,6 +618,7 @@ async function sendCoachCheckin(event) {
                 chat_key: COACH.key,
                 planned_workout_id: COACH.plannedWorkoutId,
                 phase_name: coachPhaseName(),
+                time_zone: coachTimeZone(),
                 snapshot: coachSnapshot(),
                 event: event,
             }),
