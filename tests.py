@@ -3352,7 +3352,7 @@ class TestBackgroundPlanGeneration:
         assert client.get("/generate-plan/status").get_json() == {"status": "error"}
         html = client.get("/generate-plan").data.decode()
         assert 'data-job-running="1"' not in html
-        assert "didn't finish" in html
+        assert "the server may have restarted" in html
         with application.app_context():
             assert db.session.get(AIJob, job_id).status == "error"
         # A new attempt is allowed.

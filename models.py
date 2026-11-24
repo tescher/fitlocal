@@ -200,6 +200,24 @@ class AIUsage(db.Model):
     chat_key = db.Column(db.String(32), nullable=True, index=True)
 
 
+class AIJob(db.Model):
+    """A slow Claude request (plan generation) running in a background thread.
+
+    The page polls its status instead of holding a request open, which the
+    proxy would cut off with a 504. `seen` is set once its result has been
+    flashed to the user.
+    """
+    __tablename__ = "ai_job"
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user_profile.id"), nullable=False, index=True)
+    feature = db.Column(db.String(20), nullable=False)  # "plan"
+    status = db.Column(db.String(20), nullable=False, default="running")  # running / done / error
+    error = db.Column(db.Text, nullable=True)
+    seen = db.Column(db.Boolean, nullable=False, default=False)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    finished_at = db.Column(db.DateTime, nullable=True)
+
+
 class FitnessTest(db.Model):
     __tablename__ = "fitness_test"
     id = db.Column(db.Integer, primary_key=True)

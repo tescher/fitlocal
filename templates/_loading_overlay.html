@@ -3,6 +3,8 @@
   Include with overlay_title and overlay_message set:
     {% with overlay_title="...", overlay_message="..." %}{% include "_loading_overlay.html" %}{% endwith %}
   and add onsubmit="showLoading(this)" to the form that starts the request.
+  showLoading(null, seconds) shows it for a request already running that long
+  (a background job the page is polling).
 #}
 <div id="loadingOverlay" class="loading-overlay" style="display:none;">
     <div class="loading-card">
@@ -14,16 +16,18 @@
 </div>
 
 <script>
-function showLoading(form) {
+function showLoading(form, elapsedSeconds) {
     // Prevent a double submit starting a second AI request.
     if (form) {
         form.querySelectorAll('button[type="submit"]').forEach(function(btn) { btn.disabled = true; });
     }
     document.getElementById('loadingOverlay').style.display = 'flex';
-    var start = Date.now();
-    setInterval(function() {
+    var start = Date.now() - (elapsedSeconds || 0) * 1000;
+    function tick() {
         var elapsed = Math.floor((Date.now() - start) / 1000);
         document.getElementById('loadingTimer').textContent = elapsed + 's';
-    }, 1000);
+    }
+    tick();
+    setInterval(tick, 1000);
 }
 </script>
