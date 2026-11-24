@@ -4,7 +4,7 @@ from flask_login import login_user, logout_user, login_required, current_user
 from models import (
     db, Account, UserProfile, WorkoutPlan, PlannedWorkout, PlannedExercise,
     WorkoutSession, LoggedSet, AIReview, FitnessTest, TrainingPhase,
-    TrainerChatMessage, AIUsage,
+    TrainerChatMessage, AIUsage, AIJob,
 )
 from extensions import bcrypt, oauth_client, login_manager, limiter
 
@@ -278,6 +278,7 @@ def delete_account():
             TrainerChatMessage.query.filter_by(user_id=profile.id).delete()
             WorkoutSession.query.filter_by(user_id=profile.id).delete()
             AIUsage.query.filter_by(user_id=profile.id).delete()
+            AIJob.query.filter_by(user_id=profile.id).delete()
             AIReview.query.filter_by(user_id=profile.id).delete()
             FitnessTest.query.filter_by(user_id=profile.id).delete()
             if planned_workout_ids:

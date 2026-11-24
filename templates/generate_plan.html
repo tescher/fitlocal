@@ -12,9 +12,31 @@
 </div>
 
 {% with overlay_title="Building Your Plan",
-         overlay_message="Generating your plan with AI — this usually takes 3-5 minutes." %}
+         overlay_message="Generating your plan with AI — this usually takes 5-8 minutes. You can leave this page; your plan will be waiting when you come back." %}
     {% include "_loading_overlay.html" %}
 {% endwith %}
+
+{% if job_running %}
+{# Generation runs in the background: show progress and reload when it's done. #}
+<div id="planJob" data-job-running="1" data-status-url="{{ url_for('generate_plan_status') }}" hidden></div>
+<script>
+(function() {
+    var el = document.getElementById('planJob');
+    showLoading(null, {{ job_elapsed|int }});
+    function poll() {
+        fetch(el.dataset.statusUrl, {credentials: 'same-origin'})
+            .then(function(r) { return r.ok ? r.json() : {status: 'running'}; })
+            .then(function(data) {
+                if (data.status === 'running') { setTimeout(poll, 5000); }
+                else { window.location.reload(); }
+            })
+            // Server briefly unreachable (e.g. restarting): keep waiting.
+            .catch(function() { setTimeout(poll, 10000); });
+    }
+    setTimeout(poll, 5000);
+})();
+</script>
+{% endif %}
 
 {% if pending_plan %}
     <div class="card">

@@ -3,6 +3,7 @@ import io
 import json
 import os
 import re
+import threading
 import uuid
 import calendar as cal_module
 from datetime import datetime, date, timedelta, timezone
@@ -44,7 +45,7 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 from models import (  # noqa: E402
     db, Account, UserProfile, WorkoutPlan, PlannedWorkout, PlannedExercise,
     WorkoutSession, LoggedSet, AIReview, FitnessTest, TrainingPhase, ExerciseLibrary,
-    NextWorkoutNote, TrainerChatMessage, AIUsage, calculate_age,
+    NextWorkoutNote, TrainerChatMessage, AIUsage, AIJob, calculate_age,
 )
 from extensions import login_manager, bcrypt, csrf, limiter, oauth_client  # noqa: E402
 
@@ -1348,12 +1349,119 @@ def get_pending_plan(profile):
     ).order_by(WorkoutPlan.created_at.desc()).first()
 
 
+# Plan generation runs in a background thread (an AIJob row tracks it) because a
+# high-effort Opus call takes several minutes, longer than the proxy in front of
+# gunicorn waits before answering 504. A job still "running" after this long was
+# lost (the process restarted or was killed), so it's reported as failed.
+AI_JOB_STALE_MINUTES = 20
+
+
+def _start_background(target, *args):
+    """Run target(*args) on a daemon thread, or inline when AI_JOBS_INLINE is set (tests)."""
+    if app.config.get("AI_JOBS_INLINE"):
+        target(*args)
+        return None
+    thread = threading.Thread(target=target, args=args, daemon=True)
+    thread.start()
+    return thread
+
+
+def _latest_ai_job(profile_id, feature):
+    """The user's newest job for feature, marking a lost 'running' job as failed."""
+    # populate_existing: the job thread updates this row from its own session, so
+    # don't trust a copy this session may already hold.
+    job = (AIJob.query.filter_by(user_id=profile_id, feature=feature)
+           .order_by(AIJob.id.desc())
+           .execution_options(populate_existing=True).first())
+    if job and job.status == "running" and job.created_at:
+        age = datetime.now(timezone.utc).replace(tzinfo=None) - job.created_at.replace(tzinfo=None)
+        if age > timedelta(minutes=AI_JOB_STALE_MINUTES):
+            job.status = "error"
+            job.error = ("Plan generation didn't finish (the server may have restarted). "
+                         "Please try again.")
+            job.finished_at = datetime.now(timezone.utc)
+            db.session.commit()
+    return job
+
+
+def _run_plan_job(job_id, profile_id, include_review, extra_context):
+    """Background thread: generate a plan, save it as pending, and record the job's outcome."""
+    with app.app_context():
+        try:
+            profile = db.session.get(UserProfile, profile_id)
+            fitness_test = FitnessTest.query.filter_by(
+                user_id=profile_id
+            ).order_by(FitnessTest.test_date.desc()).first()
+
+            # Optionally pass the most recent AI review into the plan generation prompt
+            prior_review = None
+            if include_review:
+                latest_ai_review = (
+                    AIReview.query
+                    .filter_by(user_id=profile_id)
+                    .order_by(AIReview.created_at.desc())
+                    .first()
+                )
+                if latest_ai_review and latest_ai_review.suggestions_json:
+                    try:
+                        prior_review = json.loads(latest_ai_review.suggestions_json)
+                    except json.JSONDecodeError:
+                        pass
+
+            from ai import generate_workout_plan
+            plan_data = generate_workout_plan(profile, fitness_test=fitness_test, prior_review=prior_review,
+                                              extra_context=extra_context,
+                                              on_usage=record_ai_usage(profile_id, "plan"))
+
+            # Remove any old pending plans
+            WorkoutPlan.query.filter_by(user_id=profile_id, status="pending").delete()
+            db.session.add(WorkoutPlan(
+                user_id=profile_id,
+                name=plan_data["plan_name"],
+                description=plan_data.get("description", ""),
+                days_per_week=plan_data.get("days_per_week", 3),
+                plan_json=json.dumps(plan_data),
+                status="pending",
+                total_weeks=plan_data.get("total_weeks", 12),
+            ))
+            job = db.session.get(AIJob, job_id)
+            job.status = "done"
+            job.finished_at = datetime.now(timezone.utc)
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            app.logger.exception("Plan generation job %s failed", job_id)
+            job = db.session.get(AIJob, job_id)
+            if job:
+                job.status = "error"
+                job.error = f"Error generating plan: {e}"
+                job.finished_at = datetime.now(timezone.utc)
+                db.session.commit()
+        finally:
+            db.session.remove()
+
+
 @app.route("/generate-plan")
 @login_required
 def generate_plan():
     profile = get_profile()
     if not profile:
         return redirect(url_for("setup"))
+
+    # Report a finished job once, then show the page as usual.
+    job = _latest_ai_job(profile.id, "plan")
+    job_running = bool(job and job.status == "running")
+    job_elapsed = 0
+    if job_running and job.created_at:
+        job_elapsed = int((datetime.now(timezone.utc).replace(tzinfo=None)
+                           - job.created_at.replace(tzinfo=None)).total_seconds())
+    elif job and not job.seen:
+        if job.status == "done":
+            flash("Plan generated! Review it below.", "success")
+        else:
+            flash(job.error or "Error generating plan.", "error")
+        job.seen = True
+        db.session.commit()
 
     pending = get_pending_plan(profile)
     pending_plan = json.loads(pending.plan_json) if pending else None
@@ -1401,63 +1509,39 @@ def generate_plan():
 
     return render_template("generate_plan.html", profile=profile, pending_plan=pending_plan,
                            suggested_start_index=suggested_start_index, past_plans=past_plans,
-                           latest_review=latest_review)
+                           latest_review=latest_review, job_running=job_running,
+                           job_elapsed=job_elapsed)
 
 
 @app.route("/generate-plan/generate", methods=["POST"])
 @login_required
 def generate_plan_api():
+    """Start plan generation in the background; /generate-plan shows progress."""
     profile = get_profile()
     if not profile:
         return redirect(url_for("setup"))
 
-    # Get latest fitness test if available
-    fitness_test = FitnessTest.query.filter_by(
-        user_id=profile.id
-    ).order_by(FitnessTest.test_date.desc()).first()
+    running = _latest_ai_job(profile.id, "plan")
+    if running and running.status == "running":
+        flash("Your plan is already being generated.", "info")
+        return redirect(url_for("generate_plan"))
 
-    # Optionally pass the most recent AI review into the plan generation prompt
-    prior_review = None
-    if request.form.get("include_review"):
-        latest_ai_review = (
-            AIReview.query
-            .filter_by(user_id=profile.id)
-            .order_by(AIReview.created_at.desc())
-            .first()
-        )
-        if latest_ai_review and latest_ai_review.suggestions_json:
-            try:
-                prior_review = json.loads(latest_ai_review.suggestions_json)
-            except json.JSONDecodeError:
-                pass
-
-    extra_context = request.form.get("extra_context", "").strip() or None
-
-    from ai import generate_workout_plan
-    try:
-        plan_data = generate_workout_plan(profile, fitness_test=fitness_test, prior_review=prior_review,
-                                          extra_context=extra_context,
-                                          on_usage=record_ai_usage(profile.id, "plan"))
-
-        # Remove any old pending plans
-        WorkoutPlan.query.filter_by(user_id=profile.id, status="pending").delete()
-
-        pending = WorkoutPlan(
-            user_id=profile.id,
-            name=plan_data["plan_name"],
-            description=plan_data.get("description", ""),
-            days_per_week=plan_data.get("days_per_week", 3),
-            plan_json=json.dumps(plan_data),
-            status="pending",
-            total_weeks=plan_data.get("total_weeks", 12),
-        )
-        db.session.add(pending)
-        db.session.commit()
-        flash("Plan generated! Review it below.", "success")
-    except Exception as e:
-        flash(f"Error generating plan: {str(e)}", "error")
-
+    job = AIJob(user_id=profile.id, feature="plan", status="running")
+    db.session.add(job)
+    db.session.commit()
+    _start_background(_run_plan_job, job.id, profile.id,
+                      bool(request.form.get("include_review")),
+                      request.form.get("extra_context", "").strip() or None)
     return redirect(url_for("generate_plan"))
+
+
+@app.route("/generate-plan/status")
+@login_required
+def generate_plan_status():
+    """JSON status of the user's latest plan job: none / running / done / error."""
+    profile = get_profile()
+    job = _latest_ai_job(profile.id, "plan") if profile else None
+    return jsonify({"status": job.status if job else "none"})
 
 
 @app.route("/generate-plan/confirm", methods=["POST"])
