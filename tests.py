@@ -36,6 +36,9 @@ from extensions import bcrypt
 def application():
     flask_app.app.config["TESTING"] = True
     flask_app.app.config["WTF_CSRF_ENABLED"] = False
+    # Run background AI jobs (plan generation) inline, so a POST finishes the job
+    # before it returns. TestBackgroundPlanGeneration turns this off to test the thread.
+    flask_app.app.config["AI_JOBS_INLINE"] = True
 
     # Flask-SQLAlchemy bakes the engine URI at init_app() time, so we must
     # directly swap the cached engine with an in-memory one.
@@ -3257,3 +3260,130 @@ class TestTzdataRequirement:
             reqs = [Requirement(line) for line in f if line.strip() and not line.startswith("#")]
         tz = [r for r in reqs if r.name == "tzdata"]
         assert tz and all(r.marker is None or r.marker.evaluate({"sys_platform": "win32"}) for r in tz)
+
+
+# ---------------------------------------------------------------------------
+# Plan generation runs in the background, so a slow Claude call can't hit the
+# proxy's gateway timeout (a 504 on Opalstack after ~5 minutes)
+# ---------------------------------------------------------------------------
+
+class TestBackgroundPlanGeneration:
+    def _job(self, application, profile, status="running", minutes_ago=0, seen=False):
+        from models import AIJob
+        with application.app_context():
+            job = AIJob(user_id=profile, feature="plan", status=status, seen=seen,
+                        created_at=datetime.now(timezone.utc) - timedelta(minutes=minutes_ago))
+            db.session.add(job)
+            db.session.commit()
+            return job.id
+
+    def test_post_returns_while_claude_is_still_working(self, client, application, profile, monkeypatch):
+        """The request that starts generation must not wait for Claude."""
+        import threading
+        monkeypatch.setitem(application.config, "AI_JOBS_INLINE", False)
+        release = threading.Event()
+        mock_client = _mock_ai_client(_MOCK_PLAN)
+        stream = mock_client.beta.messages.stream.return_value.__enter__.return_value
+        finished = stream.get_final_message.return_value
+
+        def slow_reply():
+            assert release.wait(5), "test never released the fake Claude call"
+            return finished
+        stream.get_final_message.side_effect = slow_reply
+
+        threads = []
+        start = flask_app._start_background
+
+        def record(*args):
+            threads.append(start(*args))
+            return threads[-1]
+
+        with patch("ai.get_client", return_value=mock_client), \
+                patch.object(flask_app, "_start_background", side_effect=record):
+            r = client.post("/generate-plan/generate", data={"extra_context": "Knee rehab focus"})
+            assert r.status_code == 302
+            assert client.get("/generate-plan/status").get_json() == {"status": "running"}
+            html = client.get("/generate-plan").data.decode()
+            assert 'data-job-running="1"' in html
+            assert "Plan generated" not in html
+
+            release.set()
+            assert len(threads) == 1
+            threads[0].join(5)
+            assert not threads[0].is_alive()
+
+        assert client.get("/generate-plan/status").get_json() == {"status": "done"}
+        html = client.get("/generate-plan").data.decode()
+        assert "Plan generated! Review it below." in html
+        assert 'data-job-running="1"' not in html
+        # The form's inputs reached Claude from the background thread.
+        assert "Knee rehab focus" in json.dumps(_ai_call_kwargs(mock_client)["messages"])
+        with application.app_context():
+            assert WorkoutPlan.query.filter_by(user_id=profile, status="pending").one().name == "X"
+
+    def test_status_is_none_without_a_job(self, client, profile):
+        assert client.get("/generate-plan/status").get_json() == {"status": "none"}
+
+    def test_status_needs_login(self, application, profile):
+        assert application.test_client().get("/generate-plan/status").status_code in (302, 401)
+
+    def test_page_shows_progress_while_a_job_runs(self, client, application, profile):
+        self._job(application, profile, minutes_ago=2)
+        html = client.get("/generate-plan").data.decode()
+        assert 'data-job-running="1"' in html
+        assert "/generate-plan/status" in html
+        assert "You can leave this page" in html
+
+    def test_second_post_while_running_does_not_start_another(self, client, application, profile):
+        from models import AIJob
+        self._job(application, profile, minutes_ago=1)
+        mock_client = _mock_ai_client(_MOCK_PLAN)
+        with patch("ai.get_client", return_value=mock_client):
+            r = client.post("/generate-plan/generate", follow_redirects=True)
+        assert "already being generated" in r.data.decode()
+        assert not mock_client.beta.messages.stream.called
+        with application.app_context():
+            assert AIJob.query.count() == 1
+
+    def test_stale_running_job_is_reported_as_failed(self, client, application, profile):
+        """A job left 'running' by a server restart must not block the page forever."""
+        from models import AIJob
+        job_id = self._job(application, profile, minutes_ago=30)
+        assert client.get("/generate-plan/status").get_json() == {"status": "error"}
+        html = client.get("/generate-plan").data.decode()
+        assert 'data-job-running="1"' not in html
+        assert "didn't finish" in html
+        with application.app_context():
+            assert db.session.get(AIJob, job_id).status == "error"
+        # A new attempt is allowed.
+        with patch("ai.get_client", return_value=_mock_ai_client(_MOCK_PLAN)):
+            r = client.post("/generate-plan/generate", follow_redirects=True)
+        assert "Plan generated! Review it below." in r.data.decode()
+
+    def test_result_message_is_shown_once(self, client, profile):
+        with patch("ai.get_client", return_value=_mock_ai_client(_MOCK_PLAN, stop_reason="refusal")):
+            first = client.post("/generate-plan/generate", follow_redirects=True).data.decode()
+        assert "declined" in first
+        assert "declined" not in client.get("/generate-plan").data.decode()
+
+    def test_other_users_job_does_not_show(self, client, application, profile):
+        with application.app_context():
+            other_acc = Account(email="other@example.com", password_hash="x", email_claimed=True)
+            db.session.add(other_acc)
+            db.session.commit()
+            other = UserProfile(account_id=other_acc.id, name="Other", age=40, sex="Male",
+                                fitness_level="Beginner", goals="x")
+            db.session.add(other)
+            db.session.commit()
+            other_id = other.id
+        self._job(application, other_id, minutes_ago=1)
+        assert client.get("/generate-plan/status").get_json() == {"status": "none"}
+        assert 'data-job-running="1"' not in client.get("/generate-plan").data.decode()
+
+    def test_deleting_account_removes_jobs(self, client, application, profile):
+        from models import AIJob
+        self._job(application, profile, status="done", seen=True)
+        client.post("/settings/delete-account", data={"confirm_email": "test@example.com"})
+        with application.app_context():
+            assert AIJob.query.count() == 0
+
