@@ -177,7 +177,7 @@ function coachSnapshot() {
                 rpe: val('rpe'), notes: val('set_notes'),
             });
         });
-        exercises.push({ name: block.dataset.exerciseName, sets: sets });
+        exercises.push({ name: block.dataset.exerciseName, added: block.dataset.added === 'true', sets: sets });
     });
     return {
         elapsed_seconds: typeof sessionStart !== 'undefined' ? Math.floor((Date.now() - sessionStart) / 1000) : null,

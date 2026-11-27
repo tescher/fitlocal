@@ -1,6 +1,63 @@
 {% extends "base.html" %}
 {% block title %}FitLocal - Today's Workout{% endblock %}
 {% block content %}
+{# An exercise added during the workout (not in the plan). Rendered empty into
+   #addedExerciseTemplate for the "+ Add Exercise" button, and with its saved
+   sets when a paused workout is resumed. Same set-row fields as planned blocks. #}
+{% macro added_exercise_block(name, sets, is_superset) %}
+<div class="exercise-block added-exercise-block" data-added="true" data-superset-active="{{ 'true' if is_superset else 'false' }}" data-exercise-name="{{ name }}" data-rest-seconds="">
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+        <h3 style="margin:0;"><span class="added-exercise-title">{{ name }}</span>
+            <button type="button" class="btn-info-icon" aria-label="View history for {{ name }}" data-exercise-name="{{ name }}" onclick="openExerciseHistory(this.dataset.exerciseName)">&#9432;</button>
+        </h3>
+        <button type="button" class="btn-superset {{ 'superset-active' if is_superset else '' }}" onclick="toggleSuperset(this)">Superset</button>
+    </div>
+    <input type="checkbox" name="superset_exercise" value="{{ name }}" class="superset-checkbox" {{ 'checked' if is_superset else '' }} style="display:none">
+    <div class="exercise-meta"><span class="added-tag">Added</span> Not in today's plan</div>
+    <table class="log-table">
+        <thead>
+            <tr>
+                <th>Set</th>
+                <th>Weight (lbs)</th>
+                <th>Reps</th>
+                <th class="superset-col" style="{{ '' if is_superset else 'display:none' }}">Weight B</th>
+                <th class="superset-col" style="{{ '' if is_superset else 'display:none' }}">Reps B</th>
+                <th>RPE</th>
+                <th>Notes</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for set_num in sets|sort %}
+            {% set rv = sets[set_num] %}
+            <tr>
+                <td>
+                    <span class="set-num-display">{{ loop.index }}</span>
+                    <input type="hidden" name="exercise_name" value="{{ name }}">
+                    <input type="hidden" name="set_number" value="{{ loop.index }}">
+                </td>
+                <td><input type="number" name="weight" step="0.5" min="0" placeholder="0" {% if rv.weight is defined and rv.weight is not none %}value="{{ rv.weight }}"{% endif %}></td>
+                <td><input type="number" name="reps" min="0" placeholder="0" {% if rv.reps is defined and rv.reps is not none %}value="{{ rv.reps }}"{% endif %}></td>
+                <td class="superset-col" style="{{ '' if is_superset else 'display:none' }}"><input type="number" name="weight_b" step="0.5" min="0" placeholder="0" {% if rv.weight_b is defined and rv.weight_b is not none %}value="{{ rv.weight_b }}"{% endif %}></td>
+                <td class="superset-col" style="{{ '' if is_superset else 'display:none' }}"><input type="number" name="reps_b" min="0" placeholder="0" {% if rv.reps_b is defined and rv.reps_b is not none %}value="{{ rv.reps_b }}"{% endif %}></td>
+                <td>
+                    <select name="rpe">
+                        <option value="">-</option>
+                        {% for r in range(1, 11) %}
+                        <option value="{{ r }}" {{ 'selected' if rv.rpe == r else '' }}>{{ r }}</option>
+                        {% endfor %}
+                    </select>
+                </td>
+                <td><input type="text" name="set_notes" placeholder="" value="{{ rv.notes or '' }}"></td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    <div class="set-controls">
+        <button type="button" class="btn-set-mod btn-set-add" onclick="addSet(this)">+ Add Set</button>
+        <button type="button" class="btn-set-mod btn-set-remove" onclick="removeSet(this)">− Remove Set</button>
+    </div>
+</div>
+{% endmacro %}
 <h1>{{ workout.workout_name }}</h1>
 <p class="text-muted mb-2">{{ workout.day_of_week }}</p>
 
@@ -300,6 +357,28 @@
     </div>
     {% endfor %}
     {% endif %}
+
+    <div id="addedExercises">
+        {% for ex in added_exercises %}
+        {{ added_exercise_block(ex.name, ex.sets, ex.name in superset_exercises) }}
+        {% endfor %}
+    </div>
+    <div class="add-exercise">
+        <button type="button" id="addExerciseButton" class="btn btn-secondary add-exercise-btn" onclick="openAddExercise()">+ Add Exercise</button>
+        <div id="addExercisePanel" class="add-exercise-panel" hidden>
+            <label for="addExerciseName">Exercise</label>
+            <input type="text" id="addExerciseName" list="exerciseSuggestions" maxlength="200" autocomplete="off" placeholder="e.g. Face Pulls">
+            <datalist id="exerciseSuggestions"></datalist>
+            <label for="addExerciseSets">Sets</label>
+            <input type="number" id="addExerciseSets" min="1" max="10" value="3" inputmode="numeric">
+            <p id="addExerciseError" class="add-exercise-error" role="alert" hidden></p>
+            <div class="add-exercise-actions">
+                <button type="button" class="btn btn-primary" onclick="confirmAddExercise()">Add</button>
+                <button type="button" class="btn btn-secondary" onclick="closeAddExercise()">Cancel</button>
+            </div>
+        </div>
+    </div>
+    <template id="addedExerciseTemplate">{{ added_exercise_block('', {1: {}}, false) }}</template>
 
     {% if cooldown_exercises %}
     <div class="section-header cooldown-header">Cool-Down</div>
@@ -713,7 +792,7 @@ function removeSet(btn) {
     const dataRows = Array.from(tbody.querySelectorAll('tr:not(.last-time-row):not(.hist-detail-row)'));
 
     if (dataRows.length <= 1) {
-        const exerciseName = block.querySelector('h3').textContent.trim();
+        const exerciseName = block.dataset.exerciseName;
         showModal(
             'Remove Exercise?',
             'This is the last set. Removing it will remove "' + exerciseName + '" from the session entirely. Continue?',
@@ -733,6 +812,138 @@ function removeSet(btn) {
     }
     lastDataRow.remove();
 }
+
+// --- Add an exercise that isn't in the plan ---
+const ADD_EXERCISE = {
+    libraryUrl: {{ url_for('api_exercise_library') | tojson }},
+    lastPerfUrl: {{ url_for('api_workout_last_performance') | tojson }},
+    suggestionsLoaded: false,
+};
+
+function openAddExercise() {
+    document.getElementById('addExerciseButton').hidden = true;
+    document.getElementById('addExercisePanel').hidden = false;
+    document.getElementById('addExerciseError').hidden = true;
+    const input = document.getElementById('addExerciseName');
+    input.value = '';
+    input.focus();
+    loadExerciseSuggestions();
+}
+
+function closeAddExercise() {
+    document.getElementById('addExercisePanel').hidden = true;
+    document.getElementById('addExerciseButton').hidden = false;
+}
+
+async function loadExerciseSuggestions() {
+    if (ADD_EXERCISE.suggestionsLoaded) return;
+    ADD_EXERCISE.suggestionsLoaded = true;
+    try {
+        const res = await fetch(ADD_EXERCISE.libraryUrl);
+        if (!res.ok) throw new Error(res.status);
+        const list = document.getElementById('exerciseSuggestions');
+        (await res.json()).forEach(function(ex) {
+            const option = document.createElement('option');
+            option.value = ex.name;
+            if (ex.muscle_group) option.label = ex.muscle_group;
+            list.appendChild(option);
+        });
+    } catch (e) {
+        ADD_EXERCISE.suggestionsLoaded = false;  // typing a name still works; try again next time
+    }
+}
+
+function findExerciseBlock(name) {
+    const key = name.toLowerCase();
+    return Array.from(document.querySelectorAll('#workoutForm .exercise-block')).find(function(b) {
+        return (b.dataset.exerciseName || '').toLowerCase() === key;
+    });
+}
+
+function showAddExerciseError(text) {
+    const el = document.getElementById('addExerciseError');
+    el.textContent = text;
+    el.hidden = false;
+}
+
+function confirmAddExercise() {
+    const name = document.getElementById('addExerciseName').value.trim().replace(/\s+/g, ' ');
+    if (!name) {
+        showAddExerciseError('Type an exercise name.');
+        return;
+    }
+    // Sets are saved by exercise name, so the same name twice would merge them.
+    const existing = findExerciseBlock(name);
+    if (existing) {
+        showAddExerciseError(existing.dataset.exerciseName + ' is already in this workout. Use + Add Set there.');
+        return;
+    }
+    const sets = Math.min(Math.max(parseInt(document.getElementById('addExerciseSets').value, 10) || 3, 1), 10);
+    const block = addExerciseBlock(name, sets);
+    closeAddExercise();
+    block.scrollIntoView({ behavior: 'smooth', block: 'center' });  // 'start' hides it under the sticky timer
+    const weight = block.querySelector('input[name="weight"]');
+    if (weight) weight.focus({ preventScroll: true });
+}
+
+// Also used by the autosave restore, so it must work without the picker.
+function addExerciseBlock(name, sets) {
+    const block = document.getElementById('addedExerciseTemplate').content.firstElementChild.cloneNode(true);
+    block.dataset.exerciseName = name;
+    block.querySelector('.added-exercise-title').textContent = name;
+    const info = block.querySelector('.btn-info-icon');
+    info.dataset.exerciseName = name;
+    info.setAttribute('aria-label', 'View history for ' + name);
+    block.querySelector('.superset-checkbox').value = name;
+    block.querySelectorAll('input[name="exercise_name"]').forEach(function(inp) { inp.value = name; });
+    document.getElementById('addedExercises').appendChild(block);
+    const addButton = block.querySelector('.btn-set-add');
+    for (let i = 1; i < sets; i++) addSet(addButton);
+    loadAddedExerciseHistory(block);
+    return block;
+}
+
+// "Last time" rows under each set, as the planned exercises have.
+function attachHistoryRows(block) {
+    const name = block.dataset.exerciseName;
+    block.querySelectorAll('tbody tr').forEach(function(row) {
+        if (isHistoryRow(row) || isHistoryRow(row.nextElementSibling)) return;
+        let anchor = row;
+        buildHistoryRows(name, row.querySelector('input[name="set_number"]').value).forEach(function(r) {
+            anchor.after(r);
+            anchor = r;
+        });
+    });
+}
+
+async function loadAddedExerciseHistory(block) {
+    const name = block.dataset.exerciseName;
+    if (!(name in lastPerfData)) {
+        try {
+            const res = await fetch(ADD_EXERCISE.lastPerfUrl + '?name=' + encodeURIComponent(name));
+            if (!res.ok) return;
+            const data = await res.json();
+            if (!data.last) return;
+            lastPerfData[name] = data.last;
+            recentPerfData[name] = data.recent;
+        } catch (e) {
+            return;  // no history rows; logging still works
+        }
+    }
+    if (block.isConnected) attachHistoryRows(block);
+}
+
+document.getElementById('addExercisePanel').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') {  // don't submit the workout form
+        e.preventDefault();
+        confirmAddExercise();
+    } else if (e.key === 'Escape') {
+        closeAddExercise();
+    }
+});
+
+// Added exercises brought back by a resume get their "last time" rows too.
+document.querySelectorAll('#addedExercises .exercise-block').forEach(attachHistoryRows);
 
 function playBeep() {
     try {
@@ -767,6 +978,15 @@ function toggleSuperset(btn) {
 {% include "_workout_autosave.html" %}
 
 <style>
+.add-exercise { margin: 0.5rem 0 1.25rem; }
+.add-exercise-btn { width: 100%; padding: 0.85rem; font-size: 1.05rem; border-style: dashed; }
+.add-exercise-panel { background: #fff; border: 1px solid #ddd; border-radius: 10px; padding: 1rem; display: grid; gap: 0.4rem; }
+.add-exercise-panel[hidden], .add-exercise-btn[hidden] { display: none; }
+.add-exercise-panel input { font-size: 1.05rem; padding: 0.6rem; }
+.add-exercise-panel #addExerciseSets { max-width: 6rem; }
+.add-exercise-actions { display: flex; gap: 0.5rem; margin-top: 0.4rem; }
+.add-exercise-error { color: #c62828; margin: 0; }
+.added-tag { display: inline-block; background: #e3f2fd; color: #1565c0; border-radius: 4px; padding: 0 0.4rem; font-size: 0.8rem; font-weight: 600; margin-right: 0.3rem; }
 .btn-superset {
     font-size: 0.75rem;
     padding: 0.25rem 0.6rem;

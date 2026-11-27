@@ -53,6 +53,7 @@ function snapshotWorkout() {
             const superset = block.querySelector('.superset-checkbox');
             return {
                 name: block.dataset.exerciseName,
+                added: block.dataset.added === 'true',
                 superset: !!(superset && superset.checked),
                 sets: draftSetRows(block).map(function(row) {
                     const values = {};
@@ -114,7 +115,11 @@ function restoreWorkoutDraft(draft) {
     });
 
     draft.exercises.forEach(function(ex) {
-        const block = blockFor(ex.name);
+        let block = blockFor(ex.name);
+        // An exercise added during the workout comes back as an added block.
+        if (!block && ex.added && typeof addExerciseBlock === 'function') {
+            block = addExerciseBlock(ex.name, Math.max(ex.sets.length, 1));
+        }
         if (!block) return;
         const superset = block.querySelector('.superset-checkbox');
         if (superset && superset.checked !== ex.superset) toggleSuperset(block.querySelector('.btn-superset'));
