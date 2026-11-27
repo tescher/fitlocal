@@ -2439,6 +2439,19 @@ class TestAddExerciseDuringWorkout:
         r = application.test_client().get("/api/workout/last-performance?name=Squats")
         assert r.status_code in (302, 401)
 
+    def test_trainer_sees_which_exercises_were_added(self):
+        import ai
+        text = ai.format_live_snapshot({"exercises": [
+            {"name": "Bench Press", "sets": [{"weight": "135", "reps": "10"}]},
+            {"name": "Face Pulls", "added": True, "sets": [{"weight": "30", "reps": "15"}]},
+        ]})
+        assert "Bench Press: set 1" in text
+        assert "Face Pulls (added during this workout): set 1" in text
+
+    def test_coach_snapshot_sends_added_flag(self, client, profile, active_plan):
+        html = client.get("/workout/today").data.decode()
+        assert "added: block.dataset.added === 'true'" in html.split("function coachSnapshot", 1)[1]
+
     def test_autosave_restores_added_exercises(self, client, profile, active_plan):
         html = client.get("/workout/today").data.decode()
         autosave = html.split('const WORKOUT_DRAFT', 1)[1]
