@@ -2372,6 +2372,80 @@ class TestNextWorkoutInPhase:
         assert self._next(application, profile) == "Upper Body"
 
 
+class TestAddExerciseDuringWorkout:
+    """The workout page can add an exercise that isn't in the plan (2026-11-27)."""
+
+    def _form(self, upper_body, resume_id=""):
+        return MultiDict([
+            ("overall_feeling", "4"), ("session_notes", ""),
+            ("planned_workout_id", str(upper_body)), ("resume_session_id", str(resume_id)),
+            ("exercise_name", "Bench Press"), ("set_number", "1"), ("weight", "135"),
+            ("reps", "10"), ("rpe", "7"), ("set_notes", ""),
+            ("exercise_name", "Face Pulls"), ("set_number", "1"), ("weight", "30"),
+            ("reps", "15"), ("rpe", ""), ("set_notes", ""),
+            ("exercise_name", "Face Pulls"), ("set_number", "2"), ("weight", "30"),
+            ("reps", "12"), ("rpe", "8"), ("set_notes", "burn"),
+        ])
+
+    def test_workout_page_has_add_exercise_controls(self, client, profile, active_plan):
+        html = client.get("/workout/today").data.decode()
+        assert 'id="addExerciseButton"' in html
+        assert 'id="addedExerciseTemplate"' in html
+        assert 'id="addedExercises"' in html
+        assert 'data-added="true"' in html
+
+    def test_log_saves_an_added_exercise(self, client, application, profile, upper_body):
+        client.post("/workout/log", data=self._form(upper_body))
+        with application.app_context():
+            sets = LoggedSet.query.filter_by(exercise_name="Face Pulls").order_by(LoggedSet.set_number).all()
+            assert [(s.weight_lbs, s.reps_completed, s.rpe) for s in sets] == [(30, 15, None), (30, 12, 8)]
+
+    def test_resume_keeps_an_added_exercise(self, client, application, profile, upper_body):
+        client.post("/workout/pause", data=self._form(upper_body))
+        with application.app_context():
+            ws_id = WorkoutSession.query.one().id
+        html = client.get(f"/workout/resume/{ws_id}").data.decode()
+        block = html.split('id="addedExercises"', 1)[1]
+        assert 'data-exercise-name="Face Pulls"' in block
+        assert 'value="Face Pulls"' in block
+        assert 'value="burn"' in block
+        assert 'data-exercise-name="Bench Press"' not in block
+
+    def test_last_performance_api(self, client, application, profile, upper_body):
+        log_session(application, profile, upper_body, [("Face Pulls", 2)], delta_days=3)
+        r = client.get("/api/workout/last-performance?name=Face%20Pulls")
+        assert r.status_code == 200
+        body = r.get_json()
+        assert body["last"]["sets"]["1"]["weight"] == 135.0
+        assert body["last"]["sets"]["2"]["reps"] == 10
+        assert len(body["recent"]) == 1
+
+    def test_last_performance_api_with_no_history(self, client, profile):
+        assert client.get("/api/workout/last-performance?name=Nope").get_json() == {"last": None, "recent": []}
+
+    def test_last_performance_api_is_per_user(self, client, application, profile, upper_body):
+        with application.app_context():
+            other = UserProfile(name="Other", age=30, sex="Female", fitness_level="Beginner", goals="x")
+            db.session.add(other)
+            db.session.commit()
+            other_id = other.id
+        log_session(application, other_id, upper_body, [("Face Pulls", 1)])
+        assert client.get("/api/workout/last-performance?name=Face%20Pulls").get_json()["last"] is None
+
+    def test_last_performance_api_needs_a_name(self, client, profile):
+        assert client.get("/api/workout/last-performance").status_code == 400
+
+    def test_last_performance_api_needs_login(self, application, profile):
+        r = application.test_client().get("/api/workout/last-performance?name=Squats")
+        assert r.status_code in (302, 401)
+
+    def test_autosave_restores_added_exercises(self, client, profile, active_plan):
+        html = client.get("/workout/today").data.decode()
+        autosave = html.split('const WORKOUT_DRAFT', 1)[1]
+        assert "added: block.dataset.added === 'true'" in autosave
+        assert "addExerciseBlock(ex.name" in autosave
+
+
 CLEAR_DRAFT_MARKER = "fitlocal-clear-workout-draft"
 
 
