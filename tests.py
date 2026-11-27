@@ -2371,6 +2371,19 @@ class TestNextWorkoutInPhase:
         ])
         assert self._next(application, profile) == "Upper Body"
 
+    def test_new_phase_continues_the_rotation(self, application, profile, phased_plan):
+        # 2026-11-27: Build ended with PUSH and Recovery Week 2 started with PUSH
+        # again. A new phase picks up after the last workout of the previous one.
+        self._log(application, profile,
+                  [("Foundation", w) for w in ["Lower Body", "Conditioning", "Upper Body"] * 3])
+        assert self._next(application, profile) == "Lower Body"
+        with application.app_context():
+            pos = flask_app.get_plan_position(profile, flask_app.get_active_plan(profile))
+        assert (pos["phase_name"], pos["workout_in_phase"]) == ("Recovery Week 1", 1)
+
+    def test_first_workout_of_a_plan_is_the_first_in_order(self, application, profile, phased_plan):
+        assert self._next(application, profile) == "Upper Body"
+
 
 CLEAR_DRAFT_MARKER = "fitlocal-clear-workout-draft"
 
