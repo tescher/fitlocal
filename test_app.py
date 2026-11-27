@@ -1841,8 +1841,8 @@ check("Home page Next Up shows workout-specific next-workout note",
 
 # Workout-Count Phase Progression
 # The next workout is determined SOLELY by which workout is next in the plan:
-# the next workout in the current phase, or the first workout of the next phase
-# once the current phase's workout count is complete. No weeks, no dates, no
+# the next workout in the current phase or, once the current phase's workout
+# count is complete, the next phase, continuing the rotation. No weeks, no dates, no
 # session_offset. The current phase is the phase of the most recently logged
 # session (the user's selection is the source of truth).
 #
@@ -1918,7 +1918,8 @@ with app.app_context():
     check("position carries no week/day keys",
           pos is not None and "week_in_phase" not in pos and "day_in_week" not in pos)
 
-# Case 2: rollover — completing the phase advances to the next phase's first workout.
+# Case 2: rollover — completing the phase advances to the next phase, which
+# continues the rotation after the phase's last workout.
 with app.app_context():
     profile = UserProfile.query.first()
     active = _gap_wc(profile.id)
@@ -1927,8 +1928,8 @@ with app.app_context():
     db.session.commit()
     nxt = get_next_workout(profile.id, active)
     pos = get_plan_position(profile.id, active)
-    check("rollover: phase complete advances to next phase's first workout",
-          nxt is not None and nxt.workout_name == wc_names[0])
+    check("rollover: next phase continues the rotation after the last workout",
+          nxt is not None and nxt.workout_name == wc_names[PROG_QUOTA % _nlen])
     check("rollover: position phase is the next phase",
           pos is not None and pos.get("phase_name") == NEXT_NAME)
     check("rollover: upcoming workout is 1 of the next phase's total",
@@ -2032,8 +2033,10 @@ with app.app_context():
     active = _gap_wc(profile.id)
     nxt = get_next_workout(profile.id, active)
     pos = get_plan_position(profile.id, active)
-    check("e2e: logging the final phase workout advances Next Up to the next phase's first workout",
-          nxt is not None and nxt.workout_name == wc_names[0]
+    # The final workout logged was wc_names[0], so the next phase picks up
+    # with the workout after it, not wc_names[0] again (2026-11-27).
+    check("e2e: logging the final phase workout advances Next Up to the next phase, continuing the rotation",
+          nxt is not None and nxt.workout_name == wc_names[1 % _nlen]
           and pos is not None and pos.get("phase_name") == NEXT_NAME)
 
 # Case 8: out-of-order logging — the next workout follows the one just logged,
