@@ -1904,6 +1904,19 @@ def _save_next_workout_notes(profile_id, workout_name, general_text, specific_te
             db.session.add(NextWorkoutNote(user_id=profile_id, workout_name=workout_name, note=specific_text))
 
 
+def _perf_payload(data, notes=True):
+    """JSON-ready form of a get_last_performance() / get_recent_performance()
+    entry, as the workout page's lastPerfData / recentPerfData use it."""
+    sets = {}
+    for k, v in data["sets"].items():
+        row = {"weight": v["weight"], "reps": v["reps"],
+               "weight_b": v.get("weight_b"), "reps_b": v.get("reps_b"), "rpe": v["rpe"]}
+        if notes:
+            row["notes"] = v.get("notes", "")
+        sets[str(k)] = row
+    return {"date": data["date"].strftime("%b %d"), "sets": sets}
+
+
 def _build_workout_context(profile, planned_workout, active_plan, *, resume_session=None):
     """Build the template context dict for rendering workout_today.html."""
     all_exercises = PlannedExercise.query.filter_by(
@@ -1930,29 +1943,6 @@ def _build_workout_context(profile, planned_workout, active_plan, *, resume_sess
             plan_id=active_plan.id
         ).order_by(PlannedWorkout.order_index).all()
 
-    last_perf_json = json.dumps({
-        name: {
-            "date": data["date"].strftime("%b %d"),
-            "sets": {str(k): {
-                "weight": v["weight"], "reps": v["reps"],
-                "weight_b": v.get("weight_b"), "reps_b": v.get("reps_b"),
-                "rpe": v["rpe"], "notes": v.get("notes", ""),
-            } for k, v in data["sets"].items()}
-        }
-        for name, data in last_perf.items()
-    })
-    recent_perf_json = json.dumps({
-        name: [
-            {"date": sess["date"].strftime("%b %d"),
-             "sets": {str(k): {
-                 "weight": v["weight"], "reps": v["reps"],
-                 "weight_b": v.get("weight_b"), "reps_b": v.get("reps_b"),
-                 "rpe": v["rpe"],
-             } for k, v in sess["sets"].items()}}
-            for sess in sessions
-        ]
-        for name, sessions in recent_perf.items()
-    })
 
     # Phase list from plan_json; current phase as default selection
     plan_phases = []
@@ -1987,7 +1977,7 @@ def _build_workout_context(profile, planned_workout, active_plan, *, resume_sess
         if resume_session.phase_name:
             selected_phase_name = resume_session.phase_name
         resume_data = {}
-        for ls in resume_session.logged_sets:
+        for ls in sorted(resume_session.logged_sets, key=lambda ls: ls.id):
             if ls.exercise_name not in resume_data:
                 resume_data[ls.exercise_name] = {}
             resume_data[ls.exercise_name][ls.set_number] = {
@@ -2003,6 +1993,28 @@ def _build_workout_context(profile, planned_workout, active_plan, *, resume_sess
         main = [e for e in main if e.exercise_name in resume_data]
         cooldown = [e for e in cooldown if e.exercise_name in resume_data]
         all_exercises = warmup + main + cooldown
+
+    # Exercises added during the workout (not in the plan) come back on resume,
+    # in the order they were logged, with their "last time" history.
+    planned_names = {e.exercise_name for e in PlannedExercise.query.filter_by(
+        planned_workout_id=planned_workout.id)}
+    added_exercises = [
+        {"name": name, "sets": sets}
+        for name, sets in (resume_data or {}).items() if name not in planned_names
+    ]
+    for ex in added_exercises:
+        perf = get_last_performance(profile.id, ex["name"])
+        if perf:
+            last_perf[ex["name"]] = perf
+        recent = get_recent_performance(profile.id, ex["name"], limit=3)
+        if recent:
+            recent_perf[ex["name"]] = recent
+
+    last_perf_json = json.dumps({name: _perf_payload(data) for name, data in last_perf.items()})
+    recent_perf_json = json.dumps({
+        name: [_perf_payload(sess, notes=False) for sess in sessions]
+        for name, sessions in recent_perf.items()
+    })
 
     incoming_general_note, incoming_specific_note = _get_next_workout_notes(
         profile.id, planned_workout.workout_name
@@ -2027,6 +2039,7 @@ def _build_workout_context(profile, planned_workout, active_plan, *, resume_sess
         warmup_exercises=warmup,
         main_exercises=main,
         cooldown_exercises=cooldown,
+        added_exercises=added_exercises,
         all_exercises=all_exercises,
         last_perf=last_perf,
         recent_perf=recent_perf,
@@ -2663,6 +2676,25 @@ def api_exercise_library():
                for n in sorted(history_names)]
 
     return jsonify(result)
+
+
+@app.route("/api/workout/last-performance")
+@login_required
+def api_workout_last_performance():
+    """Last time (and the last 3 sessions) for one exercise, for an exercise
+    added during a workout, in the workout page's lastPerfData shape."""
+    profile = get_profile()
+    if not profile:
+        return jsonify({"error": "no profile"}), 401
+    name = (request.args.get("name") or "").strip()
+    if not name or len(name) > 200:
+        return jsonify({"error": "name required"}), 400
+    perf = get_last_performance(profile.id, name)
+    recent = get_recent_performance(profile.id, name, limit=3)
+    return jsonify({
+        "last": _perf_payload(perf) if perf else None,
+        "recent": [_perf_payload(sess, notes=False) for sess in recent],
+    })
 
 
 @app.route("/api/exercise/history")

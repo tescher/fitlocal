@@ -371,7 +371,8 @@ def format_live_snapshot(snapshot):
             if isinstance(s, dict)
         ]
         if name:
-            lines.append(f"{name}: " + ("; ".join(set_texts) or "no sets"))
+            label = f"{name} (added during this workout)" if ex.get("added") is True else name
+            lines.append(f"{label}: " + ("; ".join(set_texts) or "no sets"))
     return "\n".join(lines)
 
 
